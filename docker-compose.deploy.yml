@@ -1,0 +1,34 @@
+# VANTHEX — deployment variant: runs the PREBUILT image published to
+# GitHub Container Registry by .github/workflows/docker.yml, instead of
+# building from source. This is the only compose file a server needs
+# (plus a filled-in .env).
+#
+#   cp .env.example .env     # set PTK_ADMIN_PW + GHCR_OWNER (+ VANTHEX_TAG)
+#   docker compose -f docker-compose.deploy.yml pull
+#   docker compose -f docker-compose.deploy.yml up -d
+#
+# Private image? Authenticate once on the server:
+#   echo <github-PAT> | docker login ghcr.io -u <github-user> --password-stdin
+services:
+  vanthex:
+    image: ghcr.io/${GHCR_OWNER:?set GHCR_OWNER in .env}/vanthex:${VANTHEX_TAG:-latest}
+    container_name: vanthex
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      PTK_ADMIN_PW: ${PTK_ADMIN_PW:-changeme123}
+      PTK_NVD_KEY: ${PTK_NVD_KEY:-}
+      PTK_ALLOWED_TARGETS: ${PTK_ALLOWED_TARGETS:-}
+      PTK_CANARY_BASE: ${PTK_CANARY_BASE:-}
+    volumes:
+      - vanthex-data:/data
+    cap_add:
+      - NET_RAW
+    # Linux alternative for scanning LAN targets from the host's own
+    # network position: remove "ports:" above and enable:
+    # network_mode: host
+
+volumes:
+  vanthex-data:
+    name: vanthex-data

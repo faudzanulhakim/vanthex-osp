@@ -1,0 +1,35 @@
+# VANTHEX — Offensive Security Platform (v1.0.0)
+# Quick start:
+#   cp .env.example .env      # set a strong PTK_ADMIN_PW
+#   docker compose up -d --build
+#   open http://localhost:5000  (login: admin / your PTK_ADMIN_PW)
+# Full guide: DOCKER.md. Native (non-Docker) install: INSTALL.md.
+services:
+  vanthex:
+    build: .
+    image: vanthex:1.0.0
+    container_name: vanthex
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      PTK_ADMIN_PW: ${PTK_ADMIN_PW:-changeme123}
+      PTK_NVD_KEY: ${PTK_NVD_KEY:-}
+      PTK_ALLOWED_TARGETS: ${PTK_ALLOWED_TARGETS:-}
+      # Public base URL of the OOB canary listener, if you expose it for
+      # out-of-band (SSRF/blind) callback tests; unset = canary disabled.
+      PTK_CANARY_BASE: ${PTK_CANARY_BASE:-}
+    volumes:
+      - vanthex-data:/data
+    # Raw sockets for the SYN scanner. The host must also permit it;
+    # without raw capability the SYN scan honestly reports inconclusive.
+    cap_add:
+      - NET_RAW
+    # --- Linux alternative for scanning LAN targets from the host's own
+    # network position: drop the "ports:" block above and use host
+    # networking instead of the volume/NAT default.
+    # network_mode: host
+
+volumes:
+  vanthex-data:
+    name: vanthex-data

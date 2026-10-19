@@ -1,0 +1,11 @@
+.venv
+__pycache__
+*.pyc
+toolkit.db
+secrets.key
+*.zip
+.git
+.pytest_cache
+.coverage
+htmlcov
+.hypothesis

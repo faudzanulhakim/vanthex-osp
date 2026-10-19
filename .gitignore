@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# VANTHEX runtime state — NEVER commit (data + secrets)
+toolkit.db
+secrets.key
+.env
+uploads_apk/*
+
+# Packages / archives
+*.zip
+.hypothesis/
