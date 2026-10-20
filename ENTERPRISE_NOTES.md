@@ -1,428 +1,428 @@
-# ENTERPRISE NOTES — Pentest Toolkit v3.2 (2026-10-15)
+# ENTERPRISE NOTES — VANTHEX (coverage matrix & release history)
 
-Lapisan enterprise di atas v3: coverage diperluas ke seluruh spektrum severity
-**LOW → CRITICAL** dan dipetakan ke **OWASP Top 10 2021 + API Security Top 10**,
-dengan profil baru **`enterprise-full`** (34 check) dan **Risk Score 0–100** di dashboard.
-Prinsip akurasi v3 tidak berubah: verifikasi berlapis dulu, klaim kemudian —
-confidence `confirmed / probable / candidate` di setiap finding.
+The enterprise layer on top of v3: coverage extended across the full severity
+spectrum **LOW → CRITICAL** and mapped to **OWASP Top 10 2021 + API Security Top 10**,
+with a new profile **`enterprise-full`** (34 checks) and a **Risk Score 0–100** on the dashboard.
+The v3 accuracy principle is unchanged: layered verification first, claims afterwards —
+confidence `confirmed / probable / candidate` on every finding.
 
-## Matriks coverage (check → OWASP → rentang severity)
+## Coverage matrix (check → OWASP → severity range)
 
 | Area | Check | OWASP | Severity |
 |---|---|---|---|
 | SQL Injection (error/boolean/time) | `c_web_injection` | A03 Injection | CRITICAL |
-| XSS reflected multi-konteks | `c_web_injection` | A03 | HIGH |
+| XSS reflected multi-context | `c_web_injection` | A03 | HIGH |
 | SSTI | `c_web_injection` | A03 | CRITICAL |
 | Command Injection (echo/time) | `c_web_injection` | A03 | CRITICAL |
 | Path Traversal / LFI | `c_web_injection` | A01 | CRITICAL |
-| **XXE** (entitas ter-expand, signature passwd) | `c_web_injection` | A05 | CRITICAL |
-| **LDAP Injection** (signature error LDAP) | `c_web_injection` | A03 | HIGH (probable) |
-| **NoSQL Injection** (operator $gt/$ne, param + API JSON) | `c_web_injection`, `c_nosql_api` | A03 / API8 | HIGH |
+| **XXE** (expanded entities, passwd signature) | `c_web_injection` | A05 | CRITICAL |
+| **LDAP Injection** (LDAP error signature) | `c_web_injection` | A03 | HIGH (probable) |
+| **NoSQL Injection** ($gt/$ne operators, param + JSON API) | `c_web_injection`, `c_nosql_api` | A03 / API8 | HIGH |
 | CRLF / Response Splitting | `c_crlf_injection` | A03 | HIGH |
-| SSRF (metadata cloud + oracle internal) | `c_ssrf` | A10 | CRITICAL–HIGH |
-| **IDOR / BOLA** (objek tetangga tanpa auth) | `c_broken_access_idor` | A01 / API1 | HIGH (probable) |
-| **Upload tanpa autentikasi** (probe benign ter-serve kembali) | `c_upload_surface` | A01 | HIGH confirmed / MEDIUM form |
-| **Kredensial default Basic Auth** (8 pasangan umum) | `c_default_credentials` | A07 | CRITICAL |
-| **Login tanpa rate-limit** (6x gagal, user tak terdaftar) | `c_rate_limit_login` | A07 | MEDIUM (probable) |
-| JWT (alg=none, secret lemah kriptografis, tanpa exp) | `c_jwt_analysis` | A07 | CRITICAL–MEDIUM |
-| Login via HTTP polos, session di URL, autocomplete | `c_auth_surface`, `c_sri_and_session` | A02/A07 | HIGH–LOW |
-| File sensitif & arsip backup (signature wajib) | `c_sensitive_files` | A05 | CRITICAL–LOW |
+| SSRF (cloud metadata + internal oracle) | `c_ssrf` | A10 | CRITICAL–HIGH |
+| **IDOR / BOLA** (neighboring objects without auth) | `c_broken_access_idor` | A01 / API1 | HIGH (probable) |
+| **Upload without authentication** (benign probe served back) | `c_upload_surface` | A01 | HIGH confirmed / MEDIUM form |
+| **Default Basic Auth credentials** (8 common pairs) | `c_default_credentials` | A07 | CRITICAL |
+| **Login without rate-limit** (6 failed attempts, unregistered user) | `c_rate_limit_login` | A07 | MEDIUM (probable) |
+| JWT (alg=none, cryptographically weak secret, no exp) | `c_jwt_analysis` | A07 | CRITICAL–MEDIUM |
+| Login over plain HTTP, session in URL, autocomplete | `c_auth_surface`, `c_sri_and_session` | A02/A07 | HIGH–LOW |
+| Sensitive files & backup archives (signature mandatory) | `c_sensitive_files` | A05 | CRITICAL–LOW |
 | Directory listing, admin panel, actuator | `c_directory_listing`, `c_admin_panels`, `c_cve_candidates` | A05 | HIGH–MEDIUM |
 | Verbose error / stack trace | `c_error_disclosure` | A05 | MEDIUM (probable) |
-| Security headers + kualitas CSP/HSTS | `c_security_headers` | A05/A02 | MEDIUM–LOW |
-| Cookie per-item (Secure/HttpOnly/SameSite) | `c_cookie_security` | A05 | MEDIUM–LOW |
-| CORS (echo origin, null+credentials, wildcard+credentials) | `c_cors` | A05 | HIGH–MEDIUM |
+| Security headers + CSP/HSTS quality | `c_security_headers` | A05/A02 | MEDIUM–LOW |
+| Per-item cookies (Secure/HttpOnly/SameSite) | `c_cookie_security` | A05 | MEDIUM–LOW |
+| CORS (origin echo, null+credentials, wildcard+credentials) | `c_cors` | A05 | HIGH–MEDIUM |
 | HTTP methods, TRACE/XST, **WebDAV PROPFIND** | `c_http_methods` | A05 | MEDIUM |
 | Open Redirect | `c_open_redirect` | A01 | HIGH |
-| CSRF (form POST tanpa token) | `c_csrf_forms` | A01 | MEDIUM (probable) |
+| CSRF (POST form without token) | `c_csrf_forms` | A01 | MEDIUM (probable) |
 | GraphQL introspection, Swagger/OpenAPI exposure | `c_api_exposure` | A05 | HIGH–MEDIUM |
-| **API bocorkan field sensitif/PII tanpa auth** | `c_api_sensitive_data` | API3 | HIGH–MEDIUM |
+| **API leaking sensitive fields/PII without auth** | `c_api_sensitive_data` | API3 | HIGH–MEDIUM |
 | TLS (verify, legacy 1.0/1.1, cipher <128, SAN, expiry) | `c_tls` | A02 | CRITICAL–MEDIUM |
-| Port & service berisiko + API service tanpa auth | `c_services` | A05 | CRITICAL–LOW |
-| Fingerprint teknologi + kandidat CVE versi | `c_tech_fingerprint`, `c_cve_candidates` | A06 | CRITICAL–INFO (candidate) |
-| **Library JS usang** (jQuery/Bootstrap/AngularJS/Lodash) | `c_js_libraries` | A06 | MEDIUM (candidate) |
-| **Source map ter-expose** (sourcesContent) | `c_js_libraries` | A05 | HIGH |
-| **SRI hilang / mixed content** | `c_sri_and_session` | A08/A02 | MEDIUM–LOW |
-| **Data terserialisasi** (Java/PHP/ViewState) | `c_deserialization_surface` | A08 | LOW (candidate) |
-| **SPF/DMARC domain** (via DNS-over-HTTPS) | `c_email_security` | A07 | MEDIUM–LOW |
-| **Subdomain takeover** (CNAME yatim + signature layanan) | `c_subdomain_takeover` | A05 | HIGH (probable) |
-| security.txt absen, robots.txt bocorkan path | `c_security_txt_robots` | A05 | INFO–LOW |
+| Risky ports & services + unauthenticated API services | `c_services` | A05 | CRITICAL–LOW |
+| Technology fingerprint + version CVE candidates | `c_tech_fingerprint`, `c_cve_candidates` | A06 | CRITICAL–INFO (candidate) |
+| **Outdated JS libraries** (jQuery/Bootstrap/AngularJS/Lodash) | `c_js_libraries` | A06 | MEDIUM (candidate) |
+| **Exposed source maps** (sourcesContent) | `c_js_libraries` | A05 | HIGH |
+| **Missing SRI / mixed content** | `c_sri_and_session` | A08/A02 | MEDIUM–LOW |
+| **Serialized data** (Java/PHP/ViewState) | `c_deserialization_surface` | A08 | LOW (candidate) |
+| **Domain SPF/DMARC** (via DNS-over-HTTPS) | `c_email_security` | A07 | MEDIUM–LOW |
+| **Subdomain takeover** (orphaned CNAME + service signature) | `c_subdomain_takeover` | A05 | HIGH (probable) |
+| security.txt absent, robots.txt leaking paths | `c_security_txt_robots` | A05 | INFO–LOW |
 | Host-header injection | `c_host_header` | A05 | MEDIUM |
 
-## Profil
-- `passive-quick` 3 check · `passive-full` 7 check (termasuk postur email domain)
-- `active-standard` 22 check · `active-deep` 27 check
-- **`enterprise-full` 34 check** — semua di atas + kredensial default, uji rate-limit login,
-  subdomain takeover. Paling intrusif: gunakan hanya dengan scope tertulis.
+## Profiles
+- `passive-quick` 3 checks · `passive-full` 7 checks (including domain email posture)
+- `active-standard` 22 checks · `active-deep` 27 checks
+- **`enterprise-full` 34 checks** — all of the above + default credentials, login rate-limit
+  tests, subdomain takeover. Most intrusive: use only with written scope.
 
 ## Risk Score
-Skor 0–100 per scan = Σ(bobot severity × faktor confidence), ditampilkan sebagai
-badge di hasil scan & detail, dan tersimpan bersama scan. Dashboard kini juga
-menampilkan panel **Coverage OWASP** (agregasi semua temuan per kategori OWASP).
+Score 0–100 per scan = Σ(severity weight × confidence factor), shown as a
+badge in scan results & detail, and stored with the scan. The dashboard now also
+shows an **OWASP Coverage** panel (aggregation of all findings per OWASP category).
 
-## Verifikasi v3.1 (2026-10-15)
-- Smoke test fixture lokal: **enterprise-full menemukan 64 temuan, 34/34 check jalan,
-  risk score 100/100** — semua kategori baru tertangkap (XXE, IDOR, NoSQL API,
-  kredensial default `tomcat:tomcat`, upload unauth terkonfirmasi, rate-limit absen,
-  error disclosure, jQuery 1.11.1, source map, session-di-URL, login-via-HTTP,
-  API bocorkan `password_hash`, deserialization surface, SRI, robots, security.txt).
-  Fixture SPA catch-all tetap **0 false positive** file sensitif.
-- E2E dashboard: gate otorisasi enterprise 400 tanpa centang; job enterprise selesai
-  28,6 dtk; risk score tersimpan & tampil di detail; statistik OWASP teragregasi (13 kategori).
-- Target nyata in-scope (`demo.testfire.net`, passive-full): 8 temuan confirmed,
-  risk score 26/100 — dan cek email **benar tidak menuduh** testfire.net:
-  SPF/DMARC-nya memang terpasang sehat (DMARC `p=reject` terverifikasi via DoH).
+## v3.1 verification (2026-10-15)
+- Local fixture smoke test: **enterprise-full found 64 findings, 34/34 checks ran,
+  risk score 100/100** — all new categories caught (XXE, IDOR, NoSQL API,
+  default credentials `tomcat:tomcat`, confirmed unauthenticated upload, absent rate-limit,
+  error disclosure, jQuery 1.11.1, source map, session-in-URL, login-over-HTTP,
+  API leaking `password_hash`, deserialization surface, SRI, robots, security.txt).
+  The SPA catch-all fixture still produced **0 false positives** for sensitive files.
+- Dashboard E2E: the enterprise authorization gate returns 400 without the checkbox; the enterprise job
+  finished in 28.6 s; risk score stored & shown in detail; OWASP statistics aggregated (13 categories).
+- Real in-scope target (`demo.testfire.net`, passive-full): 8 confirmed findings,
+  risk score 26/100 — and the email check **correctly did not accuse** testfire.net:
+  its SPF/DMARC are genuinely healthy (DMARC `p=reject` verified via DoH).
 
-## Yang jujur TIDAK dicakup (dan kenapa)
-- **Blind SSRF / blind SQLi out-of-band** penuh butuh listener kolaborator (OOB) — belum ada;
-  yang dilaporkan hanya yang terbukti in-band.
-- **Stored XSS & IDOR antar-akun definitif** butuh dua akun uji + alur stateful per aplikasi;
-  toolkit memberi indikator probable, verifikasi manual tetap wajib.
-- **HTTP request smuggling** sengaja tidak diuji otomatis (risiko mengganggu backend bersama, FP tinggi).
-- **Active Directory / jaringan internal Windows** di luar jangkauan tool web ini
-  (itu ranah lab bugbounty ADE yang berbasis tool eksternal).
-- Cek email menilai domain organisasi hasil heuristik sufiks (bukan PSL penuh).
+## What is honestly NOT covered (and why)
+- **Full blind SSRF / blind out-of-band SQLi** needs a collaborator listener (OOB) — not yet present;
+  only in-band proven results are reported.
+- **Definitive stored XSS & cross-account IDOR** need two test accounts + per-application stateful flows;
+  the toolkit provides probable indicators, manual verification remains mandatory.
+- **HTTP request smuggling** is deliberately not auto-tested (risk of disturbing shared backends, high FP).
+- **Active Directory / internal Windows networks** are outside this web tool's reach
+  (that is the domain of the external-tool-based bug bounty lab).
+- The email check assesses the organization domain from a suffix heuristic (not a full PSL).
 
-## Addendum v3.2 — Standar Perusahaan Besar (2026-10-15)
-- **Engine 41 check**: + deteksi WAF (konteks akurasi), DOM XSS (analisis statis source→sink
-  di file JS), SQLi UNION-based (hitung kolom), time-based statistik (median 3 baseline +
-  penjaga baseline tidak stabil anti-FP), SSRF skema file://, Web Cache Poisoning
-  (urutan baseline→racun→verifikasi), Password Reset Poisoning, Session Fixation,
-  enumerasi plugin WordPress (readme Stable tag → ambang CVE), source/backup disclosure
-  per halaman, dan **verification pass** (temuan exposure Confirmed diminta ulang;
-  yang tak tereproduksi diturunkan ke Probable) + peringatan kesehatan scan
-  (rasio blokir 403/429 > 20% = hasil mungkin tertekan WAF).
-- **Platform**: triage temuan (Open/Confirmed/False Positive/Fixed), Assets per target
-  (risk & skor terbaru, temuan terbuka), **scan terjadwal** (scheduler server), audit log
-  aktivitas, manajemen user dari UI, bulk scan multi-target, tombol Rescan, dashboard
-  dengan Posture Score, donut severity, tren 14 hari, top targets & feed temuan terbaru.
-- **Laporan standar pentest profesional** (DOCX & HTML selaras): cover + klasifikasi
-  CONFIDENTIAL — TLP:AMBER, Report ID `RPT-<tanggal>-<id>`, Document Control, Executive
-  Summary, Scope & Methodology (OWASP WSTG/ASVS, PTES, CVSS v3.1, model confidence,
-  keterbatasan), Findings Summary & Detail ber-ID F-001…, Remediation Roadmap P1–P4
-  ber-SLA, Appendix Risk Rating Methodology & Assessment Metadata. Nama perusahaan di
-  laporan dapat diatur via env `PTK_COMPANY`.
-- Verifikasi v3.2: smoke fixture **41/41 check, 76 temuan** (kategori baru: UNION SQLi,
+## Addendum v3.2 — Large-enterprise standard (2026-10-15)
+- **Engine 41 checks**: + WAF detection (accuracy context), DOM XSS (static source→sink
+  analysis in JS files), UNION-based SQLi (column counting), statistical time-based (median of 3 baselines +
+  unstable-baseline guard against FP), file:// scheme SSRF, Web Cache Poisoning
+  (baseline→poison→verify sequence), Password Reset Poisoning, Session Fixation,
+  WordPress plugin enumeration (readme Stable tag → CVE threshold), per-page source/backup disclosure,
+  and a **verification pass** (Confirmed exposure findings are re-requested;
+  ones that do not reproduce are downgraded to Probable) + scan health warnings
+  (403/429 block ratio > 20% = results may be suppressed by a WAF).
+- **Platform**: finding triage (Open/Confirmed/False Positive/Fixed), Assets per target
+  (latest risk & score, open findings), **scheduled scans** (server scheduler), activity audit log,
+  user management from the UI, multi-target bulk scan, Rescan button, dashboard
+  with Posture Score, severity donut, 14-day trend, top targets & latest findings feed.
+- **Professional pentest-standard reports** (DOCX & HTML aligned): cover + classification
+  CONFIDENTIAL — TLP:AMBER, Report ID `RPT-<date>-<id>`, Document Control, Executive
+  Summary, Scope & Methodology (OWASP WSTG/ASVS, PTES, CVSS v3.1, confidence model,
+  limitations), Findings Summary & Detail with F-001… IDs, Remediation Roadmap P1–P4
+  with SLAs, Appendix Risk Rating Methodology & Assessment Metadata. The company name on
+  reports can be set via the `PTK_COMPANY` env var.
+- v3.2 verification: smoke fixture **41/41 checks, 76 findings** (new categories: UNION SQLi,
   DOM XSS, WP File Manager 6.8, source disclosure, reset poisoning, session fixation,
-  cache poisoning; WAF *tidak* FP di fixture bersih), SPA tetap 0 FP file sensitif;
-  E2E dashboard penuh (triage status, assets, statistik tren/posture, audit, users,
-  scheduler mengeksekusi scan berkala sungguhan, DOCX 12 elemen struktur terverifikasi);
-  passive testfire.net tetap 8 temuan, skor 26, tanpa peringatan blokir.
+  cache poisoning; WAF *not* FP on the clean fixture), SPA still 0 sensitive-file FP;
+  full dashboard E2E (triage status, assets, trend/posture statistics, audit, users,
+  scheduler executing real periodic scans, DOCX 12 structural elements verified);
+  passive testfire.net still 8 findings, score 26, no block warnings.
 
-## Hotfix v3.2.1 — False Positive Massal Command Injection (2026-10-15)
-Kasus nyata yang dilaporkan ADE dari aplikasi UAT internalnya (SPA): puluhan
-"Command Injection terverifikasi" CRITICAL pada lokasi/nama param berupa
-fragmen JavaScript minified (`appendChild`, `createElement`, `SRC_ELEMENT_ATT_REGEX`).
-Akar masalah ganda:
-1. Crawler meng-crawl file `.js` sebagai halaman HTML lalu mengurai regex link
-   dari kode minified -> URL & parameter sampah dari fragmen kode.
-2. SPA menjawab semua path dengan shell yang sama + memantulkan request URI
-   dalam bentuk URL-encoded; uji anti-refleksi CMDi yang membandingkan payload
-   verbatim terkecoh (marker lolos, payload utuh tidak cocok string).
-Perbaikan:
-- File `.js/.css/.map` tidak pernah di-crawl sebagai halaman; respons ber-content-type
-  JavaScript/CSS tidak diekstrak link/param-nya.
-- Validasi kewarasan target parameter: charset path ketat (tanpa kurung/kutip/spasi/
-  backslash), nama param harus identifier wajar, path aset statis ditolak.
-- Gate catch-all di suite injeksi: parameter yang responsnya identik dengan shell
-  soft-404 dan tidak terpengaruh nilai acak dilewati seluruhnya.
-- CMDi kini mengutamakan bukti komputasi `$((a*b))` (hasil tidak ada di request —
-  mustahil dipalsukan refleksi), dan anti-refleksi memeriksa bentuk ternormalisasi
-  (URL-decoded + HTML-unescaped).
-Regresi: fixture dilengkapi perangkap yang mereplikasi pola persis ini (bundle JS
-dengan trap `src=` + catch-all /static/* yang meng-echo URI encoded); smoke test
-memastikan tidak ada temuan dari fragmen JS dan semua kategori sah tetap terdeteksi
-(41/41 check). Temuan lama dari scan yang terdampak harus dianggap TIDAK valid:
-hapus scan tersebut atau tandai False Positive, lalu Rescan dengan v3.2.1.
+## Hotfix v3.2.1 — Mass Command Injection false positives (2026-10-15)
+A real case reported from a real internal UAT application (SPA): dozens of
+"verified Command Injection" CRITICAL findings at locations/parameter names that were
+minified JavaScript fragments (`appendChild`, `createElement`, `SRC_ELEMENT_ATT_REGEX`).
+Dual root cause:
+1. The crawler crawled `.js` files as HTML pages and then parsed link regexes
+   from minified code -> garbage URLs & parameters from code fragments.
+2. The SPA answers every path with the same shell + reflects the request URI
+   in URL-encoded form; the CMDi anti-reflection test that compared the payload
+   verbatim was fooled (the marker passed, the full payload did not string-match).
+Fixes:
+- `.js/.css/.map` files are never crawled as pages; responses with JavaScript/CSS
+  content types have no links/params extracted from them.
+- Parameter target sanity validation: strict path charset (no parentheses/quotes/spaces/
+  backslashes), parameter names must be reasonable identifiers, static asset paths rejected.
+- Catch-all gate in the injection suite: parameters whose response is identical to the
+  soft-404 shell and unaffected by random values are skipped entirely.
+- CMDi now prioritizes computation evidence `$((a*b))` (the result is not in the request —
+  impossible to fake via reflection), and the anti-reflection check examines the normalized
+  form (URL-decoded + HTML-unescaped).
+Regression: the fixture was equipped with a trap replicating this exact pattern (a JS bundle
+with a `src=` trap + a catch-all /static/* echoing the encoded URI); the smoke test
+ensures no findings come from JS fragments and all legitimate categories are still detected
+(41/41 checks). Old findings from affected scans must be considered NOT valid:
+delete those scans or mark them False Positive, then Rescan with v3.2.1.
 
-## v3.2.2 — Akurasi Port Scan (insiden FP #2, 2026-10-16)
+## v3.2.2 — Port scan accuracy (FP incident #2, 2026-10-16)
 
-Kejadian: vulnscan enterprise-full dari VM Muse ke aplikasi UAT (SPA) melaporkan
-27 temuan port CRITICAL/HIGH "confirmed" (Telnet, Redis, MongoDB, Docker API,
-SMB, RDP, VNC, PostgreSQL, MySQL, ...) — SEMUA false positive. Ground truth
-pemilik (nmap dari Kali + docker ps): dari internet hanya 443 & 8008 open.
+Incident: an enterprise-full vulnscan from the Muse VM to a UAT application (SPA) reported
+27 "confirmed" CRITICAL/HIGH port findings (Telnet, Redis, MongoDB, Docker API,
+SMB, RDP, VNC, PostgreSQL, MySQL, ...) — ALL false positives. Ground truth
+from the operator (nmap from Kali + docker ps): from the internet only 443 & 8008 are open.
 
-Akar masalah: koneksi TCP langsung dari VM Muse dicegat gateway sandbox
-runtime — connect ke port berapa pun "berhasil" dan dibalas banner teks
-"muse: ... connections is turned off for this assistant ...". Koneksi tidak
-pernah mencapai target. Scanner lama memperlakukan connect+banner apa pun
-sebagai bukti layanan (teks gateway itu bahkan tersimpan sebagai evidence).
+Root cause: direct TCP connections from the Muse VM are intercepted by the runtime sandbox
+gateway — connecting to any port "succeeds" and is answered with the text banner
+"muse: ... connections is turned off for this assistant ...". The connection
+never reaches the target. The old scanner treated any connect+banner
+as service evidence (that gateway text was even stored as evidence).
 
-Perbaikan:
-- Probe verifikasi protokol per layanan di scanners.py: klaim layanan WAJIB
-  lolos signature asli (SSH "SSH-", VNC "RFB", Redis PING->+PONG/-NOAUTH,
+Fixes:
+- Per-service protocol verification probes in scanners.py: a service claim MUST
+  pass the genuine signature (SSH "SSH-", VNC "RFB", Redis PING->+PONG/-NOAUTH,
   PostgreSQL SSLRequest->S/N, MySQL greeting, RDP X.224, MSSQL TDS prelogin,
-  MongoDB teks identitas, LDAP bind, NFS RPC, PPTP magic cookie, TLS handshake,
-  HTTP "HTTP/" termasuk fallback port non-standar).
-- Connect saja -> verified=False: port berisiko tak terverifikasi hanya jadi
-  SATU temuan kandidat LOW berkelompok, tidak pernah confirmed per layanan.
-- Deteksi interceptor: banner gateway yang dikenal ATAU banner identik di
-  >=60% port terbuka tanpa satu pun terverifikasi -> seluruh port scan
-  dinyatakan TIDAK KONKLUSIF (1 temuan INFO), nol temuan port.
-- Probe HTTP API tanpa autentikasi (Docker/ES/etcd/kubelet) kini hanya jalan
-  untuk port yang terverifikasi HTTP.
-- Scan tipe "ports" menyertakan flag intercepted + daftar terverifikasi.
+  MongoDB identity text, LDAP bind, NFS RPC, PPTP magic cookie, TLS handshake,
+  HTTP "HTTP/" including the non-standard-port fallback).
+- Connect alone -> verified=False: unverified risky ports become only
+  ONE grouped LOW candidate finding, never confirmed per service.
+- Interceptor detection: a known gateway banner OR an identical banner on
+  >=60% of open ports with none verified -> the entire port scan is
+  declared INCONCLUSIVE (1 INFO finding), zero port findings.
+- Unauthenticated HTTP API probes (Docker/ES/etcd/kubelet) now run only
+  for ports verified as HTTP.
+- The "ports" scan type includes the intercepted flag + the verified list.
 
-Verifikasi: unit test 24/24 (signature, probe, interceptor, integrasi server
-protokol lokal); smoke fixture SEMUA LULUS (41/41 check); live dari VM yang
-sama ke target yang sama: portscan API -> intercepted=True, 0 terverifikasi;
-vulnscan active-deep -> 0 temuan port, tepat 1 INFO tidak-konklusif; fixture
-localhost port 8899 -> HTTP terverifikasi, port tertutup absen. 27 temuan FP
-scan lama ditandai false_positive di instance terpasang (sisa 1 INFO TLS yang
-jujur tetap open).
+Verification: unit tests 24/24 (signatures, probes, interceptor, local protocol server
+integration); smoke fixture ALL PASS (41/41 checks); live from the same VM
+to the same target: portscan API -> intercepted=True, 0 verified;
+active-deep vulnscan -> 0 port findings, exactly 1 inconclusive INFO; localhost fixture
+port 8899 -> HTTP verified, closed ports absent. The 27 FP findings from
+the old scan were marked false_positive on the installed instance (1 honest TLS INFO
+remains open).
 
-Aturan permanen: port scan hanya sah dari vantage point tanpa interceptor;
-dari VM Muse hasilnya selalu tidak konklusif — dan kini scanner mengatakannya
-sendiri, bukan mengarang temuan.
+Permanent rule: port scans are only valid from a vantage point without an interceptor;
+from the Muse VM the results are always inconclusive — and now the scanner says so
+itself, instead of fabricating findings.
 
-## v3.3.0 — Mobile Apps (APK) + Library Modern (2026-10-16)
+## v3.3.0 — Mobile Apps (APK) + Modern Libraries (2026-10-16)
 
-Keputusan pemilik (2026-10-16): TETAP tanpa tool scanner jadi (nmap/nuclei
-tidak dipanggil) — engine hasil build sendiri — tetapi library pihak ketiga
-yang lazim dipakai membangun aplikasi pentest LAIN kini dipakai sebagai bahan
-baku (sebelumnya murni stdlib). Venv proyek di .venv (requirements.txt):
+Decision (2026-10-16): STILL no ready-made scanner tools (nmap/nuclei
+are not invoked) — a self-built engine — but third-party libraries
+commonly used to build OTHER pentest applications are now used as raw
+material (previously pure stdlib). Project venv in .venv (requirements.txt):
 androguard 4.1.4, requests, beautifulsoup4, lxml, cryptography, dnspython.
 
-Baru:
-- mobile.py — analyzer statis APK buatan sendiri (pemetaan OWASP MASVS):
+New:
+- mobile.py — a self-built static APK analyzer (OWASP MASVS mapping):
   debuggable, allowBackup (+default target<=30), cleartext (precedence:
-  network security config > atribut manifest > default target<28), permission
-  dangerous (grup, severity dari yang tersensitif), komponen exported tanpa
-  proteksi (aturan default per targetSdk; launcher dikecualikan), deep link
-  http, secrets tertanam (AWS key, Google API key, private key, JWT — probable,
-  evidence ter-masking; pola generik = candidate), URL Firebase, endpoint HTTP,
-  indikasi addJavascriptInterface/ECB (candidate), sertifikat (tidak
-  ditandatangani, debug cert, kedaluwarsa, hash lemah, v1-only/Janus), target/
-  min SDK tertinggal. Endpoint API diekstrak dari DEX/assets (host skema/
-  namespace disaring) dan dapat di-scan lanjut dari dashboard.
-- Route POST /api/mobile/analyze (base64 JSON, maks 60 MB): APK dianalisis
-  sebagai job, disimpan sebagai scan tipe "mobile" — temuan masuk pipeline
-  Findings/triage/laporan DOCX/HTML yang sama; file APK dihapus setelah
-  analisis (yang disimpan hash SHA-256 + hasil).
-- Dashboard service: tab Mobile Apps (upload, log live, profil aplikasi,
-  chips permission, tabel endpoint + tombol "Scan API ini", riwayat, detail
-  khusus mobile di Scan Detail; ikon rescan disembunyikan untuk scan mobile).
-- Crawler web: ekstraksi link/form kini memakai parser HTML asli
-  (BeautifulSoup) bila tersedia — teks <script>/<style>/komentar tidak bisa
-  lagi terbaca sebagai atribut (menekan kelas FP insiden #1); regex lama jadi
-  fallback identik v3.2.2.
+  network security config > manifest attribute > default target<28), dangerous
+  permissions (grouped, severity from the most sensitive), exported components without
+  protection (default rules per targetSdk; launcher excepted), http deep links,
+  embedded secrets (AWS key, Google API key, private key, JWT — probable,
+  masked evidence; generic patterns = candidate), Firebase URLs, HTTP endpoints,
+  addJavascriptInterface/ECB indications (candidate), certificates (not
+  signed, debug cert, expired, weak hash, v1-only/Janus), lagging target/
+  min SDK. API endpoints are extracted from DEX/assets (schema/namespace
+  hosts filtered) and can be scanned further from the dashboard.
+- Route POST /api/mobile/analyze (base64 JSON, max 60 MB): the APK is analyzed
+  as a job, stored as a "mobile" scan type — findings enter the same
+  Findings/triage/DOCX/HTML report pipeline; the APK file is deleted after
+  analysis (what is stored is the SHA-256 hash + results).
+- Service dashboard: Mobile Apps tab (upload, live log, app profile,
+  permission chips, endpoint table + "Scan this API" button, history, mobile-specific
+  detail in Scan Detail; the rescan icon is hidden for mobile scans).
+- Web crawler: link/form extraction now uses a real HTML parser
+  (BeautifulSoup) when available — <script>/<style>/comment text can no
+  longer be read as attributes (suppressing the FP class of incident #1); the old regex becomes
+  a fallback identical to v3.2.2.
 
-Verifikasi: tests/test_mobile.py 24/24 (fixture APK resmi repo androguard
-dengan ground truth terverifikasi independen: TestActivity debuggable,
-a2dp.Vol permission/receive-SMS/backup/endpoint, APK repack bermarker AWS/
-Firebase, unit aturan exported sintetis; bug nyata ditemukan & diperbaiki
-selama pengujian: regex URL melebur string DEX bertetangga lewat \x00 —
-charset kini dibatasi printable). Smoke web SEMUA LULUS (41/41, anti-FP SPA
-utuh) dengan crawler bs4 aktif; port-verify 24/24 tetap lulus. E2E live
-service (venv): analisis a2dp 9 temuan HIGH score 53, TestActivity debuggable
-tertangkap, detail+meta tersimpan, laporan HTML CONFIDENTIAL & DOCX valid
-untuk scan mobile, log service bersih dari debug androguard.
+Verification: tests/test_mobile.py 24/24 (official androguard repo fixture APK
+with independently verified ground truth: TestActivity debuggable,
+a2dp.Vol permission/receive-SMS/backup/endpoint, repacked APK with AWS/
+Firebase markers, synthetic exported-rule units; a real bug found & fixed
+during testing: the URL regex melted neighboring DEX strings across \x00 —
+the charset is now limited to printable). Web smoke ALL PASS (41/41, SPA anti-FP
+intact) with the bs4 crawler active; port-verify 24/24 still passing. Live service E2E
+(venv): a2dp analysis 9 HIGH findings score 53, TestActivity debuggable
+caught, detail+meta stored, valid CONFIDENTIAL HTML report & DOCX
+for a mobile scan, service log clean of androguard debug output.
 
-Batas jujur: analisis mobile bersifat STATIS. Uji runtime/dinamis (Frida,
-interception dari perangkat/emulator) tidak termasuk dan tidak diklaim.
+Honest limit: mobile analysis is STATIC. Runtime/dynamic testing (Frida,
+interception from a device/emulator) is not included and not claimed.
 
-### Addendum v3.3.0 — tooling build (2026-10-16)
-Atas permintaan pemilik ditambahkan ke build: pytest 9.1.1, coverage 7.16.2,
+### Addendum v3.3.0 — build tooling (2026-10-16)
+At the operator's request, added to the build: pytest 9.1.1, coverage 7.16.2,
 hypothesis 6.170.0, defusedxml 0.7.1, psutil 7.2.2 (requirements.txt).
-- defusedxml dipakai beneran: manifest & XML tak tepercaya dari APK diparse
-  dengan defusedxml (anti XXE/billion-laughs terhadap analyzer itu sendiri).
-- psutil dipakai beneran: /api/stats kini memuat blok "system" (uptime app,
-  memori proses, CPU & memori host, jumlah job aktif) untuk dashboard.
-- Suite test kini pytest: 16 test lulus (unit mobile 5, port-verify 4,
-  property-based hypothesis 6 — invariant: matcher signature tidak pernah
-  crash pada bytes acak, masking secret tidak membocorkan bagian tengah,
-  banner interceptor selalu terdeteksi; wrapper smoke web 1). Coverage
-  terukur (unit): mobile.py 79%, scanners.py 40% — smoke web berjalan sebagai
-  subprocess sehingga baris vulnscan2/crawler yang ia latih tidak ikut
-  terhitung di angka ini.
+- defusedxml is genuinely used: untrusted manifests & XML from APKs are parsed
+  with defusedxml (anti XXE/billion-laughs against the analyzer itself).
+- psutil is genuinely used: /api/stats now carries a "system" block (app uptime,
+  process memory, host CPU & memory, active job count) for the dashboard.
+- The test suite is now pytest: 16 tests passing (mobile units 5, port-verify 4,
+  hypothesis property-based 6 — invariants: the signature matcher never
+  crashes on random bytes, secret masking never leaks the middle portion,
+  the interceptor banner is always detected; web smoke wrapper 1). Measured
+  coverage (unit): mobile.py 79%, scanners.py 40% — the web smoke runs as a
+  subprocess so the vulnscan2/crawler lines it exercises do not count
+  in this figure.
 
-## v3.4.0 — Akurasi Terukur (Battery Ground-Truth) + Dashboard Enterprise Lanjutan
-Permintaan pemilik: dashboard "industri besar" dan scanning "seakurat mungkin
-tanpa miss maupun bug". Catatan kejujuran: tidak ada scanner di dunia yang bisa
-menjamin NOL miss/NOL bug secara absolut — yang bisa dilakukan (dan dilakukan
-di versi ini) adalah MENGUKUR akurasi dengan ground-truth terkontrol dan
-memperbaiki setiap cacat yang pengukuran itu ungkap.
+## v3.4.0 — Measured accuracy (ground-truth battery) + advanced enterprise dashboard
+Operator request: an "industry-scale" dashboard and scanning "as accurate as possible
+with no misses and no bugs". Honesty note: no scanner in the world can
+guarantee ZERO misses/ZERO bugs absolutely — what can be done (and is done
+in this version) is to MEASURE accuracy with controlled ground truth and
+fix every defect that measurement reveals.
 
-### Battery ground-truth (tests/test_battery.py, masuk suite pytest)
-Fixture diperluas dua arah: kontrol POSITIF baru (/fetch SSRF oracle + file://,
-/echohdr CRLF, refleksi X-Forwarded-Host, /admin/login, mode FIXTURE_MODE=waf
-ala Cloudflare) dan kontrol NEGATIF endpoint patched /safe/* (search ter-escape,
-item prepared-statement, redirect tervalidasi, fetch allowlist). Battery
-menegaskan 43 kategori wajib tertangkap + nol temuan injeksi di /safe/* + WAF
-terdeteksi hanya di mode waf. Tiga cacat nyata ditemukan & diperbaiki:
-1. c_crlf_injection MATI TOTAL: payload dikirim sudah ter-encode (%0d%0a)
-   padahal req_param meng-quote ulang -> double-encode, CRLF tidak pernah
-   terkirim. Payload kini CRLF mentah. Check ini tidak pernah bisa menghasilkan
-   temuan sebelum perbaikan ini.
-2. param_targets memotong sumber secara tidak adil: limit diisi URL GET lebih
-   dulu sehingga form POST (termasuk endpoint XML untuk XXE) tidak pernah
-   teruji di situs ramai parameter. Kini gabungan round-robin antar sumber +
-   budget suite injeksi 14 -> 30; limit CRLF & error-disclosure 6 -> 14.
-3. Simulasi XXE fixture bersifat catch-all semua path (artefak fixture yang
-   menyamarkan FP begitu endpoint patched ada) -> kini hanya endpoint /xml.
-Hasil: battery hijau (71 temuan di fixture rentan, semua kategori tertangkap).
-Coverage terukur jujur (in-process): vulnscan2 82%, crawler 73%, mobile 79%,
-total suite 18 test pytest lulus.
+### Ground-truth battery (tests/test_battery.py, part of the pytest suite)
+The fixture was extended in both directions: new POSITIVE controls (/fetch SSRF oracle + file://,
+/echohdr CRLF, X-Forwarded-Host reflection, /admin/login, FIXTURE_MODE=waf
+in the style of Cloudflare) and NEGATIVE controls, patched /safe/* endpoints (escaped search,
+prepared-statement item, validated redirect, allowlist fetch). The battery
+asserts 43 mandatory categories caught + zero injection findings on /safe/* + WAF
+detected only in waf mode. Three real defects found & fixed:
+1. c_crlf_injection TOTALLY DEAD: the payload was sent already encoded (%0d%0a)
+   while req_param re-quotes -> double-encode, the CRLF was never
+   sent. The payload is now raw CRLF. This check could never produce a
+   finding before this fix.
+2. param_targets cut sources unfairly: the limit was filled by GET URLs
+   first so POST forms (including the XML endpoint for XXE) were never
+   tested on parameter-rich sites. Now a round-robin combination across sources +
+   the injection suite budget 14 -> 30; CRLF & error-disclosure limits 6 -> 14.
+3. The fixture XXE simulation was catch-all on every path (a fixture artifact
+   that masked FPs once patched endpoints existed) -> now only the /xml endpoint.
+Result: battery green (71 findings on the vulnerable fixture, all categories caught).
+Honestly measured coverage (in-process): vulnscan2 82%, crawler 73%, mobile 79%,
+total suite 18 pytest tests passing.
 
-### Dashboard enterprise lanjutan
-- /api/insights: kepatuhan SLA remediasi (CRITICAL 7 hari, HIGH 30, MEDIUM 90,
-  LOW 180 — overdue dihitung dari umur temuan & due date), MTTR per severity,
-  tren risk score per aset (grafik di dashboard + badge overdue di Findings).
-- Temuan: assignee + due date dapat diedit (POST /api/finding/update;
-  status_changed_at dicatat untuk MTTR).
-- Aset: kritikalitas (critical/high/medium/low) + owner per aset
+### Advanced enterprise dashboard
+- /api/insights: remediation SLA compliance (CRITICAL 7 days, HIGH 30, MEDIUM 90,
+  LOW 180 — overdue computed from finding age & due date), MTTR per severity,
+  risk score trend per asset (chart on the dashboard + overdue badge in Findings).
+- Findings: assignee + due date editable (POST /api/finding/update;
+  status_changed_at recorded for MTTR).
+- Assets: criticality (critical/high/medium/low) + owner per asset
   (POST /api/assets/meta, admin).
-- Webhook: URL diatur admin (settings); scan selesai -> POST JSON bila ada
-  temuan CRITICAL/HIGH BARU dibanding scan target sebelumnya (web, mobile,
-  maupun terjadwal).
-- API token: admin membuat token (ditampilkan sekali, disimpan sebagai hash
-  SHA-256); akses programatik via Authorization: Bearer ptk_...; dapat dicabut.
-Semua terverifikasi E2E live (token diterima/ditolak setelah cabut, webhook
-menerima 11 temuan kritis baru dari scan fixture, MTTR terhitung, data uji
-dibersihkan).
+- Webhook: URL set by admin (settings); scan completion -> POST JSON when there are
+  NEW CRITICAL/HIGH findings compared to the target's previous scan (web, mobile,
+  or scheduled).
+- API tokens: admin creates tokens (shown once, stored as a SHA-256
+  hash); programmatic access via Authorization: Bearer ptk_...; revocable.
+All verified live E2E (token accepted/rejected after revocation, webhook
+received 11 new critical findings from a fixture scan, MTTR computed, test data
+cleaned up).
 
-## v3.4.1 — Perbaikan FP WAF F5 + Laporan Standar Industri/HackerOne
-Insiden FP ketiga (dilaporkan pemilik dari pemakaian nyata): scan aplikasi
-GeneXus di balik nginx dituduh "WAF terdeteksi: F5 BIG-IP". Akar masalah
-terbukti dari byte target asli: pola F5 lama r"f5" cocok dengan substring "f5"
-di token hex acak GeneXus (gx_ajax_key "38ff6460ffff59ff..."). Perbaikan:
-signature WAF ditulis ulang sebagai indikator KUAT per vendor, terpisah header
-vs body (cookie BIGipServer/TS-ASM & header khas untuk F5; cf-ray untuk
-Cloudflare; x-amzn-trace-id ALB BUKAN lagi bukti AWS WAF; nama vendor telanjang
-di body dilarang), evidence kini mencatat indikator persisnya (header/snippet).
-Regresi terkunci tiga lapis: tests/test_waf.py (8 test, termasuk korpus
-GeneXus), jebakan token hex + nama vendor di fixture battery, dan verifikasi
-matcher pada byte live target pemilik -> None (FP hilang), sementara mode waf
-fixture tetap terdeteksi. Temuan FP di scan pemilik sudah ditandai
+## v3.4.1 — F5 WAF FP fix + industry/HackerOne-standard reports
+Third FP incident (reported from real use): a GeneXus application
+behind nginx was accused of "WAF detected: F5 BIG-IP". Root cause
+proven from the target's actual bytes: the old F5 pattern r"f5" matched the substring "f5"
+in a random GeneXus hex token (gx ajax_key "38ff6460ffff59ff..."). Fix:
+WAF signatures rewritten as STRONG per-vendor indicators, separated header
+vs body (BIGipServer/TS-ASM cookies & distinctive headers for F5; cf-ray for
+Cloudflare; x-amzn-trace-id ALB is NO LONGER evidence of AWS WAF; bare vendor
+names in the body are forbidden), evidence now records the exact indicator (header/snippet).
+Regression locked in three layers: tests/test_waf.py (8 tests, including the
+GeneXus corpus), hex-token + vendor-name traps in the battery fixture, and matcher
+verification on the live target's bytes -> None (FP gone), while the fixture waf
+mode is still detected. The FP finding in the affected scan has been marked
 false_positive.
-Laporan (report.py + docx_report.py + modul bersama report_common.py) naik ke
-standar industri/platform: vektor CVSS v3.1 representatif per CWE di setiap
-temuan, Langkah Reproduksi gaya HackerOne, kerangka PoC request, dampak
-spesifik per kelas CWE, referensi (CWE/WSTG/FIRST), matriks risiko di
-executive summary (kedua format), Document Control + riwayat versi +
-distribusi, Appendix C berisi blok submisi HackerOne/Bugcrowd-ready per
-temuan; DOCX kini punya header klasifikasi & footer nomor halaman (PAGE/
-NUMPAGES) serta field Daftar Isi Word yang sesungguhnya. Terverifikasi:
-tests/test_reports.py (struktur + validitas OOXML semua part) dan ekspor
-laporan nyata dari scan pemilik dalam dua format.
+Reports (report.py + docx_report.py + shared module report_common.py) raised to
+industry/platform standard: representative CVSS v3.1 vector per CWE on every
+finding, HackerOne-style Reproduction Steps, PoC request skeleton, per-CWE-class
+specific impact, references (CWE/WSTG/FIRST), risk matrix in the
+executive summary (both formats), Document Control + version history +
+distribution, Appendix C containing a HackerOne/Bugcrowd-ready submission block per
+finding; the DOCX now has a classification header & page-number footer (PAGE/
+NUMPAGES) and a real Word Table of Contents field. Verified:
+tests/test_reports.py (structure + OOXML validity of all parts) and real report
+exports from a production scan in both formats.
 
-## v3.5.0 — WAF perilaku (anti-tebakan) + Profiler Teknologi & Integrasi
-Permintaan pemilik: (1) "WAF-nya jangan tebak-tebakan" — deteksi WAF ditulis
-ulang menjadi uji PERILAKU: payload serangan (XSS/SQLi/LFI) dan kontrol jinak
-dikirim ke path hantu yang pasti tidak ada di aplikasi; WAF dinyatakan
-TERKONFIRMASI hanya bila >=2 kelas serangan diblokir DAN semua kontrol lolos
-(bukti differential blocking). Nama vendor kini hanya "indikasi" terpisah
-(prob probable) dari artefak khas vendor, tidak pernah menjadi dasar klaim
-keberadaan WAF. Verdict adalah fungsi murni ter-unit-test. Fixture mode waf
-disesuaikan: pola blokir spesifik (WAF asli tidak memblokir tanda baca tunggal).
-(2) "Scan bisa lihat dari URL terinstall & terintegrasi aplikasi apa saja" —
-modul techdb.py: database signature teknologi buatan sendiri (80+ entri)
-memetakan artefak respons (header, nama cookie, HTML, src script) ke Web
-Server, Runtime, Framework, CMS, E-commerce, Library/Framework JS, UI,
-Analytics, Tag Manager, Chat/Support, Payment (termasuk Midtrans, Xendit,
-DOKU), CAPTCHA, Auth/SSO (Keycloak, Auth0, Firebase, Supabase), Peta, Media —
-tiap deteksi membawa evidence. Hasil mengalir ke temuan ringkasan INFO, field
-tech_profile hasil scan, panel detail dashboard (chip per kategori + tooltip
-bukti), tabel Profil Teknologi di laporan DOCX/HTML, dan tetap menjadi sumber
-kandidat CVE. Aturan anti-FP berlaku juga di sini: petunjuk lemah bukan klaim
-(GeneXus menuntut cookie GXSESSION / JSON "gx ajax_key" / teks GeneXus —
-token hex acak saja tidak cukup).
-Verifikasi: suite 38 test hijau (verdict perilaku 4 skenario, profiler 6
-test, battery memuat assert profiler + nol tuduhan WAF di fixture bersih).
-Bukti live pada aplikasi UAT pemilik sendiri: profiler membaca GeneXus
-(bukti "GX_AJAX_KEY"), Java Servlet (cookie JSESSIONID), nginx — persis
-stack aslinya; uji WAF perilaku: 0/3 serangan diblokir, 0 kontrol terblokir,
-tanpa artefak vendor -> TIDAK ADA temuan WAF (diam, bukan menebak).
+## v3.5.0 — Behavioral WAF (anti-guessing) + Technology & Integration Profiler
+Operator requirements: (1) "the WAF must not be guessed" — WAF detection
+rewritten as a BEHAVIOR test: attack payloads (XSS/SQLi/LFI) and benign controls
+are sent to a ghost path that certainly does not exist in the application; a WAF is declared
+CONFIRMED only when >=2 attack classes are blocked AND all controls pass
+(differential blocking evidence). Vendor names are now only a separate "indication"
+(prob probable) from distinctive vendor artifacts, never the basis for claiming
+the existence of a WAF. The verdict is a pure unit-tested function. The fixture waf mode
+was adjusted: specific blocking patterns (a real WAF does not block single punctuation marks).
+(2) "A scan can see from a URL what applications are installed & integrated" —
+module techdb.py: a self-built technology signature database (80+ entries)
+mapping response artifacts (headers, cookie names, HTML, script src) to Web
+Server, Runtime, Framework, CMS, E-commerce, JS Library/Framework, UI,
+Analytics, Tag Manager, Chat/Support, Payment (including Midtrans, Xendit,
+DOKU), CAPTCHA, Auth/SSO (Keycloak, Auth0, Firebase, Supabase), Maps, Media —
+each detection carries evidence. Results flow into an INFO summary finding, the
+tech_profile field of the scan result, the dashboard detail panel (chips per category + evidence
+tooltips), the Technology Profile table in DOCX/HTML reports, and remain the source
+of CVE candidates. The anti-FP rule applies here too: weak hints are not claims
+(GeneXus requires the GXSESSION cookie / "gx ajax_key" JSON / GeneXus text —
+a random hex token alone is not enough).
+Verification: suite 38 tests green (behavior verdict 4 scenarios, profiler 6
+tests, battery carries profiler assertions + zero WAF accusations on the clean fixture).
+Live proof on the internal UAT application itself: the profiler read GeneXus
+(evidence "GX_AJAX_KEY"), Java Servlet (JSESSIONID cookie), nginx — exactly
+its real stack; behavioral WAF test: 0/3 attacks blocked, 0 controls blocked,
+no vendor artifacts -> NO WAF finding (silence, not guessing).
 
-## v3.5.1 — Laporan format formal standar internasional
-Atas penilaian pemilik ("dokumen laporannya jelek"), kedua generator ditulis
-ulang tampilannya (isi & struktur data tidak berubah): gaya firma keamanan
-profesional — halaman sampul resmi dengan pita klasifikasi atas/bawah dan
-tabel meta, Document Control + tabel Version History terpisah, daftar isi
-(anchor di HTML; field TOC Word dengan Heading1/Heading2 bernomor di DOCX),
-heading seksi bernomor dengan garis navy, tabel header navy + zebra striping,
-detail temuan sebagai sub-bab bernomor 4.N dengan sub-judul baku
-(Description/Evidence/Langkah Reproduksi/Proof of Concept/Impact/
-Remediation/References), blok evidence & PoC monospace ber-shading terang
-(ramah cetak), header berjalan + footer nomor halaman, palet warna formal
-yang diredam, dan TANPA emoji/dekorasi non-formal di dokumen (confidence &
-status kini teks polos: Confirmed/Probable/Candidate, Open/Fixed/False
-Positive). HTML siap cetak A4 dengan @page margin boxes (header/footer +
-"Page X of Y", sampul tanpa nomor halaman).
-QA visual nyata: laporan dari scan mobile pemilik dirender via LibreOffice —
-sampul bersih formal, Document Control & Matriks Risiko rapi, 12 halaman;
-tests/test_reports.py kini juga mengunci ketiadaan emoji & penanda formal.
+## v3.5.1 — Formal report format to international standard
+Per the operator's assessment ("the report document looks poor"), both generators were
+rewritten in appearance (content & data structure unchanged): professional security-firm
+style — an official cover page with top/bottom classification bands and
+a meta table, Document Control + a separate Version History table, a table of
+contents (anchors in HTML; a Word TOC field with numbered Heading1/Heading2 in DOCX),
+numbered section headings with navy rules, navy table headers + zebra striping,
+finding details as numbered sub-chapters 4.N with standard sub-headings
+(Description/Evidence/Reproduction Steps/Proof of Concept/Impact/
+Remediation/References), lightly shaded monospace evidence & PoC blocks
+(print-friendly), a running header + page-number footer, a muted formal color
+palette, and NO emoji/non-formal decoration in the document (confidence &
+status are now plain text: Confirmed/Probable/Candidate, Open/Fixed/False
+Positive). Print-ready A4 HTML with @page margin boxes (header/footer +
+"Page X of Y", cover without page number).
+Real visual QA: a report from a production mobile scan was rendered via LibreOffice —
+clean formal cover, tidy Document Control & Risk Matrix, 12 pages;
+tests/test_reports.py now also locks the absence of emoji & the formal markers.
 
-## v3.5.2 — Tampilan web formal enterprise
-Permintaan pemilik: tampilan web dirapikan menjadi resmi formal. Dashboard
-service (templates/app.html + login.html) dirombak dari tema gelap
-indigo/violet bergradien menjadi tema TERANG formal yang selaras dengan
-bahasa desain laporan v3.5.1: latar #E9EDF2, panel putih, aksen navy
-#16365C, severity diredam (#9B2226/#C05621/#975A16/#4A5568/#2B6CB0), border
-#D8DEE7, radius kecil, tanpa gradien sama sekali, dan seluruh emoji pada
-navigasi/kartu/tombol/label disapu bersih (logo menjadi monogram "PT" navy;
-ikon severity pada kartu statistik menjadi titik tipografis berwarna).
-Konsol log scan/mobile kini blok terang monospace. Halaman login: kartu
-putih dengan garis atas navy, label uppercase, footer "CONFIDENTIAL —
-AUTHORIZED ACCESS ONLY". Fungsi & alur tidak berubah — murni visual.
-Terverifikasi live: login & dashboard tersaji dengan palet baru, nol
-piktogram, nol gradien. Artifact tab chat diselaraskan builder dengan
-bahasa desain yang sama.
+## v3.5.2 — Formal enterprise web appearance
+Operator request: the web appearance tidied into a formal official style. The service
+dashboard (templates/app.html + login.html) was overhauled from a gradient indigo/violet dark
+theme into a formal LIGHT theme aligned with the v3.5.1 report design language:
+background #E9EDF2, white panels, navy accent
+#16365C, muted severities (#9B2226/#C05621/#975A16/#4A5568/#2B6CB0), border
+#D8DEE7, small radii, no gradients at all, and every emoji across
+navigation/cards/buttons/labels swept clean (the logo became a navy "PT" monogram;
+severity icons on statistic cards became colored typographic dots).
+The scan/mobile log console is now a light monospace block. Login page: a white
+card with a navy top rule, uppercase labels, footer "CONFIDENTIAL —
+AUTHORIZED ACCESS ONLY". Functions & flows unchanged — purely visual.
+Verified live: login & dashboard served with the new palette, zero
+pictograms, zero gradients. The chat artifact tab was aligned by the builder with
+the same design language.
 
-## v3.6.0 — Detail tampilan, transparansi akurasi, hardening keamanan
-1. Tampilan detail lebih kaya: halaman detail scan (dashboard + artifact)
-   kini menampilkan Metadata Scan (profil, durasi, check dijalankan,
-   total request HTTP, jumlah diblokir 403/429, distribusi kode status)
-   dan tabel lipat "Cakupan Check" per modul.
-2. Akurasi & transparansi: engine mencatat checks_detail (nama check,
-   status ok/error/cancelled, jumlah temuan, durasi) ke hasil scan;
-   endpoint detail mengeksposnya lewat objek engine. Battery mengunci
-   kelengkapannya (41/41 tercatat, semua ok di fixture). Audit recon
-   memastikan yang diduga lemah ternyata sudah kuat: SQLi time-based
-   memakai median 3 sampel + konfirmasi ganda; mining endpoint JS sudah
-   ter-wire (DOM XSS/discovery/API); analisis JWT terverifikasi menembak
-   di fixture ("JWT HMAC secret lemah", "JWT tanpa klaim exp").
-3. Keamanan aplikasi diperketat: batas ukuran body per route (413 —
-   JSON 2 MB, analisis APK 100 MB) menutup celah memory-exhaustion;
-   CSP ditambah frame-ancestors 'none', object-src 'none', base-uri,
-   form-action; header Referrer-Policy: no-referrer dan Permissions-Policy;
-   Cache-Control: no-store pada semua respons JSON API. Baseline yang
-   sudah kuat dipertahankan: PBKDF2 200k + compare_digest + dummy-hash,
-   cookie HttpOnly SameSite=Strict, throttle login 5x/300 dtk -> kunci
-   60 dtk (429), audit login_failed. tests/test_security.py (server uji
-   terisolasi) mengunci semua perilaku di atas; suite penuh 42 hijau.
+## v3.6.0 — Detail appearance, accuracy transparency, security hardening
+1. Richer detail appearance: the scan detail page (dashboard + artifact)
+   now shows Scan Metadata (profile, duration, checks run,
+   total HTTP requests, number blocked 403/429, status code distribution)
+   and a collapsible "Check Coverage" table per module.
+2. Accuracy & transparency: the engine records checks_detail (check name,
+   ok/error/cancelled status, finding count, duration) into the scan result;
+   the detail endpoint exposes it via the engine object. The battery locks
+   its completeness (41/41 recorded, all ok on the fixture). A recon audit
+   confirmed what was suspected weak was already strong: time-based
+   SQLi uses a median of 3 samples + double confirmation; JS endpoint mining is already
+   wired (DOM XSS/discovery/API); JWT analysis verified firing
+   on the fixture ("weak JWT HMAC secret", "JWT without exp claim").
+3. Application security tightened: per-route body size limits (413 —
+   JSON 2 MB, APK analysis 100 MB) close the memory-exhaustion gap;
+   CSP gained frame-ancestors 'none', object-src 'none', base-uri,
+   form-action; Referrer-Policy: no-referrer and Permissions-Policy headers;
+   Cache-Control: no-store on all API JSON responses. The baseline that
+   was already strong is retained: PBKDF2 200k + compare_digest + dummy-hash,
+   HttpOnly SameSite=Strict cookies, login throttle 5x/300 s -> 60 s lock
+   (429), login_failed audit. tests/test_security.py (isolated test
+   server) locks all of the above behavior; full suite 42 green.
 
-## v3.7.0 — Expert depth + UI interaktif modern
-Engine (43 check di enterprise-full):
-- Verifikasi aktif teknologi: stack terdeteksi techdb dibuktikan via probe
-  endpoint khas (WordPress /wp-json/, Drupal /jsonapi, Joomla manifest,
-  Magento /magento_version) — entri tech_profile mendapat flag verified +
-  evidence "terverifikasi aktif via ..." dan versi hasil ekstraksi.
-- c_jwt_forgery (baru): baseline endpoint identitas menerima token asli &
-  memantulkan klaim identitas; lalu dua pemalsuan diuji — alg=none dan
-  re-sign dengan secret wordlist. Pantulan identitas palsu = CRITICAL
-  confirmed; endpoint ketat diam (kontrol negatif battery: /api/profile).
-- c_websocket_surface (baru): URL ws(s) dari crawler (HTML/JS) dibuktikan
-  dengan handshake (101 + Sec-WebSocket-Accept valid); Origin asing yang
-  tetap diterima -> indikasi CSWSH (probable).
-- c_ssrf diperdalam: semua vektor dibuktikan per parameter (file://,
-  metadata cloud, fetch internal) di hingga 6 parameter URL; perbaikan
-  starvation nyata — limit dinaikkan 14 -> 40 karena /fetch?url= kelaparan
-  di belakang parameter lain (akar "SSRF metadata tidak pernah menembak").
-- Battery: 48 kategori wajib + kontrol negatif forgery + assert verified.
+## v3.7.0 — Expert depth + modern interactive UI
+Engine (43 checks in enterprise-full):
+- Active technology verification: stacks detected by techdb are proven via distinctive
+  endpoint probes (WordPress /wp-json/, Drupal /jsonapi, Joomla manifest,
+  Magento /magento_version) — tech_profile entries gain a verified flag +
+  "actively verified via ..." evidence and an extracted version.
+- c_jwt_forgery (new): an identity endpoint baseline accepts the genuine token &
+  reflects identity claims; then two forgeries are tested — alg=none and
+  re-signing with a wordlist secret. Reflected forged identity = confirmed CRITICAL;
+  strict endpoints stay silent (battery negative control: /api/profile).
+- c_websocket_surface (new): ws(s) URLs from the crawler (HTML/JS) are proven
+  with a handshake (101 + valid Sec-WebSocket-Accept); a foreign Origin still
+  accepted -> CSWSH indication (probable).
+- c_ssrf deepened: all vectors proven per parameter (file://,
+  cloud metadata, internal fetch) on up to 6 URL parameters; a real starvation
+  fix — the limit raised 14 -> 40 because /fetch?url= starved
+  behind other parameters (the root of "SSRF metadata never fired").
+- Battery: 48 mandatory categories + forgery negative control + verified assertions.
 UI:
-- Mode gelap on/off persisten (localStorage) di dashboard & login —
-  palet navy gelap formal via variabel tema yang sama.
-- Log live menjadi terminal CMD: jendela gelap, tiga titik jendela,
-  judul root@pentest-toolkit, pewarnaan baris per severity/status,
-  tombol Jeda/Salin, progress bar dari penanda [i/n].
-- Chip filter severity yang bisa diklik di detail temuan (bersama filter teks).
-Bug laten ditemukan & diperbaiki: baris cookie pada fungsi bulk scan
-mengandung literal tak valid yang membuat blok script dashboard gugur
-(node --check kini hijau untuk semua blok; bulk scan pulih).
+- Persistent dark mode on/off (localStorage) on dashboard & login —
+  a formal dark navy palette via the same theme variables.
+- The live log becomes a CMD terminal: dark window, three window dots,
+  title root@pentest-toolkit, per-severity/status line coloring,
+  Pause/Copy buttons, a progress bar from [i/n] markers.
+- Clickable severity filter chips in finding detail (together with the text filter).
+Latent bug found & fixed: the cookie row in the bulk scan function
+contained an invalid literal that made the dashboard script block collapse
+(node --check is now green for all blocks; bulk scan recovered).
 
 ## v3.8.0 — Full-stack detection from a single URL
-ADE's requirement: scanning one URL must detect everything running behind
+Design requirement: scanning one URL must detect everything running behind
 it — database, framework, API, everything.
 - techdb grows 78 -> 94 signatures. New category **Database** (MySQL,
   MariaDB, PostgreSQL, Microsoft SQL Server, Oracle, SQLite, MongoDB) —
@@ -446,7 +446,7 @@ it — database, framework, API, everything.
   path), Midtrans + Stripe, Apache 2.4.49 — all from one URL.
 
 ## v3.9.0 — All features in English
-Per ADE's instruction, every user-facing string in the product is now
+By decision, every user-facing string in the product is now
 English: dashboard UI + login, HTML/DOCX reports (incl. steps/impact/
 references generated by report_common), engine finding titles/descriptions/
 remediation, engine log lines, mobile (MASVS) findings, and API messages.
@@ -498,7 +498,7 @@ remediation, engine log lines, mobile (MASVS) findings, and API messages.
   English in every language.
 
 ## v3.13.0 — PREREQ Phase 1: passive recon pack + governance hardening (2026-10-16)
-- Libraries added (owner PREREQ list): packaging (precise PEP 440 version
+- Libraries added (the PREREQ list): packaging (precise PEP 440 version
   comparison in the outdated-library check), certifi (verified TLS for public
   API lookups), dnspython (precise DNS records), Pillow (EXIF extraction);
   dev-only: pip-audit + pip-tools. Baseline pip-audit of the shared venv:
@@ -519,7 +519,7 @@ remediation, engine log lines, mobile (MASVS) findings, and API messages.
   Phase 3 (queued): sandboxed APK/IPA parsing, encrypted secrets management,
   optional systemd supervision.
 
-## v3.14.0 — stdlib adoption pass (owner's module list, 2026-10-16)
+## v3.14.0 — stdlib adoption pass (module list, 2026-10-16)
 Audit first (grep-verified): most listed modules were already in use
 (socket, ssl, http.client, urllib.parse/request, ipaddress, threading,
 concurrent.futures, re, html, xml.etree via defusedxml, json, plistlib,
@@ -734,7 +734,7 @@ and fixed three real bugs plus two authorization hardenings:
 
 ## v1.0.0 — Phase 4 + version renumbering (2026-10-17)
 
-At ADE's instruction the release numbering restarts at **1.0.0**; this
+By decision the release numbering restarts at **1.0.0**; this
 release is the Phase 4 build (internally the successor of 3.18.1).
 Contents: (1) the Phase 3 canary is now wired into the engine — check
 `c_blind_oob` plants unique tokens for blind SSRF (URL params) and blind
@@ -759,7 +759,7 @@ check fails the suite.
 
 ## v1.1.0 — Deep Integration Inventory + per-component CVE (2026-10-17)
 
-At ADE's request ("see everything integrated into a URL — DB, API, web
+On request ("see everything integrated into a URL — DB, API, web
 server, deployment tools — with in-depth version explanations and a CVE
 check for every integrated software"), the technology profiler becomes a
 full integration inventory:
@@ -793,16 +793,16 @@ CVE-2015-9251/11358, WordPress CVE-2022-21661).
 
 
 ## v1.6.0 — Rebranding: VANTHEX (2026-10-17)
-Produk berganti nama dari "Pentest Toolkit" menjadi **VANTHEX — Offensive Security Platform** (tagline: Discover. Validate. Remediate.; sub-brand: Vulnerability Intelligence & Security Assessment). Seluruh branding publik diganti: template login/app (title, brand, favicon shield crimson + meta), header Server, laporan HTML/DOCX, nama file laporan (vanthex_report_*), User-Agent scanner diseragamkan "VANTHEX/1.6.0", CLI prog "vanthex", README/INSTALL, deskripsi unit systemd, dan label modul (Security Dashboard, Assets Management, Vulnerability Findings, Mobile Application Testing, Audit Logs, Scan Schedules, System Settings). Yang SENGAJA dipertahankan demi kompatibilitas (§7.5 brief): nama event webhook "pentest_scan_completed", kunci localStorage "ptk-*", nama file DB, slug artifact, nama direktori, docstring header internal, dan catatan historis ini. Catatan i18n service: judul view yang berganti nama belum memiliki kunci terjemahan di 11 bahasa non-Inggris sehingga judul tersebut tampil dalam bahasa Inggris pada UI non-Inggris (nama produk tidak diterjemahkan). Suite penuh setelah rebrand: 97/97.
+The product was renamed from "Pentest Toolkit" to **VANTHEX — Offensive Security Platform** (tagline: Discover. Validate. Remediate.; sub-brand: Vulnerability Intelligence & Security Assessment). All public branding was changed: login/app templates (title, brand, crimson shield favicon + meta), the Server header, HTML/DOCX reports, report file names (vanthex_report_*), the scanner User-Agent standardized to "VANTHEX/1.6.0", the CLI prog "vanthex", README/INSTALL, the systemd unit description, and module labels (Security Dashboard, Assets Management, Vulnerability Findings, Mobile Application Testing, Audit Logs, Scan Schedules, System Settings). Deliberately retained for compatibility (per §7.5 of the brief): the webhook event name "pentest_scan_completed", the "ptk-*" localStorage keys, the DB file name, the artifact slug, the directory name, internal header docstrings, and these historical notes. Service i18n note: the renamed view titles do not yet have translation keys in the 11 non-English languages, so those titles appear in English on non-English UIs (product names are not translated). Full suite after the rebrand: 97/97.
 
 ## v1.7.0 — Master Redesign: premium enterprise (2026-10-17)
-Mengikuti master prompt + gambar referensi VANTHEX dari ADE: sistem token terpusat (dark bg #070B12, sidebar #090E16, card #0D1520, elevated #111B29, primer #FF4148/#D92736, teks #F4F7FB/#98A7BA, border #202D3D, sukses #22C993, warning #FFAA3D, info #43B7F5). Lapisan teatrikal HUD (scanlines, sweep, bracket, glitch, chamfer, radar, ticker) DICABUT dari service (PREMIUM PASS) dan artifact; kartu rounded 12px, glow minimal. Dashboard artifact mengikuti komposisi referensi dengan DATA ASLI saja: banner welcome memakai username sesi nyata, KPI riil, trend (rentang 7D/14D sesuai seri 14 hari yang benar-benar disediakan service — bukan 30D/90D karangan), donut severity, kartu modul ber-rute nyata, Recent Scans, Top Vulnerabilities, rail Recent Activity (event asli saja), Quick Actions, kartu Engine Health live. New Scan menjadi wizard 5 langkah dengan payload API identik dan gerbang otorisasi yang sama. Halaman Threat Intelligence/Risk Scoring TIDAK dibuat (view tidak ada — sesuai §4 master prompt); kartu Manual Exploitation diganti modul nyata. DB 0 scan saat rilis: dashboard menampilkan nol + empty state jujur.
+Following the master prompt + the provided VANTHEX reference images: a centralized token system (dark bg #070B12, sidebar #090E16, card #0D1520, elevated #111B29, primary #FF4148/#D92736, text #F4F7FB/#98A7BA, border #202D3D, success #22C993, warning #FFAA3D, info #43B7F5). The theatrical HUD layers (scanlines, sweep, brackets, glitch, chamfer, radar, ticker) were REMOVED from the service (PREMIUM PASS) and the artifact; cards rounded 12px, minimal glow. The artifact dashboard follows the reference composition with REAL DATA only: the welcome banner uses the actual session username, real KPIs, trend (7D/14D ranges matching the 14-day series the service genuinely provides — not fabricated 30D/90D), severity donut, module cards with real routes, Recent Scans, Top Vulnerabilities, a Recent Activity rail (real events only), Quick Actions, a live Engine Health card. New Scan became a 5-step wizard with an identical API payload and the same authorization gate. The Threat Intelligence/Risk Scoring pages were NOT created (the views do not exist — per §4 of the master prompt); the Manual Exploitation card was replaced with a real module. DB had 0 scans at release: the dashboard shows zero + an honest empty state.
 
-## v1.8.0 — Scan reliability: skema dibuktikan, preflight fail-fast, budget & cache aman (2026-10-18)
-Dipicu keluhan ADE: scan UAT 2067s tanpa hasil, hasil antar-scan berbeda, framework tidak terdeteksi. Akar masalah terverifikasi dari data: target disimpan TANPA skema ("uatgadaiemas.devoutsys.com/DepoEmasMaster/login") dan parser lama menebak http:// (port 80 — dari luar tertutup; terukur timeout 10.5s), sementara https 443 menjawab 200 dalam 1.16s. Perbaikan: (1) netclient.resolve_scheme_target() membuktikan skema dengan probe ringan (https dulu, fallback http); target efektif tercatat di hasil (effective_target) dan disimpan sebagai target scan. (2) Preflight fail-fast untuk profil aktif: target yang tidak merespons satu pun request dihentikan dalam hitungan detik dengan temuan INFO "Target unreachable — scan aborted early" + peringatan INCONCLUSIVE (bukan vonis bersih). (3) Budget waktu: per-check 600s (status "timeout" transparan di checks_detail) + budget total 1800s (check sisa "skipped"). (4) Cache respons GET per-scan DENGAN dua pagar yang lahir dari regresi battery: request bervariasi header tidak pernah dilayani dari cache, dan URL yang pernah diminta dengan header menjadi "tainted" (entri dibuang, tidak di-cache lagi) — tanpa pagar ini verifikasi cache-poisoning membaca snapshot sebelum-diracuni dan deteksinya mati; pagar dikunci tests/test_scan_reliability.py. (5) Budget tidur backoff kumulatif 90s/scan (sebelumnya scan fixture terukur tidur 265s — sumber durasi acak). (6) Urutan surface crawl di-sort sebelum cap: subset yang diuji deterministik. Verifikasi: battery penuh hijau (recall 50/50, FP 0), test reliability 5/5 termasuk dua scan identik -> temuan & tech persis sama, dan target mati abort <30s.
+## v1.8.0 — Scan reliability: proven scheme, preflight fail-fast, safe budget & cache (2026-10-18)
+Triggered by a field complaint: a UAT scan ran 2067s without results, results differed between scans, and the framework was not detected. Root cause verified from the data: the target was stored WITHOUT a scheme ("uatgadaiemas.devoutsys.com/DepoEmasMaster/login") and the old parser guessed http:// (port 80 — closed externally; measured timeout 10.5s), while https 443 answered 200 in 1.16s. Fixes: (1) netclient.resolve_scheme_target() proves the scheme with a light probe (https first, http fallback); the effective target is recorded in the result (effective_target) and stored as the scan target. (2) Preflight fail-fast for active profiles: a target that responds to no request at all is stopped within seconds with an INFO finding "Target unreachable — scan aborted early" + an INCONCLUSIVE warning (not a clean verdict). (3) Time budget: per-check 600s ("timeout" status transparent in checks_detail) + total budget 1800s (remaining checks "skipped"). (4) Per-scan GET response cache WITH two guards born from a battery regression: header-varying requests are never served from cache, and a URL ever requested with headers becomes "tainted" (its entries are dropped, never cached again) — without these guards the cache-poisoning verification read the pre-poison snapshot and the detection died; the guards are locked by tests/test_scan_reliability.py. (5) Cumulative backoff sleep budget 90s/scan (previously a fixture scan measurably slept 265s — a source of random durations). (6) The crawl surface order is sorted before the cap: the tested subset is deterministic. Verification: full battery green (recall 50/50, FP 0), reliability tests 5/5 including two identical scans -> exactly the same findings & tech, and a dead target aborting <30s.
 
-## v1.9.0 — Delete aset (2026-10-18)
-Menjawab pertanyaan ADE "kenapa di aset management gada tombol hapus?": aset bukan record mandiri — daftar aset adalah agregasi tabel scans per target (store.assets_summary), dan selama ini memang tidak ada jalur hapus aset di backend maupun UI (yang ada hanya edit meta criticality/owner + hapus per-scan di Scan History). Ditambahkan store.delete_asset(host): satu transaksi menghapus semua scan target itu + findings-nya + baris asset_meta + suppression host-nya (kunci target persis dan host-nya); vault target_secrets SENGAJA tidak disentuh (entri independen yang dikelola dari Settings). Endpoint POST /api/assets/delete (admin-only, audit "asset_delete" berisi hitungan) + tombol Delete per baris di Assets Management (service UI memakai confirmDialog yang sama dengan delete lain; artifact menyusul pola yang sama). Test: tests/test_assets_delete.py (kaskade hanya target itu; aset lain + data lain utuh; host tak dikenal -> hitungan nol). Terverifikasi live end-to-end dengan aset sintetis yang dibersihkan oleh endpoint itu sendiri.
+## v1.9.0 — Asset deletion (2026-10-18)
+Answering the question "why is there no delete button in Asset Management?": an asset is not an independent record — the asset list is an aggregation of the scans table per target (store.assets_summary), and until now there was simply no asset deletion path in the backend or the UI (only criticality/owner meta editing + per-scan deletion in Scan History). Added store.delete_asset(host): one transaction deletes all of that target's scans + their findings + the asset_meta row + its host suppressions (exact target key and its host); the vault target_secrets are DELIBERATELY untouched (independent entries managed from Settings). Endpoint POST /api/assets/delete (admin-only, "asset_delete" audit with counts) + a Delete button per row in Assets Management (the service UI uses the same confirmDialog as other deletes; the artifact follows the same pattern). Tests: tests/test_assets_delete.py (cascade only for that target; other assets + other data intact; unknown host -> zero counts). Verified live end-to-end with a synthetic asset cleaned up by the endpoint itself.
 
 ## v1.10.0 — Complex vulnerability coverage (2026-10-18)
 Four new evidence-first checks (50 checks in enterprise-full), each locked
@@ -870,90 +870,112 @@ layered-shadow CSS. No backend, route, payload or data changes.
 
 ## v1.15.0 — Accuracy overhaul (2026-10-19)
 
-Dipicu audit ADE atas scan ports/subdomains miliknya sendiri yang "ngaco".
-Akar masalahnya posisi jaringan VM ini, dan sekarang engine menanganinya
-secara jujur di semua jalur:
+Triggered by an audit of the operator's own ports/subdomains scans, which were "wrong".
+The root cause is this VM's network position, and the engine now handles it
+honestly on every path:
 
-- **Ports**: egress TCP terintercept gateway sandbox (banner `muse:`) —
-  hasil connect mentah TIDAK lagi disimpan sebagai port terbuka. Bila
-  interception terdeteksi: `open_ports` dikosongkan + 1 finding INFO
-  "Port scan inconclusive". (Sebelumnya: 50 port palsu tersaji.)
-- **Subdomains**: resolver sistem VM ini sintetis (IP fake 198.18.0.0/15
-  untuk nama apa pun, terbukti untuk nama yang mustahil ada). Enumerasi
-  sekarang memakai DNS-over-HTTPS (Cloudflare/Google) + gerbang wildcard;
-  resolver sistem hanya fallback bila terbukti sehat; bila tidak ada jalur
-  tepercaya -> inconclusive, bukan daftar palsu. (Sebelumnya: 51 nama palsu.)
-- **Dirs/Headers**: dulu direct-socket + tebak skema http (0 hasil pada
-  target https). Sekarang lewat netclient sadar-proxy, skema DIBUKTIKAN
-  via probe, dan http_probe punya baseline soft-404 (shell SPA ditandai
-  catch_all dan disaring dari hits). Target tak terjangkau = inconclusive.
-- **SSL/TLS**: audit + cipher enum sekarang lewat tunnel HTTP CONNECT
-  (bukan direct yang terintercept) dan parsing sertifikat memakai form
-  DER via cryptography bila getpeercert teks kosong (bug laten: subject/
-  issuer/SAN kosong). c_tls di vulnscan ikut sembuh ("TLS could not be
-  audited" hilang pada target yang TLS-nya sehat).
-- **UDP**: resolusi target via DoH + tolak IP sintetis (inconclusive bila
-  tidak ada jalur tepercaya); validasi respons DNS diperketat (TXID cocok,
-  RCODE 0, ANCOUNT >= 1) dan respons yang gagal validasi protokol turun ke
-  open|filtered "unverified response", bukan "open". (Sebelumnya: respons
-  error 29B dari perantara diklaim "dns open".)
-- **Passive**: fallback DNS A/AAAA sekarang DoH-first + saring IP sintetis.
-- **Output engine full English**: 25 string log/evidence runtime yang masih
-  berbahasa Indonesia diterjemahkan (aturan ADE 2026-10-16).
-- Test: +13 test kejujuran transport/DNS/port (tests/test_transport_honesty.py,
-  tests/test_dns_ports_honesty.py). Bukti live ke UAT ADE: ports inconclusive
-  bersih, subdomains 0 (sesuai ground truth DoH), ssl subject asli terbaca
-  (CN=uatgadaiemas.devoutsys.com, TLSv1.3), headers score 67 konsisten
-  dengan vulnscan, udp 53 open|filtered jujur.
+- **Ports**: TCP egress is intercepted by the sandbox gateway (the `muse:` banner) —
+  raw connect results are NO LONGER stored as open ports. When
+  interception is detected: `open_ports` is emptied + 1 INFO finding
+  "Port scan inconclusive". (Previously: 50 fake ports were presented.)
+- **Subdomains**: this VM's system resolver is synthetic (fake IPs in 198.18.0.0/15
+  for any name whatsoever, proven for names that cannot exist). Enumeration
+  now uses DNS-over-HTTPS (Cloudflare/Google) + a wildcard gate;
+  the system resolver is only a fallback when proven healthy; when no trusted
+  path exists -> inconclusive, not a fake list. (Previously: 51 fake names.)
+- **Dirs/Headers**: previously direct-socket + a guessed http scheme (0 results on
+  https targets). Now via the proxy-aware netclient, the scheme is PROVEN
+  by probe, and http_probe has a soft-404 baseline (SPA shells are marked
+  catch_all and filtered from hits). Unreachable targets = inconclusive.
+- **SSL/TLS**: the audit + cipher enumeration now go through an HTTP CONNECT tunnel
+  (not the intercepted direct path) and certificate parsing uses the DER
+  form via cryptography when the text getpeercert is empty (a latent bug: subject/
+  issuer/SAN empty). c_tls in vulnscan healed along with it ("TLS could not be
+  audited" gone on targets with healthy TLS).
+- **UDP**: target resolution via DoH + synthetic-IP rejection (inconclusive when
+  no trusted path exists); DNS response validation tightened (TXID match,
+  RCODE 0, ANCOUNT >= 1) and responses failing protocol validation drop to
+  open|filtered "unverified response", not "open". (Previously: a 29B error
+  response from an intermediary was claimed as "dns open".)
+- **Passive**: the DNS A/AAAA fallback is now DoH-first + synthetic-IP filtering.
+- **Fully English engine output**: 25 runtime log/evidence strings that were still
+  in Indonesian were translated (per the 2026-10-16 language rule).
+- Tests: +13 transport/DNS/port honesty tests (tests/test_transport_honesty.py,
+  tests/test_dns_ports_honesty.py). Live proof against the UAT target: ports inconclusive
+  and clean, subdomains 0 (matching the DoH ground truth), the real SSL subject read
+  (CN=uatgadaiemas.devoutsys.com, TLSv1.3), headers score 67 consistent
+  with vulnscan, udp 53 honestly open|filtered.
 
-## v1.16.0 — Audit akurasi menyeluruh + kerapian UI (2026-10-19)
+## v1.16.0 — Full accuracy audit + UI tidiness (2026-10-19)
 
-Mandat ADE: update ulang semuanya lebih rapih (tampilan, font), fixing bug,
-dan pastikan scanning seakurat mungkin di semua tipe. Baseline suite
-v1.15.0: 119/119 hijau sebelum perubahan apa pun.
+Mandate: rework everything to be tidier (appearance, fonts), fix bugs,
+and ensure scanning is as accurate as possible across all types. v1.15.0 suite
+baseline: 119/119 green before any change.
 
-- BUG 1 (headers): cabang scan tipe "headers" di app2.run_tool_scan selalu
-  mengembalikan "findings": [] — header keamanan yang hilang tidak pernah
-  menjadi finding (berbeda dengan vulnscan c_security_headers yang menilai
-  respons yang sama), dan target tak terjangkau tampak bersih. Kini cabang
-  ini memancarkan finding yang PERSIS mencerminkan c_security_headers
-  (judul/severity/CWE/CVSS/remediasi sama; HSTS hanya di https) + INFO
-  inconclusive bila tidak ada respons. Bukti live via API: fixture tanpa
-  header -> 5 finding (CSP MEDIUM 5.4 + 4 LOW), via https -> 6 (HSTS ikut).
-- BUG 2 (urutan argumen F): signature vulnscan2.F adalah
-  F(sev, title, desc, evidence, cwe, owasp, cvss=0.0, remed="") — posisi
-  ke-7 adalah cvss. SEMUA pemanggilan F() di cabang typed app2 (ssl x2,
-  udp x3, syn, vhost) mengoper string remediasi secara posisional, sehingga
-  teks remediasi mendarat di field cvss dan remediation kosong di setiap
-  finding scan tipe ssl/udp/syn/vhost. Diperbaiki di 9 titik pemanggilan
-  (remed= keyword). mobile.py & vulnscan2 internal ternyata bersih (kwargs).
-- Konsistensi: finding INFO 'TLS could not be audited' (c_tls) kini punya
-  remediasi (sebelumnya satu-satunya finding engine yang kosong).
-- Test regresi baru: tests/test_headers_findings.py (4) +
-  tests/test_typed_scan_findings.py (5). Suite penuh: 128 test.
-- Bukti live end-to-end via API service (scan bukti dihapus sesudahnya):
-  headers http/https sesuai cermin vulnscan; ports loopback terukur nyata
-  {18080,18443,5000} intercepted=False; dirs hanya /admin; subdomains
-  example.com found=[] (DoH); syn EPERM -> INFO jujur berketerisian bersih;
-  vhost 0 FP; udp loopback jujur; vulnscan passive-quick 7 finding semua
-  beremediasi; ssl_audit fungsi membaca sertifikat fixture (CN=localhost,
-  TLSv1.3, verify_error self-signed benar). CATATAN VANTAGE: connect
-  langsung ke 127.0.0.1:443 (tidak ada listener) dijawab gateway sandbox
-  dengan sertifikatnya sendiri (issuer Hatch Sandbox Egress CA) — kelas
-  intercept yang sama seperti insiden port dulu; audit TLS target publik
-  tetap lewat CONNECT dan membaca sertifikat asli (terbukti di UAT).
-- UI (artifact, appearance-only): sapuan kerapian & tipografi menyeluruh —
-  judul Scan Detail diseragamkan ke peran heading 22px, bobot label grafik
-  trend ke bobot peran, tracking baris versi brand card dinormalkan, jarak
-  label->field disatukan (mt-1) di 28 field form, select triage Findings
-  disamakan spec kompak editor Assets; badge V1.16.0 di 4 titik. Sebelumnya
-  di hari yang sama: upload APK chunked (fix 422), sweep overlay near-opaque,
-  brand card terpusat, service mati pasca-restart platform dihidupkan ulang.
+- BUG 1 (headers): the "headers" scan-type branch in app2.run_tool_scan always
+  returned "findings": [] — missing security headers never
+  became findings (unlike vulnscan c_security_headers, which assesses
+  the same response), and unreachable targets looked clean. The branch
+  now emits findings that EXACTLY mirror c_security_headers
+  (same title/severity/CWE/CVSS/remediation; HSTS only on https) + an inconclusive INFO
+  when there is no response. Live proof via the API: a fixture without
+  headers -> 5 findings (CSP MEDIUM 5.4 + 4 LOW), via https -> 6 (HSTS included).
+- BUG 2 (F() argument order): the vulnscan2.F signature is
+  F(sev, title, desc, evidence, cwe, owasp, cvss=0.0, remed="") — position
+  7 is cvss. ALL F() calls in the app2 typed branches (ssl x2,
+  udp x3, syn, vhost) passed the remediation string positionally, so
+  the remediation text landed in the cvss field and remediation was empty on every
+  finding of the ssl/udp/syn/vhost scan types. Fixed at 9 call sites
+  (remed= keyword). mobile.py & the vulnscan2 internals turned out clean (kwargs).
+- Consistency: the INFO finding 'TLS could not be audited' (c_tls) now has
+  remediation (previously the only engine finding with none).
+- New regression tests: tests/test_headers_findings.py (4) +
+  tests/test_typed_scan_findings.py (5). Full suite: 128 tests.
+- Live end-to-end proof via the service API (proof scans deleted afterwards):
+  headers http/https matching the vulnscan mirror; loopback ports genuinely measured
+  {18080,18443,5000} intercepted=False; dirs only /admin; subdomains
+  example.com found=[] (DoH); syn EPERM -> honest INFO with clean severity;
+  vhost 0 FP; loopback udp honest; passive-quick vulnscan 7 findings all
+  with remediation; the ssl_audit function reading the fixture certificate (CN=localhost,
+  TLSv1.3, self-signed verify_error correct). VANTAGE NOTE: a direct connect
+  to 127.0.0.1:443 (no listener) is answered by the sandbox gateway
+  with its own certificate (issuer Hatch Sandbox Egress CA) — the same intercept
+  class as the old port incident; public-target TLS audits still go
+  via CONNECT and read the genuine certificate (proven on the UAT).
+- UI (artifact, appearance-only): a comprehensive tidiness & typography sweep —
+  the Scan Detail title standardized to the 22px heading role, trend chart label weights
+  to role weights, brand card version line tracking normalized, label->field
+  spacing unified (mt-1) on 28 form fields, the Findings triage select
+  matched to the compact Assets editor spec; the V1.16.0 badge at 4 points. Earlier
+  the same day: chunked APK upload (422 fix), near-opaque overlay sweep,
+  centered brand card, service revived after a platform restart.
 
-## Re-versioning rilis publik — v1.0.0 (2026-10-20)
+## Public release re-versioning — v1.0.0 (2026-10-20)
 
-Atas keputusan ADE, versi publik VANTHEX dimulai dari **v1.0.0** untuk debut
-GitHub/GHCR (silsilah internal v1.6.0–v1.16.0 di atas tetap sebagai catatan
-sejarah pengembangan). Semua literal versi engine, image Docker
-(`vanthex:1.0.0`), workflow GHCR, badge artifact, dan nama paket diselaraskan
-ke 1.0.0; tidak ada perubahan fungsional dalam langkah ini.
+By decision, the public VANTHEX versioning starts from **v1.0.0** for the
+GitHub/GHCR debut (the internal lineage v1.6.0–v1.16.0 above remains as
+development history). All engine version literals, the Docker image
+(`vanthex:1.0.0`), the GHCR workflow, artifact badges, and the package name were aligned
+to 1.0.0; there is no functional change in this step.
+
+## v1.1.0 — The artifact UI becomes the service's built-in UI (2026-10-20)
+
+On request ("the artifact display, when deployed locally, natively
+or via Docker, must be 1:1"), the UI that until now lived only as a
+Muse artifact is now served directly by the service:
+
+- The artifact production bundle (React, byte-identical) is copied into `webui/`
+  and served by app2 at `/` for admin sessions; a new endpoint
+  `POST /actions` implements all 46 artifact actions in Python
+  (`actions.py`, a faithful port of the artifact's server/src/actions.ts — data mapping,
+  result shapes, and error messages identical), running with an internal admin
+  session exactly like the artifact model. Not logged in → redirect to the
+  service login page; the classic UI remains available at `/classic`.
+- Service login: fixed the icon/text overlap on the username/password
+  fields (an old CSS layer overrode the input padding) + a glass
+  layer. Full suite 128/128 green after the template changes.
+- Verification: 24 integration checks + 22 flow checks through /actions against
+  the live service — all passing (full scan cycle, chunked APK upload,
+  schedule/suppression/token/secret CRUD, DOCX base64 reports).
+- Subsequent bundle synchronization: `sync-webui.sh` (copies the latest artifact
+  client/dist into webui/).

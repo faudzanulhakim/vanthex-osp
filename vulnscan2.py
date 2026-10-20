@@ -1559,7 +1559,7 @@ def c_services(ctx, add):
             continue
         try:
             conn = _hc.HTTPConnection(host, port, timeout=4)
-            conn.request("GET", path, headers={"User-Agent": "VANTHEX/1.0.0"})
+            conn.request("GET", path, headers={"User-Agent": "VANTHEX/1.1.0"})
             r = conn.getresponse()
             body = r.read(20000).decode("utf-8", "replace")
             conn.close()

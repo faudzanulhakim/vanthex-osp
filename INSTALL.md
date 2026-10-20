@@ -1,73 +1,173 @@
-# VANTHEX Enterprise v3 — Instalasi
+# VANTHEX — Native Installation Guide
 
-> ⚠️ AUTHORIZED TESTING ONLY — hanya untuk sistem dengan izin resmi (aset kantor, lab, CTF).
+**Version 1.1.0** · For Docker deployment, see [DOCKER.md](DOCKER.md).
 
-## Prasyarat
-- **Python 3.8+** (tidak ada dependensi lain — murni standard library)
+> ⚠️ **AUTHORIZED TESTING ONLY.** VANTHEX is an offensive security tool.
+> Run it only against systems you own or are explicitly authorized to test.
 
-## Instalasi & Menjalankan
+---
+
+## 1. Prerequisites
+
+### Hardware
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| CPU | 1 core | 2+ cores (scans are concurrent) |
+| RAM | 1 GB | 2 GB+ |
+| Disk | 1 GB | 5 GB+ (scan history, CVE cache, uploaded packages) |
+
+### Software
+
+| Requirement | Notes |
+|---|---|
+| **Python 3.12** (3.11 works; 3.12 is the reference runtime) | Check with `python3 --version` |
+| **pip + venv** | Debian/Ubuntu: `python3-venv`, `python3-pip` |
+| **git** (optional) | Only for cloning the repository; a release ZIP works too |
+| **Network egress** | Outbound HTTP/HTTPS to scan targets; UDP/TCP 53 or HTTPS for DNS-over-HTTPS; access to `services.nvd.nist.gov` if you sync the CVE cache |
+| **TCP port 5000** free | Configurable (see §4) |
+| **CAP_NET_RAW** (optional) | Only for the SYN scan type: `sudo setcap cap_net_raw+ep $(readlink -f $(which python3))`, or run the service as root. Without it, the SYN scan reports itself *inconclusive* instead of failing |
+
+The engine itself uses **no external scanner binaries** — nothing else to
+install. All dependencies are Python packages pinned in
+`requirements.txt` (including `androguard` for APK analysis,
+`beautifulsoup4`, `cryptography`, `dnspython`, `lxml`, `requests`,
+`python-docx`, `Pillow`, and the test tooling).
+
+### Operating systems
+
+Linux (reference), macOS, and Windows are supported. The systemd unit in
+`deploy/` targets Linux. On Windows, use the manual run method (§4) or
+Docker.
+
+---
+
+## 2. Obtain the source
 
 ```bash
-unzip pentest-toolkit-v3.zip
-cd pentest-toolkit-upgraded
-
-# Jalankan server (port bebas, default 5000)
-python3 app2.py 5000
-
-# Ganti password admin default sebelum produksi:
-PTK_ADMIN_PW="PasswordKuatKamu" python3 app2.py 5000
+git clone https://github.com/<your-user>/vanthex-osp.git
+cd vanthex-osp
 ```
 
-Buka: `http://<ip-server>:5000` — Login default: `admin` / `changeme123`
-(atau password dari `PTK_ADMIN_PW` saat database pertama kali dibuat).
+—or unpack a release archive and enter its directory.
 
-> Database `toolkit.db` dari v2 **kompatibel**: kolom confidence/lokasi/param
-> ditambahkan otomatis saat server v3 pertama jalan. Backup dulu untuk aman.
+---
 
-## Akses Aman
-- Akses via Tailscale / SSH tunnel saja, JANGAN expose port 5000 ke internet publik.
-- SSH tunnel dari PC: `ssh -L 5000:localhost:5000 user@vps`
-- Login kini punya rate-limit; tetap pakai password kuat.
+## 3. Create the environment and install dependencies
 
-## Yang baru di v3 (ringkas — detail di UPGRADE_NOTES.md)
-- 🛰️⚡ Passive/Active jauh lebih akurat: baseline soft-404 + content signature,
-  SQLi boolean & time-based, XSS multi-konteks, SSTI, LFI, CMDi, CRLF, SSRF,
-  GraphQL introspection, Swagger/OpenAPI, JWT analysis, CSRF form, service API tanpa auth.
-- 🎯 Confidence per finding (confirmed/probable/candidate) + lokasi & parameter.
-- 🛑 Job bisa di-Stop; scan aktif wajib centang otorisasi (+ allowlist opsional `PTK_ALLOWED_TARGETS`).
-- 🔌 Tool Port/Subdomain/Dir/SSL/Headers kembali bisa jalan dari dashboard.
-- 🔀 Diff antar-scan, export JSON/CSV (selain DOCX/HTML), scan terautentikasi (cookie/header).
-- 🌐 Dukungan proxy egress (env `HTTP(S)_PROXY` / `PTK_PROXY` / field di UI).
-
-## API ringkas (semua butuh cookie session kecuali /api/login)
-```
-POST /api/login                    {username, password}
-POST /api/scan                     {type:"vulnscan|ports|subdomains|dirs|ssl|headers",
-                                    target, profile, authorized:true (wajib utk aktif),
-                                    cookie?, headers?, timeout?, max_pages?, proxy?}
-GET  /api/job/<id>                 live log & status (running|done|error|cancelled)
-POST /api/job/<id>/cancel          hentikan scan berjalan
-GET  /api/scans                    riwayat
-GET  /api/scan/<id>                detail + findings + technologies
-GET  /api/scan/<id>/diff           perbandingan vs scan sebelumnya
-GET  /api/scan/<id>/export?fmt=json|csv
-POST /api/scan/delete              {scan_id}
-GET  /api/stats                    statistik dashboard (severity + confidence + target unik)
-GET  /report/<id>?fmt=docx|html    unduh laporan
-POST /api/users                    (admin) buat user analyst
+```bash
+python3 -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-## v3.3.0 — dependensi library (mobile + parser modern)
+All packages ship as wheels; no compiler is required on current
+platforms. (On minimal systems where a wheel is unavailable, install
+your distribution's `build-essential` / `python3-dev` equivalent first.)
 
-Sejak v3.3.0 engine tetap hasil build sendiri (tanpa memanggil tool scanner
-jadi seperti nmap/nuclei), tetapi memakai library pihak ketiga untuk parsing:
-androguard (APK), beautifulsoup4 (HTML), cryptography, requests, dnspython.
-Siapkan virtualenv di folder proyek lalu jalankan app dengan Python venv itu:
+---
 
-    python3 -m venv --system-site-packages .venv
-    .venv/bin/pip install -r requirements.txt
-    .venv/bin/python app2.py 5000
+## 4. First run
 
-Bila androguard belum terpasang, fitur web tetap jalan; hanya analisis APK
-yang menolak dengan pesan jelas. Fitur mobile: dashboard → tab Mobile Apps →
-upload .apk (maks 60 MB) → hasil tersimpan sebagai scan tipe "mobile".
+Set the administrator password **before the first start** — it seeds the
+`admin` account when the database is created:
+
+```bash
+export PTK_ADMIN_PW='a-long-random-password'     # Windows: set PTK_ADMIN_PW=...
+python app2.py 5000
+```
+
+Then open <http://localhost:5000> and sign in:
+
+- **Username:** `admin`
+- **Password:** the value of `PTK_ADMIN_PW` (if the variable is unset at
+  first run, the default is `changeme123` — change it immediately)
+
+Notes on state created at first run, in the application directory:
+
+| File | Purpose |
+|---|---|
+| `toolkit.db` | SQLite database: scans, findings, users, schedules, audit log, CVE cache |
+| `secrets.key` | Fernet key for the encrypted credential vault (keep private, mode 0600) |
+| `uploads_apk/` | Uploaded mobile packages and upload staging |
+
+**Changing the admin password later:** `PTK_ADMIN_PW` only seeds the
+account at database creation. Afterwards, change the password from the
+dashboard (System Settings → Users) or delete `toolkit.db` to start
+fresh (this discards all history).
+
+### Verify the installation
+
+```bash
+curl -s http://localhost:5000/api/engine   # after login; or open the dashboard
+python -m pytest tests/ -q                 # full verification suite (128 tests)
+```
+
+---
+
+## 5. Configuration (environment variables)
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PTK_ADMIN_PW` | Password of the seeded `admin` user | `changeme123` |
+| `PTK_NVD_KEY` | NVD API key — raises CVE-sync rate limits substantially | — |
+| `PTK_ALLOWED_TARGETS` | Comma-separated target allowlist (exact host, `*.domain`, or suffix) — an extra guard on top of the in-UI authorization gate | — (all hosts allowed) |
+| `PTK_CANARY_BASE` | Public base URL of the out-of-band canary listener (required for blind-SSRF confirmation on internet targets) | — |
+| `PTK_CANARY_PORT` | Canary listener port | `8977` |
+| `PTK_COOKIE_SECURE` | `1` marks session cookies `Secure` (use behind HTTPS) | — |
+| `PTK_COMPANY` | Company name printed on reports | — |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (or `PTK_PROXY`) | Egress proxy for the web layer | — |
+
+---
+
+## 6. Run as a system service (Linux, systemd)
+
+```bash
+sudo bash deploy/install-systemd.sh
+systemctl status pentest-toolkit
+```
+
+The installer registers the unit in `deploy/pentest-toolkit.service`
+(adjust `WorkingDirectory` and the Python path inside it if you install
+outside the default location). The service binds `0.0.0.0:5000`.
+
+**Exposure guidance:** do not publish port 5000 directly to the
+internet. Put VANTHEX behind a VPN (e.g. Tailscale/WireGuard), an SSH
+tunnel (`ssh -L 5000:localhost:5000 user@server`), or an authenticated
+reverse proxy with TLS (and set `PTK_COOKIE_SECURE=1`).
+
+---
+
+## 7. Upgrading
+
+1. Stop the service.
+2. **Back up** `toolkit.db` and `secrets.key` (together they are the
+   complete state: history, users, schedules, CVE cache, vault).
+3. Replace the code with the new release (keep your `.venv` or rebuild
+   it with `pip install -r requirements.txt`).
+4. Start the service. Database schema migrations are automatic and
+   backward-compatible; the UI bundle under `webui/` is part of the
+   release and needs no build step.
+
+---
+
+## 8. Troubleshooting
+
+| Symptom | Cause / remedy |
+|---|---|
+| `Address already in use` on start | Another process holds port 5000; choose another port: `python app2.py 5001` |
+| APK analysis rejected with a clear dependency message | `androguard` is not installed in the active environment; reinstall with `pip install -r requirements.txt` inside the venv |
+| SYN scan reports *inconclusive (raw sockets unavailable)* | Grant `CAP_NET_RAW` (see §1) or run as root |
+| Port/subdomain results *inconclusive* behind a mandatory proxy or intercepting gateway | Expected honesty behavior: direct-socket measurements cannot pass an intercepting middlebox. The web layer (which honors the proxy) is unaffected; run network-layer scans from an unintercepted vantage point |
+| CVE cache sync is slow or rate-limited | Set `PTK_NVD_KEY` (free key from NVD) |
+| Forgot the admin password | Stop the service, move `toolkit.db` aside, restart with a new `PTK_ADMIN_PW` (history is lost), or restore the backup |
+
+---
+
+## 9. Uninstall
+
+Stop the service and remove the application directory. To erase all
+state, also remove `toolkit.db`, `secrets.key`, and `uploads_apk/`.
+For systemd installs: `systemctl disable --now pentest-toolkit` and
+remove the unit file.

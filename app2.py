@@ -40,6 +40,12 @@ import sandbox as sandbox_mod
 import secretsmgr
 import netclient
 import vulnscan2
+try:
+    import actions as actions_mod
+    ACTIONS_OK = True
+except Exception:
+    actions_mod = None
+    ACTIONS_OK = False
 from report import render_report
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -84,6 +90,43 @@ def load_template(name):
         return f.read()
 
 
+WEBUI_DIR = os.path.join(HERE, "webui")
+_WEBUI_CACHE = {}
+_WEBUI_CTYPES = {
+    ".js": "text/javascript", ".css": "text/css", ".png": "image/png",
+    ".svg": "image/svg+xml", ".webp": "image/webp", ".json": "application/json",
+    ".woff2": "font/woff2", ".woff": "font/woff", ".html": "text/html; charset=utf-8",
+}
+
+
+def webui_file(rel):
+    """(bytes, ctype) for a file inside webui/, or None.
+
+    Only "name.ext" and "assets/name.ext" shapes are served — no
+    deeper paths, no traversal."""
+    parts = rel.split("/")
+    if (not rel or ".." in rel or len(parts) > 2
+            or (len(parts) == 2 and parts[0] != "assets")):
+        return None
+    path = os.path.join(WEBUI_DIR, rel)
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return None
+    hit = _WEBUI_CACHE.get(rel)
+    if hit and hit[0] == mt:
+        return hit[1], hit[2]
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    ctype = _WEBUI_CTYPES.get(os.path.splitext(rel)[1].lower(),
+                              "application/octet-stream")
+    _WEBUI_CACHE[rel] = (mt, data, ctype)
+    return data, ctype
+
+
 def allowed_target(host):
     """Allowlist opsional. Kosong = semua host boleh (tetap wajib authorization gate utk aktif)."""
     raw = os.environ.get("PTK_ALLOWED_TARGETS", "").strip()
@@ -123,7 +166,7 @@ def engine_info():
     except Exception:
         profiles = {}
     return {
-        "version": "1.0.0",
+        "version": "1.1.0",
         "engine": 'self-built (no ready-made scanner tools: nmap/nuclei/etc. are never invoked)',
         "libraries": libs,
         "html_parser": "beautifulsoup4" if libs.get("beautifulsoup4") else "regex-fallback",
@@ -216,7 +259,7 @@ def login_locked(ip):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "VANTHEX/1.0.0"
+    server_version = "VANTHEX/1.1.0"
 
     def log_message(self, fmt, *args):
         pass
@@ -271,7 +314,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(302, "", extra=[("Location", "/login")])
             return
         if path == "/":
+            if sess.get("role") == "admin" and ACTIONS_OK:
+                ui = webui_file("index.html")
+                if ui:
+                    self._send(200, ui[0], ui[1], [("Cache-Control", "no-store")])
+                    return
             self._send(200, load_template("app.html"))
+        elif path == "/classic":
+            self._send(200, load_template("app.html"))
+        elif path.startswith("/assets/"):
+            asset = webui_file("assets/" + path[len("/assets/"):])
+            if not asset:
+                self._send(404, "not found", "text/plain")
+                return
+            self._send(200, asset[0], asset[1],
+                       [("Cache-Control", "public, max-age=86400")])
         elif path == "/api/me":
             self._json(200, sess)
         elif path == "/api/scans":
@@ -437,7 +494,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         # Batas ukuran body per route (anti memory-exhaustion): endpoint JSON
         # biasa kecil; hanya analisis APK yang sah menerima puluhan MB.
-        cap = 100 * 1024 * 1024 if path == "/api/mobile/analyze" else 2 * 1024 * 1024
+        cap = 100 * 1024 * 1024 if path in ("/api/mobile/analyze", "/actions") else 2 * 1024 * 1024
         if length > cap:
             self.close_connection = True
             self._json(413, {"error": f"request body too large (max {cap // (1024 * 1024)} MB)"})
@@ -473,6 +530,23 @@ class Handler(BaseHTTPRequestHandler):
         tok, sess = self._session()
         if not sess:
             self._json(401, {"error": "unauthorized"})
+            return
+
+        if path == "/actions":
+            if sess.get("role") != "admin" or not ACTIONS_OK:
+                self._json(403, {"error": "forbidden"})
+                return
+            name = str(payload.get("action", ""))
+            aargs = payload.get("args")
+            if not isinstance(aargs, dict):
+                aargs = {}
+            try:
+                code, envelope = actions_mod.handle_action(
+                    name, aargs, self.server.server_address[1])
+            except Exception as e:
+                self._json(500, {"error": str(e)[:300]})
+                return
+            self._json(code, envelope)
             return
 
         if path == "/api/logout":
@@ -1304,7 +1378,7 @@ def main():
     _start_canary()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"[i] VANTHEX Offensive Security Platform v1.0.0 -> http://0.0.0.0:{port}")
+    print(f"[i] VANTHEX Offensive Security Platform v1.1.0 -> http://0.0.0.0:{port}")
     print("[i] Default login: admin / changeme123 (set PTK_ADMIN_PW to override)")
     print("[!] AUTHORIZED TESTING ONLY")
     try:

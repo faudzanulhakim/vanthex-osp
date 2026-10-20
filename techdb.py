@@ -13,7 +13,7 @@ cookie dari Set-Cookie), "html" (isi body), "script" (URL src script).
 Grup bernama (?P<v>...) pada regex = versi yang diekstrak.
 """
 
-SIGNATURE_DB_VERSION = "1.0.0"
+SIGNATURE_DB_VERSION = "1.1.0"
 import re
 
 DB = [

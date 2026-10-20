@@ -11,7 +11,7 @@
 #   echo <github-PAT> | docker login ghcr.io -u <github-user> --password-stdin
 services:
   vanthex:
-    image: ghcr.io/${GHCR_OWNER:?set GHCR_OWNER in .env}/vanthex:${VANTHEX_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-faudzanulhakim}/${GHCR_REPO:-vanthex-osp}:${VANTHEX_TAG:-latest}
     container_name: vanthex
     restart: unless-stopped
     ports:

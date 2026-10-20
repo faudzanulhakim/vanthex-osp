@@ -1,55 +1,82 @@
-# Audit pentest-toolkit.zip (versi ADE, 2026-10-15)
+# Initial Source Audit — 2026-10-15
 
-Original TIDAK diubah. Upgrade dibangun di folder ini sebagai salinan kerja.
+Audit of the original `pentest-toolkit.zip` source, performed before the
+v3 upgrade. The original files were **not modified**; all fixes were
+built in a working copy. This document is kept as the historical record
+of what was found and why the upgrade took the shape it did.
 
-## Yang sudah bagus (dipertahankan)
-- 100% Python stdlib, tanpa dependensi tool luar (nmap/nuclei/dll) — sesuai niat desain ADE.
-- Pemisahan passive (observasi) vs active (intrusif) + profil bertingkat.
-- Finding sudah membawa severity, CWE, OWASP, CVSS, remediasi.
-- SQLi error-based lama sudah pakai pola verifikasi `'` rusak / `''` pulih, dan XSS pakai marker unik.
-- Login + SQLite history + export DOCX/HTML + live process log.
+## Strengths (retained)
 
-## Bug terkonfirmasi (bukti, bukan tebakan)
-1. `report.py:42` memakai variabel `sev` yang tidak pernah didefinisikan → export HTML
-   **selalu crash** `NameError: name 'sev' is not defined` (direproduksi 2026-10-15).
-2. Dashboard detail scan rusak: `viewScanDetail()` di `templates/app.html` memanggil
-   `renderFindings()` tanpa menyertakan `d.findings` dari API → `j.findings` undefined → halaman detail error.
-3. `MARKER` di `vulnscan2.py` dibuat sekali saat import modul, bukan per-scan —
-   semua scan dalam satu proses server berbagi marker yang sama.
-4. `store.verify_user` membandingkan hash dengan `==` (bukan `hmac.compare_digest`) dan
-   tidak ada rate-limit login → brute-force password bebas.
-5. Tidak ada tombol/stop untuk job berjalan; `JOBS` tidak pernah dibersihkan; tidak ada timeout job.
+- 100% Python standard library, no external tool dependencies
+  (no nmap/nuclei/etc.) — by design.
+- Clean separation of passive (observation) vs. active (intrusive)
+  checks, with tiered scan profiles.
+- Findings already carried severity, CWE, OWASP, CVSS, and remediation.
+- The legacy error-based SQLi check already used a verify pattern
+  (`'` breaks / `''` recovers), and XSS used a unique marker.
+- Login + SQLite history + DOCX/HTML export + live process log.
 
-## Kelemahan akurasi (false positive / false negative)
-- **File sensitif**: hanya cek `status==200` + tidak ada kata "not found" di 60 byte pertama.
-  SPA/catch-all yang selalu 200 akan menghasilkan banyak FP; file asli yang halamannya
-  mengandung "not found" di awal akan lolos (FN). Tidak ada *content signature* per file
-  dan tidak ada baseline soft-404.
-- **SQLi**: hanya error-based dengan syarat kaku (harus HTTP 500 + `''` harus 200 persis).
-  Boolean-based & time-based tidak diuji sama sekali → mayoritas SQLi nyata tidak terdeteksi.
-  Setelah 1 SQLi ditemukan fungsi langsung `return` → parameter lain dan XSS tidak pernah diuji.
-- **XSS**: 1 payload saja, tanpa variasi konteks (attribute/JS/single-quote).
-- **Discovery**: `discover_paths()` hanya membaca `href/action/src="..."` (double-quote saja),
-  maks 14 path, sisanya tebakan hardcoded yang tidak diverifikasi keberadaannya —
-  injection diuji ke endpoint yang sering tidak ada.
-- **CORS**: hanya diuji ke path `/api` yang mungkin tidak ada.
-- **Cookie**: `Set-Cookie` dibaca sebagai satu string gabungan; cookie ke-2 dst tidak dianalisis per-cookie,
-  flag `SameSite` tidak dicek.
-- **TLS**: loop deteksi legacy protocol di `scanners.ssl_audit` cacat (ada loop mati),
-  tidak ada cek cipher bits, hostname mismatch, self-signed, atau masa berlaku `not_before`.
-- **Port scan**: banner grabbing hanya `recv()` pasif tanpa mengirim probe —
-  service yang menunggu request (HTTP dll) banner-nya selalu kosong.
-- **CVE probes**: daftar sangat kecil + hanya berdasar `status==200` → rawan FP, tanpa
-  pencocokan produk/versi sama sekali.
-- **Dedup finding hanya berdasar judul** → kerentanan yang sama di parameter berbeda hilang.
+## Confirmed bugs (reproduced, not conjectured)
 
-## Coverage yang hilang sama sekali (ditambahkan di upgrade)
-SSTI, path traversal/LFI, command injection (echo + time), CRLF injection, SSRF
-(cloud metadata + internal-fetch oracle), GraphQL introspection, Swagger/OpenAPI exposure,
-CSRF (form POST tanpa token), JWT analysis (alg=none, secret lemah via wordlist kecil,
-tanpa exp), weak CSP/HSTS quality, technology fingerprinting + kandidat CVE berbasis versi
-(dilabeli *candidate*, bukan klaim terkonfirmasi), unauthenticated service APIs
-(Docker 2375, Elasticsearch 9200, kubelet 10250), port/service tambahan, soft-404 baseline,
-confidence level per finding (confirmed/probable/candidate), lokasi+parameter per finding,
-crawler beneran (form, JS endpoint, robots/sitemap), authenticated scan (custom header/cookie),
-stop/cancel scan, authorization gate + allowlist opsional, diff antar-scan, export JSON/CSV.
+1. `report.py:42` used a variable `sev` that was never defined → HTML
+   export **always crashed** with `NameError: name 'sev' is not defined`
+   (reproduced 2026-10-15).
+2. The dashboard scan-detail view was broken: `viewScanDetail()` in
+   `templates/app.html` called `renderFindings()` without passing
+   `d.findings` from the API → `j.findings` undefined → the detail page
+   errored.
+3. `MARKER` in `vulnscan2.py` was created once at module import, not per
+   scan — every scan in one server process shared the same marker.
+4. `store.verify_user` compared password hashes with `==` (not
+   `hmac.compare_digest`) and login had no rate limiting → unrestricted
+   password brute force.
+5. No stop button for running jobs; `JOBS` was never cleaned up; no job
+   timeout.
+
+## Accuracy weaknesses (false positives / false negatives)
+
+- **Sensitive files**: checked only `status == 200` plus the absence of
+  the words "not found" in the first 60 bytes. SPA/catch-all targets
+  that always return 200 produced mass false positives; real files
+  whose pages begin with "not found" were missed (false negatives). No
+  per-file *content signature* and no soft-404 baseline existed.
+- **SQLi**: error-based only, with rigid conditions (must be HTTP 500
+  and `''` must return exactly 200). Boolean- and time-based techniques
+  were not tested at all → most real SQLi went undetected. After the
+  first SQLi hit the function returned immediately → other parameters
+  and XSS were never tested.
+- **XSS**: a single payload, no context variants (attribute/JS/single
+  quote).
+- **Discovery**: `discover_paths()` read only `href/action/src="..."`
+  (double quotes), at most 14 paths, the rest hardcoded guesses never
+  verified to exist — injection was tested against endpoints that often
+  did not exist.
+- **CORS**: tested only against a `/api` path that might not exist.
+- **Cookies**: `Set-Cookie` was read as one combined string; the second
+  and later cookies were never analyzed per cookie, and the `SameSite`
+  flag was not checked.
+- **TLS**: the legacy-protocol detection loop in `scanners.ssl_audit`
+  was defective (a dead loop), with no cipher-bit, hostname-mismatch,
+  self-signed, or `not_before` checks.
+- **Port scan**: banner grabbing was a passive `recv()` only, sending
+  no probe — services that wait for a request first (HTTP etc.) always
+  showed an empty banner.
+- **CVE probes**: a very small list, based on `status == 200` alone →
+  false-positive prone, with no product/version matching at all.
+- **Finding deduplication by title only** → the same vulnerability on a
+  different parameter was silently dropped.
+
+## Coverage that was entirely missing (added in the upgrade)
+
+SSTI, path traversal/LFI, command injection (echo + time), CRLF
+injection, SSRF (cloud metadata + internal-fetch oracle), GraphQL
+introspection, Swagger/OpenAPI exposure, CSRF (POST forms without a
+token), JWT analysis (alg=none, weak secrets via a small wordlist,
+missing `exp`), weak CSP/HSTS quality, technology fingerprinting +
+version-based CVE candidates (labeled *candidate*, never claimed as
+confirmed), unauthenticated service APIs (Docker 2375, Elasticsearch
+9200, kubelet 10250), additional ports/services, soft-404 baseline,
+per-finding confidence levels, per-finding location + parameter, a real
+crawler (forms, JS endpoints, robots/sitemap), authenticated scans
+(custom header/cookie), stop/cancel for scans, an authorization gate +
+optional allowlist, scan-to-scan diff, and JSON/CSV export.

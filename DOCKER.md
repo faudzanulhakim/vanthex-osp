@@ -1,102 +1,188 @@
-# VANTHEX — Instalasi Docker Compose
+# VANTHEX — Docker Compose Deployment
 
-Alternatif dari instalasi native (lihat `INSTALL.md`). Engine, fitur, dan
-perilaku scan identik; yang berbeda hanya cara menjalankan.
+**Version 1.1.0** · For native (non-Docker) installation, see
+[INSTALL.md](INSTALL.md). Engine, features, and scan behavior are
+identical in both installation methods; only the runtime differs.
 
-## Prasyarat
+---
 
-- Docker Engine 24+ dan Docker Compose v2 (`docker compose version`)
-- ±1 GB ruang disk untuk image, port 5000 bebas
+## 1. Prerequisites
 
-## Quick start
+| Requirement | Notes |
+|---|---|
+| **Docker Engine 24+** | Check with `docker version` |
+| **Docker Compose v2** | The `docker compose` plugin (not the legacy `docker-compose` binary); check with `docker compose version` |
+| **Disk space** | ±1 GB for the image, plus volume growth for scan history and the CVE cache |
+| **Port 5000** free on the host | Remappable in the compose file if occupied |
+| **Network egress** | Outbound HTTP/HTTPS to scan targets; HTTPS for DNS-over-HTTPS and the NVD API |
+| **(Optional) raw-socket capability** | The compose files already add `NET_RAW`, which the SYN scan type needs; on hosts that forbid it, the SYN scan reports itself *inconclusive* |
 
-```bash
-cp .env.example .env       # WAJIB: isi PTK_ADMIN_PW dengan password kuat
-docker compose up -d --build
-docker compose ps          # tunggu status "healthy"
-```
+No Python installation is required on the host — the image is based on
+`python:3.12-slim` and installs the pinned dependencies from
+`requirements.txt` at build time.
 
-Buka `http://localhost:5000` — login `admin` / password dari `.env`.
+---
 
-## Data & persistensi
+## 2. Option A — Build from source
 
-Semua state tinggal di named volume `vanthex-data`:
-
-- `toolkit.db` — scan, finding, user, audit log, cache CVE
-- `secrets.key` — kunci vault kredensial (Fernet)
-
-Container boleh di-rebuild/di-upgrade tanpa kehilangan data. Backup:
-
-```bash
-docker run --rm -v vanthex-data:/data -v "$PWD":/backup alpine \
-    tar czf /backup/vanthex-data-backup.tgz -C /data .
-```
-
-## Upgrade
+Use this when you have the repository (development, customization, or
+air-gapped builds).
 
 ```bash
-# timpa kode dengan paket baru (volume data tidak tersentuh), lalu:
+git clone https://github.com/<your-user>/vanthex-osp.git
+cd vanthex-osp
+
+cp .env.example .env        # edit: set a strong PTK_ADMIN_PW
 docker compose up -d --build
 ```
 
-## Deploy dari GitHub (GHCR)
+Open <http://localhost:5000> and sign in as `admin` with the
+`PTK_ADMIN_PW` from your `.env`.
 
-Repo ini dilengkapi workflow `.github/workflows/docker.yml`: setiap push
-ke `main` dan setiap tag versi (mis. `v1.0.0`) membangun image multi-arch
-(amd64 + arm64) dan menerbitkannya ke GitHub Container Registry sebagai
-`ghcr.io/<owner>/<repo>` dengan tag `latest`, versi semver, dan `sha-<short>`.
-Pull request hanya membangun (cek), tidak menerbitkan.
+What this does:
 
-Di server, deploy tidak butuh source code — cukup
-`docker-compose.deploy.yml` + `.env`:
+- Builds the image (tag `vanthex:1.1.0`) from the `Dockerfile`
+- Starts one container, publishing host port **5000** → container 5000
+- Creates the named volume **`vanthex-data`** mounted at `/data`
+- Adds the `NET_RAW` capability
+- Registers a health check against the login page
+
+---
+
+## 3. Option B — Deploy the prebuilt image (GHCR)
+
+Use this for servers: no source tree and no build step. Images are
+published by GitHub Actions to the GitHub Container Registry on every
+release tag (multi-arch: `linux/amd64` + `linux/arm64`).
+
+You need only two files: `docker-compose.deploy.yml` and `.env`.
 
 ```bash
-cp .env.example .env   # isi PTK_ADMIN_PW + GHCR_OWNER (+ VANTHEX_TAG bila mau pin versi)
+mkdir vanthex && cd vanthex
+# copy docker-compose.deploy.yml and .env.example into this directory
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```dotenv
+PTK_ADMIN_PW=a-long-random-password
+GHCR_OWNER=<your-github-user>        # image: ghcr.io/<owner>/vanthex-osp
+GHCR_REPO=vanthex-osp
+VANTHEX_TAG=1.1                      # or 1.1.0, or latest
+# PTK_NVD_KEY=...                    # optional, recommended
+```
+
+Then:
+
+```bash
 docker compose -f docker-compose.deploy.yml pull
 docker compose -f docker-compose.deploy.yml up -d
 ```
 
-Image privat: login sekali di server dengan Personal Access Token
-(`read:packages`): `echo <PAT> | docker login ghcr.io -u <user> --password-stdin`.
+> The `-f docker-compose.deploy.yml` flag is required for every
+> command because the file is not named `docker-compose.yml`.
+> The `.env` file must sit in the same directory as the compose file;
+> without it, the admin account falls back to the default password
+> `changeme123`.
 
-Catatan keamanan repo: `.gitignore` sudah mengecualikan `toolkit.db`,
-`secrets.key`, dan `.env` — jangan pernah commit ketiganya.
+If the package is private, authenticate first:
+`echo <PAT> | docker login ghcr.io -u <your-github-user> --password-stdin`
+(a classic personal access token with `read:packages` is sufficient).
 
-## Operasional
+---
+
+## 4. Configuration (.env reference)
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PTK_ADMIN_PW` | Password of the seeded `admin` user (first start only; see §6) | `changeme123` |
+| `PTK_NVD_KEY` | NVD API key for faster CVE cache synchronization | — |
+| `PTK_ALLOWED_TARGETS` | Comma-separated scan-target allowlist (extra guard) | — |
+| `PTK_CANARY_BASE` | Public base URL of the out-of-band canary listener | — |
+| `PTK_CANARY_PORT` | Canary listener port | `8977` |
+| `PTK_COOKIE_SECURE` | `1` marks session cookies `Secure` (HTTPS deployments) | — |
+| `GHCR_OWNER` / `GHCR_REPO` | Image coordinates for the deploy compose file | — / `vanthex-osp` |
+| `VANTHEX_TAG` | Image tag for the deploy compose file | `latest` |
+
+---
+
+## 5. Persistence model
+
+All state lives in the **`vanthex-data`** volume, mounted at `/data`:
+
+| File in the volume | Contents |
+|---|---|
+| `toolkit.db` | SQLite database: scans, findings, users, schedules, audit log, CVE cache |
+| `secrets.key` | Fernet key for the encrypted credential vault |
+
+The entrypoint (`docker-entrypoint.sh`) symlinks both files from the
+application directory into `/data` at container start, so rebuilds,
+image upgrades, and container recreation never lose state. Uploaded
+mobile packages are processed from staging and their results are
+stored in the database.
+
+**Backup:** stop the container and archive the volume:
 
 ```bash
-docker compose logs -f        # log aplikasi
-docker compose restart        # restart
-docker compose down           # berhenti (data tetap)
-docker compose down -v        # berhenti + HAPUS semua data
+docker compose down
+docker run --rm -v vanthex-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/vanthex-backup.tar.gz -C /data .
 ```
 
-## Catatan posisi jaringan (vantage) — penting untuk akurasi scan
+---
 
-- Scan lapisan web (vulnscan, headers, SSL, dirs, passive, mobile, dll)
-  bekerja normal dari container.
-- Scan lapisan jaringan (Ports, SYN, UDP) mengukur **dari posisi jaringan
-  container** (NAT Docker secara default), bukan dari posisi host. Hasilnya
-  menggambarkan keterlihatan target dari jaringan Docker — sah, tapi sadari
-  bedanya bila targetmu ada di LAN yang sama dengan host.
-- Untuk memindai target LAN dari posisi host (Linux), aktifkan opsi
-  `network_mode: host` yang sudah disiapkan (berkomentar) di
-  `docker-compose.yml` dan hapus blok `ports:`.
-- SYN scan butuh raw socket: `cap_add: NET_RAW` sudah termasuk di compose,
-  tetapi host tetap harus mengizinkannya (kebijakan kernel/LSM). Bila tidak,
-  VANTHEX melaporkannya secara jujur sebagai *inconclusive* — bukan sebagai
-  "port tertutup".
-- Listener canary OOB (untuk uji SSRF/blind) mendengarkan di dalam
-  container; agar target bisa menelepon balik, terbitkan URL publiknya dan
-  set `PTK_CANARY_BASE` di `.env`.
+## 6. Operations
 
-## Troubleshooting
+```bash
+docker compose ps                       # status + health
+docker compose logs -f                  # follow logs
+docker compose restart                  # restart in place
+docker compose down                     # stop (state persists in the volume)
+docker compose down -v                  # stop and DELETE all state
+```
 
-- **Port 5000 sudah dipakai** → ubah sisi kiri mapping di compose,
-  mis. `"15000:5000"`, lalu buka `http://localhost:15000`.
-- **Login ditolak** → password dibaca dari `PTK_ADMIN_PW` saat database
-  pertama dibuat. Kalau DB sudah terlanjur dibuat dengan password lama,
-  ubah lewat dashboard (Settings) atau hapus volume (`down -v`) untuk
-  mulai bersih.
-- **Container unhealthy** → `docker compose logs` untuk melihat error
-  startup; penyebab tersering: `.env` belum dibuat.
+**Changing the admin password:** `PTK_ADMIN_PW` seeds the account only
+when the database is first created. Change it later from the dashboard
+(System Settings → Users), or reset everything with
+`docker compose down -v` and a fresh `.env` (history is discarded).
+
+**Upgrading (deploy variant):**
+
+```bash
+# edit VANTHEX_TAG in .env to the new version, then:
+docker compose -f docker-compose.deploy.yml pull
+docker compose -f docker-compose.deploy.yml up -d
+```
+
+**Upgrading (build variant):** `git pull`, then
+`docker compose up -d --build`. Database migrations are automatic and
+backward-compatible.
+
+---
+
+## 7. Networking notes
+
+- **Bridge mode (default):** the container scans targets through the
+  host's NAT — the same vantage point as the host itself.
+- **Host network (optional):** uncomment `network_mode: host` in
+  `docker-compose.yml` when the container must see the host's interfaces
+  directly (e.g. LAN-local targets or raw-socket scans); the published
+  `ports:` entry is then ignored and the service listens on the host's
+  port 5000 directly.
+- **Exposure guidance:** do not publish port 5000 directly to the
+  internet. Place VANTHEX behind a VPN, an SSH tunnel, or an
+  authenticated TLS reverse proxy (and set `PTK_COOKIE_SECURE=1`).
+
+---
+
+## 8. Troubleshooting
+
+| Symptom | Cause / remedy |
+|---|---|
+| Container exits immediately | Read `docker compose logs`; the usual cause is an invalid `.env` (e.g. unescaped characters) |
+| `permission denied` on the volume | The volume is managed by Docker; do not edit its files from the host while the container runs |
+| Login works with `changeme123` despite `.env` | The `.env` file is not beside the compose file, or the database was created before the variable was set (see §6) |
+| SYN scan *inconclusive* | The host forbids `NET_RAW` even with `cap_add`; use host networking or accept the honest inconclusive result |
+| Port 5000 already allocated | Change the host side of the mapping, e.g. `"8080:5000"`, in the compose file |
+| CVE sync slow / rate-limited | Set `PTK_NVD_KEY` in `.env` and recreate the container |
