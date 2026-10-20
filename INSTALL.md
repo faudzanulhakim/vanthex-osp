@@ -82,7 +82,8 @@ Then open <http://localhost:5000> and sign in:
 
 - **Username:** `admin`
 - **Password:** the value of `PTK_ADMIN_PW` (if the variable is unset at
-  first run, the default is `changeme123` — change it immediately)
+  first run, a strong random password is generated and printed once at
+  startup — there is no default password)
 
 Notes on state created at first run, in the application directory:
 
@@ -110,7 +111,7 @@ python -m pytest tests/ -q                 # full verification suite (128 tests)
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `PTK_ADMIN_PW` | Password of the seeded `admin` user | `changeme123` |
+| `PTK_ADMIN_PW` | Password of the seeded `admin` user | — (none; random-generated if unset) |
 | `PTK_NVD_KEY` | NVD API key — raises CVE-sync rate limits substantially | — |
 | `PTK_ALLOWED_TARGETS` | Comma-separated target allowlist (exact host, `*.domain`, or suffix) — an extra guard on top of the in-UI authorization gate | — (all hosts allowed) |
 | `PTK_CANARY_BASE` | Public base URL of the out-of-band canary listener (required for blind-SSRF confirmation on internet targets) | — |

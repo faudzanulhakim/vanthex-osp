@@ -14,7 +14,7 @@ import time
 import report_common as RC
 
 COMPANY = os.environ.get("PTK_COMPANY", "PTK Security Assessment")
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 SEV_COLOR = {"CRITICAL": "#9B2226", "HIGH": "#C05621", "MEDIUM": "#975A16",
              "LOW": "#4A5568", "INFO": "#2B6CB0", "CLEAN": "#276749"}

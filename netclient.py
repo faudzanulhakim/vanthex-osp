@@ -16,7 +16,7 @@ import time
 import urllib.request
 from urllib.parse import urlparse
 
-UA = "VANTHEX/1.8.0 (self-built; authorized testing only)"
+UA = "VANTHEX/1.1.1 (self-built; authorized testing only)"
 MAX_BODY = 262144  # 256 KB
 
 

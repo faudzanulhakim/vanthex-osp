@@ -166,7 +166,7 @@ def engine_info():
     except Exception:
         profiles = {}
     return {
-        "version": "1.1.0",
+        "version": "1.1.1",
         "engine": 'self-built (no ready-made scanner tools: nmap/nuclei/etc. are never invoked)',
         "libraries": libs,
         "html_parser": "beautifulsoup4" if libs.get("beautifulsoup4") else "regex-fallback",
@@ -259,7 +259,7 @@ def login_locked(ip):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "VANTHEX/1.1.0"
+    server_version = "VANTHEX/1.1.1"
 
     def log_message(self, fmt, *args):
         pass
@@ -546,13 +546,21 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._json(500, {"error": str(e)[:300]})
                 return
-            self._json(code, envelope)
+            extra = []
+            if name == "logout":
+                # A real sign-out: invalidate the caller's own browser
+                # session as well, not only the actions layer's internal
+                # one, and clear its cookie.
+                SESSIONS.pop(tok, None)
+                extra = [("Set-Cookie",
+                          "ptk_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict")]
+            self._json(code, envelope, extra)
             return
 
         if path == "/api/logout":
             SESSIONS.pop(tok, None)
             self._json(200, {"ok": True},
-                       [("Set-Cookie", "ptk_session=; Max-Age=0; Path=/")])
+                       [("Set-Cookie", "ptk_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict")])
         elif path.startswith("/api/job/") and path.endswith("/cancel"):
             job = JOBS.get(path.split("/")[-2])
             if not job:
@@ -1378,8 +1386,12 @@ def main():
     _start_canary()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"[i] VANTHEX Offensive Security Platform v1.1.0 -> http://0.0.0.0:{port}")
-    print("[i] Default login: admin / changeme123 (set PTK_ADMIN_PW to override)")
+    print(f"[i] VANTHEX Offensive Security Platform v1.1.1 -> http://0.0.0.0:{port}")
+    if getattr(store, "GENERATED_ADMIN_PW", None):
+        print(f"[!] PTK_ADMIN_PW not set: generated one-time admin password: {store.GENERATED_ADMIN_PW}")
+        print("[!] Record it now (shown only at this first startup); set PTK_ADMIN_PW to use your own.")
+    else:
+        print("[i] Admin login: admin (password from PTK_ADMIN_PW)")
     print("[!] AUTHORIZED TESTING ONLY")
     try:
         srv.serve_forever()

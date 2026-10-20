@@ -1719,6 +1719,29 @@ def _a_get_me(args: dict, port: int) -> dict:
     }
 
 
+def _a_logout(args: dict, port: int) -> dict:
+    """Sign the dashboard out. Drops the actions layer's cached internal
+    admin session (best-effort service logout with it). When the UI is
+    served by the service itself, the /actions handler in app2.py
+    additionally invalidates the caller's own browser session and clears
+    its cookie, so the sign-out is real there too."""
+    global _session_cookie, _session_exp
+    with _session_lock:
+        cookie = _session_cookie
+        _session_cookie = ""
+        _session_exp = 0.0
+    if cookie:
+        try:
+            requests.post(
+                f"http://127.0.0.1:{port}/api/logout",
+                headers={"Cookie": cookie},
+                timeout=FETCH_TIMEOUT_S,
+            )
+        except requests.RequestException:
+            pass
+    return {"loggedOut": True, "serviceDown": False, "error": ""}
+
+
 def _a_get_settings(args: dict, port: int) -> dict:
     res = call_service(port, "GET", "/api/settings")
     if res["down"] or not is_record(res["json"]):
@@ -2002,6 +2025,7 @@ _ACTIONS = {
     "setAssetMeta": _a_set_asset_meta,
     "deleteAsset": _a_delete_asset,
     "getMe": _a_get_me,
+    "logout": _a_logout,
     "getSettings": _a_get_settings,
     "saveSettings": _a_save_settings,
     "getTokens": _a_get_tokens,

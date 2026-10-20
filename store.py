@@ -16,6 +16,10 @@ import uuid
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "toolkit.db")
 
+# Set by init_db() when the first admin is seeded without PTK_ADMIN_PW:
+# a generated random password, surfaced once at startup by the caller.
+GENERATED_ADMIN_PW = None
+
 
 def _db():
     conn = sqlite3.connect(DB_PATH)
@@ -66,7 +70,13 @@ def init_db():
                   "('schema_version', '3')")
         if not c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             import hashlib, secrets
-            pw = os.environ.get("PTK_ADMIN_PW", "changeme123")
+            pw = os.environ.get("PTK_ADMIN_PW", "").strip()
+            if not pw:
+                # No known default password: generate a strong random
+                # one; app2 surfaces it once at this first startup.
+                global GENERATED_ADMIN_PW
+                pw = secrets.token_urlsafe(18)
+                GENERATED_ADMIN_PW = pw
             salt = secrets.token_hex(16)
             h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 200_000).hex()
             c.execute("INSERT INTO users VALUES('admin',?,?, 'admin')", (salt, h))

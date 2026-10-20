@@ -7,13 +7,13 @@
 services:
   vanthex:
     build: .
-    image: vanthex:1.1.0
+    image: vanthex:1.1.1
     container_name: vanthex
     restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
-      PTK_ADMIN_PW: ${PTK_ADMIN_PW:-changeme123}
+      PTK_ADMIN_PW: ${PTK_ADMIN_PW:?PTK_ADMIN_PW must be set in .env - see .env.example}
       PTK_NVD_KEY: ${PTK_NVD_KEY:-}
       PTK_ALLOWED_TARGETS: ${PTK_ALLOWED_TARGETS:-}
       # Public base URL of the OOB canary listener, if you expose it for

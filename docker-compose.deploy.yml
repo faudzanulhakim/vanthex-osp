@@ -17,7 +17,7 @@ services:
     ports:
       - "5000:5000"
     environment:
-      PTK_ADMIN_PW: ${PTK_ADMIN_PW:-changeme123}
+      PTK_ADMIN_PW: ${PTK_ADMIN_PW:?PTK_ADMIN_PW must be set in .env - see .env.example}
       PTK_NVD_KEY: ${PTK_NVD_KEY:-}
       PTK_ALLOWED_TARGETS: ${PTK_ALLOWED_TARGETS:-}
       PTK_CANARY_BASE: ${PTK_CANARY_BASE:-}

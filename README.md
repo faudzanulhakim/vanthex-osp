@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0-crimson">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.1.1-crimson">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-blue">
   <img alt="Engine" src="https://img.shields.io/badge/engine-self--built-success">
   <img alt="Tests" src="https://img.shields.io/badge/tests-128%20passing-brightgreen">
@@ -197,10 +197,11 @@ export PTK_ADMIN_PW='a-long-random-password'   # Windows: set PTK_ADMIN_PW=...
 python app2.py 5000
 ```
 
-Open <http://localhost:5000> (login `admin` / your `PTK_ADMIN_PW`;
-default `changeme123` if the variable is unset at first run — change
-it immediately; the variable only seeds the account when the database
-is first created).
+Open <http://localhost:5000> (login `admin` / your `PTK_ADMIN_PW`.
+There is no default password: if the variable is unset at first run,
+a strong random password is generated and printed once at startup.
+The variable only seeds the account when the database is first
+created).
 
 **Run as a service (Linux/systemd):**
 
@@ -218,7 +219,7 @@ All configuration is via environment variables:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `PTK_ADMIN_PW` | Password of the seeded `admin` user | `changeme123` |
+| `PTK_ADMIN_PW` | Password of the seeded `admin` user | — (none; random-generated if unset) |
 | `PTK_NVD_KEY` | NVD API key for faster CVE cache sync | — |
 | `PTK_ALLOWED_TARGETS` | Comma-separated scan-target allowlist (extra guard) | — |
 | `PTK_CANARY_BASE` | Public base URL of the OOB canary listener | — |

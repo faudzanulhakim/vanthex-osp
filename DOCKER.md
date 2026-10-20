@@ -83,8 +83,8 @@ docker compose -f docker-compose.deploy.yml up -d
 > The `-f docker-compose.deploy.yml` flag is required for every
 > command because the file is not named `docker-compose.yml`.
 > The `.env` file must sit in the same directory as the compose file;
-> without it, the admin account falls back to the default password
-> `changeme123`.
+> compose refuses to start while `PTK_ADMIN_PW` is unset in it —
+> there is no default password.
 
 If the package is private, authenticate first:
 `echo <PAT> | docker login ghcr.io -u <your-github-user> --password-stdin`
@@ -96,7 +96,7 @@ If the package is private, authenticate first:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `PTK_ADMIN_PW` | Password of the seeded `admin` user (first start only; see §6) | `changeme123` |
+| `PTK_ADMIN_PW` | Password of the seeded `admin` user (first start only; see §6) | — (required) |
 | `PTK_NVD_KEY` | NVD API key for faster CVE cache synchronization | — |
 | `PTK_ALLOWED_TARGETS` | Comma-separated scan-target allowlist (extra guard) | — |
 | `PTK_CANARY_BASE` | Public base URL of the out-of-band canary listener | — |
@@ -182,7 +182,8 @@ backward-compatible.
 |---|---|
 | Container exits immediately | Read `docker compose logs`; the usual cause is an invalid `.env` (e.g. unescaped characters) |
 | `permission denied` on the volume | The volume is managed by Docker; do not edit its files from the host while the container runs |
-| Login works with `changeme123` despite `.env` | The `.env` file is not beside the compose file, or the database was created before the variable was set (see §6) |
+| Container refuses to start (`PTK_ADMIN_PW must be set`) | Create `.env` beside the compose file with a strong `PTK_ADMIN_PW` (see `.env.example`) |
+| Login fails with the `.env` password | The database was seeded before the variable was set — seeding happens only at first creation; sign in with the original password, or delete the `vanthex-data` volume to re-seed |
 | SYN scan *inconclusive* | The host forbids `NET_RAW` even with `cap_add`; use host networking or accept the honest inconclusive result |
 | Port 5000 already allocated | Change the host side of the mapping, e.g. `"8080:5000"`, in the compose file |
 | CVE sync slow / rate-limited | Set `PTK_NVD_KEY` in `.env` and recreate the container |

@@ -979,3 +979,22 @@ Muse artifact is now served directly by the service:
   schedule/suppression/token/secret CRUD, DOCX base64 reports).
 - Subsequent bundle synchronization: `sync-webui.sh` (copies the latest artifact
   client/dist into webui/).
+
+## v1.1.1 — Log Out + session hardening (2026-10-20)
+
+- The web UI gains real Log Out controls (header, sidebar user box, and
+  Settings → Service Session) backed by a new `logout` action. In
+  service-served deployments (native/Docker), signing out invalidates
+  the caller's browser session server-side and clears its cookie, so the
+  reload lands on the login page; the actions layer also drops its
+  cached internal session.
+- The UI signs out automatically after 30 minutes without activity,
+  the worker-side cached service session is dropped after 30 idle
+  minutes and never outlives the service cookie's own Max-Age, and
+  sign-out wipes cached data and persisted active-job tracking.
+- No default admin password: `changeme123` is removed everywhere. When
+  `PTK_ADMIN_PW` is unset at first database creation, a strong random
+  password is generated and printed once at startup. Both compose files
+  now refuse to start while `PTK_ADMIN_PW` is unset in `.env`.
+- Regression tests cover the seed behavior and the session-killing
+  logout flow (suite: 131 passed, 3 skipped).
