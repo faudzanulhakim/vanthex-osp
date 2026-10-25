@@ -1,4 +1,4 @@
-# VANTHEX — Offensive Security Platform (v1.1.0)
+# VANTHEX — Offensive Security Platform (v1.9.0)
 # Native alternative: see INSTALL.md. This image packages the same
 # self-built engine; no ready-made scanner tools are installed or invoked.
 FROM python:3.12-slim

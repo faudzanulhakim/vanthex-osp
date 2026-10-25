@@ -1137,13 +1137,30 @@ def _a_start_mobile_upload(args: dict, port: int) -> dict:
             created = meta.get("createdAt") if is_record(meta) else None
             if isinstance(created, (int, float)) and created < cutoff:
                 shutil.rmtree(child, ignore_errors=True)
+    # Validate the declared shape up front: the chunk writer and the
+    # finisher do arithmetic/comparisons on these values, so they are
+    # coerced to bounded ints here instead of trusting the client.
+    # (512 chunks x 768 KiB and 60 MB both sit far above the real
+    # client's needs and match the service's own package cap.)
+    try:
+        total_chunks = int(args.get("totalChunks"))
+        total_size = int(args.get("totalSize"))
+    except (TypeError, ValueError):
+        total_chunks, total_size = 0, -1
+    if not (1 <= total_chunks <= 512) \
+            or not (0 <= total_size <= 60 * 1024 * 1024):
+        return {
+            "uploadId": "",
+            "serviceDown": False,
+            "error": "Invalid upload declaration (chunk count or total size out of range).",
+        }
     upload_id = str(uuid.uuid4())
     d = _STAGING_ROOT / upload_id
     d.mkdir(parents=True, exist_ok=True)
     meta = {
         "filename": filename,
-        "totalChunks": args.get("totalChunks"),
-        "totalSize": args.get("totalSize"),
+        "totalChunks": total_chunks,
+        "totalSize": total_size,
         "createdAt": int(time.time() * 1000),
     }
     (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
@@ -1160,7 +1177,18 @@ def _a_upload_mobile_chunk(args: dict, port: int) -> dict:
         }
     d, meta = loaded
     index = args.get("index")
-    if not isinstance(index, (int, float)) or index >= meta.get("totalChunks", 0):
+    try:
+        total_chunks = int(meta.get("totalChunks", 0))
+    except (TypeError, ValueError):
+        total_chunks = 0
+    try:
+        idx = int(index) if isinstance(index, (int, float)) \
+            and not isinstance(index, bool) else -1
+    except (TypeError, ValueError, OverflowError):
+        idx = -1
+    # Reject negative/fractional indices: a negative index used to pass
+    # this check and write a chunk file the finisher could never count.
+    if idx < 0 or idx != index or idx >= total_chunks:
         return {
             "received": 0,
             "serviceDown": False,
@@ -1169,6 +1197,7 @@ def _a_upload_mobile_chunk(args: dict, port: int) -> dict:
     data = args.get("dataBase64")
     if (
         not isinstance(data, str)
+        or len(data) > 2_000_000
         or len(data) % 4 != 0
         or not re.fullmatch(r"[A-Za-z0-9+/=]+", data)
     ):
@@ -1178,7 +1207,7 @@ def _a_upload_mobile_chunk(args: dict, port: int) -> dict:
             "error": "Chunk data is not valid base64.",
         }
     # Idempotent per index: a retried chunk replaces the stored one.
-    _chunk_path(d, int(index)).write_text(data, encoding="utf-8")
+    _chunk_path(d, idx).write_text(data, encoding="utf-8")
     received = len(_chunk_indices(d))
     return {"received": received, "serviceDown": False, "error": ""}
 
@@ -1553,10 +1582,24 @@ def _a_set_finding_status(args: dict, port: int) -> dict:
     return _service_error_result(res)
 
 
+_REPORT_LANGS = {"en", "id", "es", "fr", "de", "pt",
+                 "ru", "ja", "ko", "zh", "ar", "hi"}
+
+
+def _report_lang(args: dict) -> str:
+    """Bahasa laporan dari argumen action `lang` (bahasa UI peminta).
+    Absen/tidak valid -> '' (service default ke English)."""
+    code = str(args.get("lang") or "").strip().lower().replace("_", "-").split("-")[0]
+    return code if code in _REPORT_LANGS else ""
+
+
 def _a_get_report_docx(args: dict, port: int) -> dict:
     scan_id = args.get("scanId")
+    lang = _report_lang(args)
     res = call_service(
-        port, "GET", f"/report/{_enc(scan_id)}?fmt=docx", binary=True
+        port, "GET",
+        f"/report/{_enc(scan_id)}?fmt=docx" + (f"&lang={lang}" if lang else ""),
+        binary=True,
     )
     if res["down"] or res["status"] >= 400 or not res["base64"]:
         return {
@@ -1577,7 +1620,11 @@ def _a_get_report_docx(args: dict, port: int) -> dict:
 
 def _a_get_report_html(args: dict, port: int) -> dict:
     scan_id = args.get("scanId")
-    res = call_service(port, "GET", f"/report/{_enc(scan_id)}")
+    lang = _report_lang(args)
+    res = call_service(
+        port, "GET",
+        f"/report/{_enc(scan_id)}" + (f"?lang={lang}" if lang else ""),
+    )
     if res["down"] or res["status"] >= 400:
         return {
             "html": "",

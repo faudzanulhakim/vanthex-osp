@@ -10,6 +10,8 @@ sebelum submisi eksternal; skor numerik temuan tetap yang utama.
 import re
 from urllib.parse import urlsplit
 
+import report_i18n as RI
+
 # Vektor representatif per CWE (base metrics CVSS v3.1).
 CVSS_BY_CWE = {
     "CWE-89": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
@@ -100,29 +102,36 @@ def cvss_vector(f):
     return CVSS_BY_CWE.get(_cwe_id(f)) or CVSS_BY_SEV.get(f.get("severity"), CVSS_BY_SEV["INFO"])
 
 
-def impact_for(f):
-    return IMPACT_BY_CWE.get(_cwe_id(f)) or IMPACT_GENERIC.get(f.get("severity"), "")
+def impact_for(f, lang="en"):
+    """Teks dampak KERANGKA per kelas CWE (bukan data temuan) — terlokalisasi
+    mengikuti bahasa laporan; default 'en' identik dengan teks lama."""
+    cid = _cwe_id(f)
+    if cid in IMPACT_BY_CWE:
+        return RI.t(lang, "impact_cwe_" + cid.split("-")[1])
+    return RI.t(lang, "impact_gen_" + str(f.get("severity") or "INFO").lower())
 
 
-def steps_for(f, target=""):
-    """Langkah reproduksi gaya HackerOne, dibangun dari atribut temuan."""
+def steps_for(f, target="", lang="en"):
+    """Langkah reproduksi gaya HackerOne, dibangun dari atribut temuan.
+    Kerangka kalimatnya terlokalisasi mengikuti bahasa laporan."""
     loc = f.get("location") or "/"
     prm = f.get("param") or ""
     ev = str(f.get("evidence") or "")
     steps = []
-    steps.append(f"Open the target application ({target or loc}) with a standard HTTP client/browser, without any special privileges beyond those stated in the finding.")
+    steps.append(RI.t(lang, "step_open", x=(target or loc)))
     if prm:
-        steps.append(f"Send a request to {loc} with the '{prm}' parameter set to the test value recorded in this finding's Evidence section.")
+        steps.append(RI.t(lang, "step_param", loc=loc, param=prm))
     else:
-        steps.append(f"Send a standard request (GET) to {loc} and inspect the response headers and body.")
+        steps.append(RI.t(lang, "step_plain", loc=loc))
     m = re.search(r"payload=\s*('(?:[^']*)'|\"(?:[^\"]*)\"|\S+)", ev)
     if m:
-        steps.append(f"Test value used: {m.group(1)[:120]}")
+        steps.append(RI.t(lang, "step_test_value", value=m.group(1)[:120]))
     title_l = (f.get("title") or "").lower()
-    obs = next((txt for key, txt in OBSERVE_BY_KEY if key in title_l),
-               "The vulnerable behavior recorded in the Evidence is observed in the response.")
-    steps.append(f"Observe the result: {obs}")
-    steps.append("As a control, repeat the request with a normal value (baseline) \u2014 the behavior above does not occur, confirming the finding is specific to the test value.")
+    obs_key = next((key for key, _txt in OBSERVE_BY_KEY if key in title_l), None)
+    obs = (RI.t(lang, "observe_" + obs_key) if obs_key
+           else RI.t(lang, "step_default_obs"))
+    steps.append(RI.t(lang, "step_observe", obs=obs))
+    steps.append(RI.t(lang, "step_control"))
     return steps
 
 
@@ -143,15 +152,15 @@ def poc_for(f, target=""):
     return "\n".join(lines)
 
 
-def refs_for(f):
+def refs_for(f, lang="en"):
     refs = []
     cid = _cwe_id(f)
     if cid:
         refs.append(f"{cid}: https://cwe.mitre.org/data/definitions/{cid.split('-')[1]}.html")
     if f.get("owasp"):
-        refs.append(f"Category: {f['owasp']} \u2014 OWASP Top 10 / API Security Top 10")
-    refs.append("Testing guide: OWASP Web Security Testing Guide (WSTG) \u2014 https://owasp.org/www-project-web-security-testing-guide/")
-    refs.append("CVSS v3.1 calculator & specification: https://www.first.org/cvss/calculator/3.1")
+        refs.append(RI.t(lang, "ref_category", owasp=f["owasp"]))
+    refs.append(RI.t(lang, "ref_testing_guide") + " \u2014 https://owasp.org/www-project-web-security-testing-guide/")
+    refs.append(RI.t(lang, "ref_cvss_calc") + ": https://www.first.org/cvss/calculator/3.1")
     return refs
 
 def data_fingerprint(scan):

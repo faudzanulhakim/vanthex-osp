@@ -484,7 +484,7 @@ def _tcp_connect(host, port, timeout=5.0):
         raise
 
 
-def http_probe(base_url, paths=None, timeout=5.0, user_agent="VANTHEX/1.1.1"):
+def http_probe(base_url, paths=None, timeout=5.0, user_agent="VANTHEX/1.9.0"):
     """Probe path di root target lewat klien sadar-proxy (netclient).
     Dua path acak menjadi baseline soft-404: hasil yang menandatangani
     signature yang sama ditandai catch_all agar shell SPA tidak dilaporkan
@@ -665,7 +665,7 @@ def _doh_json(name, rrtype="TXT", timeout=6.0):
     for base in ("https://cloudflare-dns.com/dns-query?",
                  "https://dns.google/resolve?"):
         req = _u.Request(base + q, headers={"Accept": "application/dns-json",
-                                            "User-Agent": "VANTHEX/1.1.1"})
+                                            "User-Agent": "VANTHEX/1.9.0"})
         try:
             with _u.urlopen(req, timeout=timeout) as r:
                 return _json.loads(r.read().decode("utf-8", "replace"))

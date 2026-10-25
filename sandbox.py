@@ -45,12 +45,31 @@ def run_worker(script, args, timeout):
             f"(rc={proc.returncode}): {(err or '')[-300:]}")
 
 
-def analyze_package_sandboxed(fpath, fname, timeout=None, log=None):
+def analyze_package_sandboxed(fpath, fname, timeout=None, log=None,
+                              baseline=None):
     """Analisis APK/IPA lewat subprocess sandbox. Mengembalikan result
     dict yang sama seperti mobile.analyze_package, ditambah metadata
-    sandbox di result['meta']['sandbox']."""
+    sandbox di result['meta']['sandbox'].
+    baseline (v1.9.0): operator secret-baseline entries (hashes only) —
+    handed to the worker through a temp JSON file (argv[3])."""
     timeout = timeout or int(os.environ.get("PTK_SANDBOX_TIMEOUT", "180"))
-    env_obj = run_worker(WORKER, [fpath, fname], timeout)
+    args = [fpath, fname]
+    bl_path = None
+    if baseline:
+        import tempfile
+        fd, bl_path = tempfile.mkstemp(prefix="ptk-baseline-",
+                                       suffix=".json")
+        with os.fdopen(fd, "w") as fh:
+            json.dump(baseline, fh)
+        args.append(bl_path)
+    try:
+        env_obj = run_worker(WORKER, args, timeout)
+    finally:
+        if bl_path:
+            try:
+                os.unlink(bl_path)
+            except Exception:
+                pass
     if log is not None:
         log.extend(env_obj.get("log", []))
     if not env_obj.get("ok"):

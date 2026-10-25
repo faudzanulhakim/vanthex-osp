@@ -23,3 +23,6 @@ defusedxml==0.7.1
 psutil==7.2.2
 pip-audit==2.10.1
 pip-tools==7.6.2
+# --- v1.12.0 (2026-10-23): sgp4 disetujui ADE (keputusan K2, propagasi satelit
+# TLE untuk OSINT Globe; komputasi lokal murni, tanpa jaringan) ---
+sgp4==2.27

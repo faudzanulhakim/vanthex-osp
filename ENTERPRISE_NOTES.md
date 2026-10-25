@@ -998,3 +998,131 @@ Muse artifact is now served directly by the service:
   now refuse to start while `PTK_ADMIN_PW` is unset in `.env`.
 - Regression tests cover the seed behavior and the session-killing
   logout flow (suite: 131 passed, 3 skipped).
+
+## v1.2.0 — PayloadsAllTheThings Priority 1 (2026-10-20)
+
+Four additions designed in `vanthex-priority1-design.md` and mapped in
+`vanthex-vs-payloadsallthethings-mapping.md`. enterprise-full grows
+50 → 53 checks; active-standard 23 → 24; active-deep 47 → 50.
+
+- **Step 0 — `secretpatterns.py`**: the secret patterns formerly private
+  to `mobile.py` (`_SECRET_PATTERNS`, `_GENERIC_SECRET_RE`, `_mask`) now
+  live in one shared module; mobile imports them from there with zero
+  behavior change (mobile/IPA tests stay green).
+- **`c_tabnabbing` (new, `_ACTIVE_BASE`)**: scans up to 10 crawled pages
+  for external `target=_blank` links without `rel=noopener/noreferrer`
+  and reports ONE aggregated finding (LOW, CVSS 3.7, CWE-1022,
+  `confirmed` for the markup pattern). The description carries the
+  honesty caveat: modern browsers apply `noopener` implicitly since
+  ~2021; the residual risk is legacy browsers and embedded WebViews.
+- **XPath injection (inside `c_web_injection`, after LDAP)**: error
+  signatures (exception classes / XQuery codes — the bare word "xpath"
+  is never a signature) yield HIGH `probable`; two independent boolean
+  pairs (string logic + `count(/*)` structure) must both pass
+  (sim(T,F) < 0.75, T reproducible > 0.90, len(T) > 1.2× len(F)) for
+  HIGH `confirmed`. One pair only = `probable`. Skipped when SQL is
+  already proven structurally on the parameter (a time-based SQLi hit
+  alone does not close the gate) and in JSON contexts. No blind
+  extraction, no OOB. Deviation from the design doc: the "first 10
+  parameters" cap proved unworkable — `param_targets` merges sources
+  round-robin, so an XPath endpoint linked late in the crawl falls
+  outside ANY fixed head-cap depending on the crawl page budget
+  (verified empirically at max_pages 25/30/40). Instead the XPath
+  section (factored into `_xpath_probe`) runs on every main injection
+  target (≤ 8 requests each, gates apply) plus an extra pass over up
+  to 6 GET parameters from the wider `param_targets(limit=60)` pool
+  that the main list (limit=30) did not include.
+- **`c_exposed_secrets` (new, `_ADVANCED`)**: scans the homepage and up
+  to 12 same-host JS files (new `Surface.js_urls` in the crawler;
+  bundle-like names prioritized, never blind-capped). Tier A
+  provider patterns (13) report at their mobile severities as
+  `probable`; Tier B generic assignments are `candidate` behind a
+  value denylist (published examples such as AKIAIOSFODNN7EXAMPLE,
+  `sk_test_` keys, placeholders, env references) and a Shannon entropy
+  gate (≥ 3.5). Evidence is always `_mask()`-redacted — full keys
+  never enter findings, logs, the database, or reports — and keys are
+  NEVER validated against their provider (decision D5). Source-map
+  `sourcesContent` scanning is deferred.
+- **`c_hidden_params` (new, `_ADVANCED`, finding-only)**: GET-only
+  hidden-parameter discovery on up to 3 prioritized endpoints with a
+  curated 48-name wordlist. Batch-of-12 probing with recursive bisect
+  (4 bisection levels), a mandatory junk-name control (an endpoint
+  whose response changes for junk names is skipped), stability gate,
+  and per-name verification with fresh marker values (must differ
+  from both baseline and junk control). One finding per endpoint
+  (LOW, CVSS 2.0, CWE-235, `probable`) that explicitly states a
+  hidden parameter is surface, not a proven vulnerability. Results
+  are NOT fed into `param_targets` in v1 (decision D2). Per-endpoint
+  requests are hard-capped at 48.
+- **Fixture + battery**: fixture gains `/xpath/search` (verbose
+  errors), `/xpath/blind` (generic errors, boolean-only proof),
+  `/safe/xpath/search`, `/static/secrets.js`, `/static/clean.js`
+  (traps only), `/hidden` + `/safe/hidden`, `/trap/dynamic`, and four
+  tabnabbing test links on the homepage. `tests/test_priority1.py`
+  adds 12 tests; the battery gains 6 recall categories (now 61) and
+  Priority-1 negative controls — recall full, FP 0.
+- **Verification (v1.2.0)**: full suite 143 passed (131 from v1.1.1 +
+  12 new `test_priority1` tests, 0 failed); battery 2 passed with the
+  6 new recall categories and `checks_total == 53` asserted.
+
+## v1.3.0 — Deep OSINT + Secrets Engine v2 (2026-10-21)
+
+Implements the approved design `vanthex-osint-secrets-design.md`
+(decisions: K1 provider validation stays REJECTED, K2 username OSINT
+in scope, K3 breach module built but OFF by default).
+
+- **Secrets Engine v2** (`secretpatterns.DETECTORS_V2`, 72 detectors =
+  14 carried over from v1.2.0 + 58 new): every detector has a specific
+  regex, optional mandatory context, and where the format allows it a
+  LOCAL structural validator — GitHub classic-token CRC32 checksum,
+  private-key parsing via `cryptography`, JWT header/payload decoding
+  (alg=none is its own finding), AWS access-key/secret pairing, GCP
+  service-account document structure. Tier ladder: pattern-only =
+  candidate; structurally valid = probable; parsed material /
+  complete pair = confirmed EXPOSURE (liveness is never claimed and
+  no provider is ever contacted, decision D5/K1).
+- **Decoder layers**: base64 / hex / URL-encoded / unicode-escaped /
+  JS-concatenation variants of every scanned file are decoded and
+  re-scanned; evidence names the layer. Hard caps bound the work.
+- **New sources**: source-map `sourcesContent` (the phase deferred
+  from v1.2.0), bodies of signature-verified sensitive files fed by
+  `c_sensitive_files` (config-style assignment scanning), and Wayback
+  snapshots inside the OSINT scan type.
+- **`c_git_secrets`** (new check in `_ADVANCED`; enterprise-full
+  53 -> 54): pure-Python zlib loose-object walker (HEAD -> ref ->
+  commits -> trees -> blobs + `logs/HEAD`) over a confirmed-exposed
+  `/.git`; the git binary is never invoked; object/byte caps apply.
+- **New scan type `osint`** (`osint.py`, no active-authorization
+  requirement, target allowlist still applies): A1 infrastructure
+  intelligence (RDAP owner/prefix/ASN for DoH-resolved IPs, NS/MX
+  provider fingerprints from record hostnames); A2 CT deep parse
+  (names seen only on expired certificates that no longer resolve =
+  candidate shadow subdomains) + Wayback CDX history whose archived
+  JS/config snapshots are scanned by the Secrets Engine; A3 username
+  OSINT over 45 curated platforms with a MANDATORY junk-handle control
+  probe per platform (catch-all platforms are downgraded to
+  candidate "unverified presence signal"; `probable` needs a clean
+  control AND a content marker); A4 GitHub/GitLab public search with
+  fetched READMEs scanned by the Secrets Engine (GitHub code search
+  honestly reports "not evaluated" without authentication); A5 breach
+  exposure built but OFF by default — opt-in only, API key solely via
+  the secrets vault, findings always candidate + source-labelled.
+  External-source failures are warnings, never findings.
+- **Fixture + battery**: fixture gains an in-process exposed `.git`
+  (two-commit history; the old commit carries an AWS credential pair),
+  a secret inside `app.js.map` `sourcesContent`, a base64-embedded
+  secret in `secrets.js`, and simulated username platforms
+  (`/sim/users` strict, `/sim/catchall` catch-all). `tests/test_v13.py`
+  adds 13 tests: a per-detector battery (58 new detectors x positive
+  samples + a padded trap corpus, FP = 0), structural-validator tier
+  tests, `.git`/source-map/decoder integration, and hermetic OSINT
+  tests for A1-A5 incl. the control gate. Battery recall categories
+  61 -> 62 (source-map secrets) plus explicit v1.3 controls
+  (git-history pair confirmed, decoder-layer evidence present) and
+  `checks_total == 54` asserted.
+- **Verification (v1.3.0)**: full suite 156 passed (154 non-battery —
+  141 carried from v1.2.0 incl. regression tests + 13 new `test_v13`
+  tests — plus battery 2), 0 failed; battery recall categories
+  61 -> 62 with FP = 0 and `checks_total == 54` asserted; profiles
+  passive-quick 3 / passive-full 7 / active-standard 24 /
+  active-deep 51 / enterprise-full 54.

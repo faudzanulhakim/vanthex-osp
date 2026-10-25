@@ -1,0 +1,17 @@
+VANTHEX v1.22.0 (Fase 6) — MapLibre vendor status: ACQUIRED.
+
+Pin: maplibre-gl 5.24.0 (UMD), files:
+  maplibre-gl.js (1.056.837 B), maplibre-gl.css (70.024 B), LICENSE.txt (5.984 B)
+Source: one-time fetch from jsdelivr (approved by ADE 2026-10-25 09:37 WIB,
+single contact to cdn.jsdelivr.net):
+  https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js
+  https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css
+  https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/LICENSE.txt
+Pin verified from file contents (not URL alone): JS header license URL
+references blob/v5.24.0/LICENSE.txt, UMD shape confirmed (module.exports /
+define.amd / global.maplibregl), node --check passes.
+Runtime is vendored-only: no CDN reference remains in app.html.
+
+NOT a substitute: the OSIRIS clone copy (public/vendor/maplibre/6.7.0)
+is Turbopack chunks only (shared + worker .mjs, no public Map/Marker/
+Popup API) and was NOT used.

@@ -38,6 +38,37 @@ def cmd_passive(args):
     return 0
 
 
+def cmd_osint(args):
+    import osint
+    log, _lines = _log_to_stderr()
+    opts = {}
+    if args.query:
+        opts["query"] = args.query
+    if args.handle:
+        opts["handle"] = args.handle
+    if args.breach:
+        opts["breach"] = True
+    target = args.target or args.query
+    if not target:
+        print("osint requires a target or --query", file=sys.stderr)
+        return 2
+    _emit(osint.run_osint_recon(target, log, opts))
+    return 0
+
+
+def cmd_osint_selfcheck(args):
+    import osint
+    report = osint.self_check_platforms(
+        apply_disable=not args.no_disable)
+    counts = {}
+    for e in report:
+        counts[e["status"]] = counts.get(e["status"], 0) + 1
+    print(f"[osint-selfcheck] {counts} "
+          f"(disable persisted: {not args.no_disable})", file=sys.stderr)
+    _emit({"summary": counts, "platforms": report})
+    return 0
+
+
 def cmd_scan(args):
     if not args.authorized and not args.profile.startswith("passive"):
         print("active scanning requires --authorized (you confirm the target "
@@ -54,7 +85,8 @@ def cmd_scan(args):
         import canary as canary_mod
         _srv, _reg = canary_mod.serve(port=args.canary_port)
         opts["canary"] = {"registry": _reg,
-                          "base": f"http://127.0.0.1:{args.canary_port}"}
+                          "base": f"http://127.0.0.1:{args.canary_port}",
+                          "base_kind": "builtin"}
         print(f"canary listening on :{args.canary_port} (loopback base — "
               "targets must be able to reach this host)", file=sys.stderr)
     res = vulnscan2.run_vulnscan(args.target, args.profile, log=log,
@@ -108,6 +140,19 @@ def main(argv=None):
     p = sub.add_parser("passive", help="passive reconnaissance (public lookups)")
     p.add_argument("target", help="URL or host, e.g. https://example.com")
     p.set_defaults(fn=cmd_passive)
+
+    p = sub.add_parser("osint", help="universal deep OSINT (domain, IP, email, handle, person/institution name)")
+    p.add_argument("target", nargs="?", default="", help="URL or host, e.g. https://example.com (legacy form; or use --query)")
+    p.add_argument("--query", default="", help="universal OSINT query: person name, institution, domain, email, username/handle, or IP")
+    p.add_argument("--handle", default="", help="username/handle for A3 username OSINT (default: derived from domain)")
+    p.add_argument("--breach", action="store_true",
+                   help="enable A5 breach exposure (off by default; sends the domain to a third-party breach source)")
+    p.set_defaults(fn=cmd_osint)
+
+    p = sub.add_parser("osint-selfcheck", help="offline self-check of the A3 platform dataset (claimed/unclaimed handles); failing platforms are disabled persistently unless --no-disable")
+    p.add_argument("--no-disable", action="store_true",
+                   help="report only; do not persist disabling of failing platforms")
+    p.set_defaults(fn=cmd_osint_selfcheck)
 
     p = sub.add_parser("scan", help="web vulnerability scan (active engine)")
     p.add_argument("target")

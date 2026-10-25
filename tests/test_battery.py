@@ -81,10 +81,27 @@ EXPECT = {
     "JWT kid injection v1.10": "kid injection",
     "GraphQL batching v1.10": "GraphQL query batching enabled",
     "GraphQL suggestion v1.10": "GraphQL field suggestion leakage",
+    # --- tambahan battery v1.2 (Priority 1: PayloadsAllTheThings) ---
+    "XPath error v1.2": "XPath Injection (error indication)",
+    "XPath boolean v1.2": "XPath Injection (boolean-based)",
+    "secret Tier A v1.2": "AWS Access Key ID exposed in web content",
+    "secret Tier B v1.2": "Hardcoded credential indication in web content",
+    "hidden params v1.2": "Hidden parameters accepted: /hidden",
+    "tabnabbing v1.2": "Reverse tabnabbing:",
+    # --- tambahan battery v1.3 (OSINT + Secrets Engine v2) ---
+    "secret source-map v1.3": "SendGrid API key exposed in web content",
+    # --- tambahan battery v1.8.0 (Coverage Expansion; fixture memang
+    # ditanam rentan: LDAP simulator, GraphQL alias resolver, OIDC
+    # config longgar, upload yang menyajikan ulang file HTML) ---
+    "LDAP boolean v1.8": "LDAP Injection (boolean-based)",
+    "GraphQL alias v1.8": "GraphQL alias amplification accepted",
+    "OAuth ROPC v1.8": "OAuth password grant (ROPC) enabled",
+    "upload bypass v1.8": "Upload validation bypass",
 }
 
 INJECTION_CLASSES = ("XSS", "SQL", "SSRF", "CRLF", "redirect", "LFI", "CMDi",
-                     "SSTI", "XXE", "NoSQL", "Command Injection", "Traversal")
+                     "SSTI", "XXE", "NoSQL", "Command Injection", "Traversal",
+                     "XPath")
 
 
 def _wait(port, tries=40):
@@ -121,12 +138,58 @@ def test_battery_matrix():
         missing = [k for k, frag in EXPECT.items() if frag not in blob]
         assert not missing, f"KATEGORI LOLOS (MISS): {missing}"
         # Transparansi cakupan (v3.6): status per check harus tercatat lengkap.
-        # 46 = 43 check sampai v3.18 + 3 check Fase 4/v1.0.0 (c_blind_oob,
-        # c_bola_matrix, c_json_fuzz). Angka eksplisit disengaja: check yang
-        # hilang diam-diam dari registry harus menggagalkan battery ini.
+        # 59 = 54 sampai v1.7.0 + 4 check v1.8.0 (c_bfla_matrix,
+        # c_oauth_sso, c_dns_axfr, c_cloud_buckets; LDAP differential di
+        # dalam c_web_injection, GraphQL authz/depth di dalam
+        # c_graphql_deep, upload bypass di dalam c_upload_surface)
+        # + 1 check v1.10.0 (c_dependency_versions, WS2).
+        # Angka eksplisit disengaja: check yang hilang diam-diam dari
+        # registry harus menggagalkan battery ini.
         det = res.get("checks_detail") or []
-        assert len(det) == res["checks_total"] == 50, \
+        assert len(det) == res["checks_total"] == 59, \
             f"checks_detail {len(det)} != total {res['checks_total']}"
+        # Kontrol v1.3 (Secrets Engine v2): pasangan kredensial AWS dari
+        # riwayat .git terkonfirmasi paparannya; secret source-map dan
+        # lapisan base64 tertangkap dengan evidence berlabel.
+        gitsec = [f for f in res["findings"]
+                  if str(f.get("location", "")).startswith("/.git@")]
+        assert any(f["confidence"] == "confirmed"
+                   and "complete credential pair" in f["evidence"]
+                   for f in gitsec), gitsec
+        assert any("app.js.map#" in str(f.get("location", ""))
+                   for f in res["findings"]), \
+            [f.get("location") for f in res["findings"]]
+        assert any("base64-decoded" in f.get("evidence", "")
+                   for f in res["findings"]), \
+            [f.get("evidence") for f in res["findings"]]
+        # Kontrol Priority 1 (v1.2): jebakan secrets di clean.js tidak
+        # boleh menghasilkan temuan; tabnabbing tepat 1 teragregasi;
+        # hidden params tepat menyebut debug & preview.
+        assert not [f for f in res["findings"]
+                    if f.get("location") == "/static/clean.js"], \
+            [f["title"] for f in res["findings"]
+             if f.get("location") == "/static/clean.js"]
+        # Kontrol v1.4.0: meta canary selalu hadir dan jujur (battery
+        # berjalan TANPA canary -> configured False, base_kind none,
+        # tidak ada klaim callback), dan setiap teknologi membawa skor
+        # fingerprint WS3/K4 beserta sinyalnya di evidence temuan.
+        assert res["canary"]["configured"] is False, res["canary"]
+        assert res["canary"]["base_kind"] == "none", res["canary"]
+        assert res["canary"]["callbacks_received"] == 0, res["canary"]
+        assert all("score" in t for t in res["tech_profile"]), \
+            "teknologi tanpa skor fingerprint (WS3/K4)"
+        _tech_finds = [f for f in res["findings"]
+                       if f["title"].startswith("Technology detected:")]
+        assert _tech_finds and all("fingerprint score" in f["evidence"]
+                                   for f in _tech_finds), _tech_finds[:2]
+        tab = [f for f in res["findings"]
+               if f["title"].startswith("Reverse tabnabbing:")]
+        assert len(tab) == 1 and " 1 external" in tab[0]["title"], tab
+        hid = [f for f in res["findings"]
+               if f["title"].startswith("Hidden parameters accepted: /hidden")]
+        assert len(hid) == 1, hid
+        assert set(x.strip() for x in hid[0]["param"].split(",")) == \
+            {"debug", "preview"}, hid[0]["param"]
         # Kontrol negatif JWT forgery: endpoint ketat /api/profile tidak boleh
         # muncul sebagai dapat dipalsukan.
         forgery = [t for t in titles if "can be forged" in t]

@@ -1,4 +1,4 @@
-# VANTHEX — Offensive Security Platform (v1.1.0)
+# VANTHEX — Offensive Security Platform (v1.9.0)
 # Quick start:
 #   cp .env.example .env      # set a strong PTK_ADMIN_PW
 #   docker compose up -d --build
@@ -7,7 +7,7 @@
 services:
   vanthex:
     build: .
-    image: vanthex:1.1.1
+    image: vanthex:1.9.0
     container_name: vanthex
     restart: unless-stopped
     ports:

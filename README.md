@@ -10,10 +10,10 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.1-crimson">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.9.0-crimson">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-blue">
   <img alt="Engine" src="https://img.shields.io/badge/engine-self--built-success">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-128%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-143%20passing-brightgreen">
 </p>
 
 ---
@@ -43,12 +43,38 @@ and its evidence is inspectable.
   enumeration, directory discovery, TLS/SSL audit, security-header audit,
   passive recon, UDP scan, virtual-host enumeration, SYN scan, hybrid
   (passive + active), and mobile app analysis (APK/IPA)
-- **50 vulnerability checks** in the `enterprise-full` profile, mapped to
+- **54 vulnerability checks** in the `enterprise-full` profile, mapped to
   OWASP Top 10 2021 + API Security Top 10 — injection (SQLi, NoSQL, XXE,
-  LDAP, SSTI, command), XSS (incl. stored, verified by re-render),
+  LDAP, **XPath**, SSTI, command), XSS (incl. stored, verified by re-render),
   prototype pollution, JWT attacks (incl. `kid` injection), GraphQL deep
   checks, SSRF with an out-of-band canary, BOLA/IDOR dual-account matrix,
   auth & session, TLS, CORS, sensitive files, and more
+- **New in 1.3.0 (Deep OSINT + Secrets Engine v2)** — a new `osint` scan
+  type (infrastructure intelligence via RDAP/DoH, Certificate
+  Transparency deep parsing with shadow-subdomain candidates, Wayback
+  Machine history, control-gated username OSINT across 45 platforms —
+  every platform must first pass a junk-handle probe, catch-alls are
+  downgraded to unverified candidates — GitHub/GitLab code-exposure
+  search whose fetched files are actually scanned, and a breach-exposure
+  module that is **off by default**); the secrets engine grows to **72
+  provider detectors** with *local structural validation* (GitHub token
+  CRC checksums, real private-key parsing, JWT structure decoding, AWS
+  credential pairing) instead of provider logins — findings are never
+  validated against providers; layered decoders (base64 / hex / URL /
+  unicode / JS concatenation), source-map `sourcesContent` scanning,
+  sensitive-file content feeding, and a pure-Python walker that scans
+  **exposed `.git` history** (new check `c_git_secrets`) for secrets
+  committed in old revisions
+- **New in 1.2.0 (PayloadsAllTheThings Priority 1)** — XPath injection in
+  the injection suite (error-based `probable`; `confirmed` only when two
+  independent boolean pairs pass), exposed-secret scanning of the
+  homepage and same-host JS bundles (provider patterns `probable`,
+  generic assignments `candidate`; values always masked in findings and
+  **never validated against their provider**), hidden-parameter
+  discovery (batch + bisect with a mandatory junk control, reported as
+  surface — `probable`, not a proven vulnerability), and reverse
+  tabnabbing auditing of crawled pages (LOW; modern browsers apply
+  `noopener` implicitly, the risk is legacy browsers and WebViews)
 - **Deep integration inventory** — scanning one URL fingerprints the
   stack behind it (frameworks, servers, APIs, deployment tools, databases
   that expose a web surface) and maps versions to **CVE candidates** from
@@ -87,7 +113,7 @@ VANTHEX is designed to *not cry wolf*:
   says **INCONCLUSIVE** instead of inventing results — an empty result
   is never presented as "target is clean"
 - The engine is regression-tested against a ground-truth fixture battery
-  (128 automated tests: detection recall + false-positive traps from
+  (143 automated tests: detection recall + false-positive traps from
   real-world incidents)
 
 ## Scan types
@@ -115,7 +141,7 @@ VANTHEX is designed to *not cry wolf*:
 | `passive-full` | Full passive surface mapping |
 | `active-standard` | Active checks, standard depth |
 | `active-deep` | Active checks, deep crawling & fuzzing |
-| `enterprise-full` | All 50 checks, maximum coverage |
+| `enterprise-full` | All 53 checks, maximum coverage |
 
 ## Deployment
 
@@ -263,7 +289,7 @@ Authentication uses the workflow's built-in `GITHUB_TOKEN`
 
 ```bash
 pip install -r requirements.txt   # includes pytest, coverage, hypothesis
-python -m pytest tests/ -q        # 128 tests: battery, honesty, transport, reports…
+python -m pytest tests/ -q        # 143 tests: battery, honesty, transport, reports…
 ```
 
 The test suite includes a ground-truth vulnerable-fixture server:

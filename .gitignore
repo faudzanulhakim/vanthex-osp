@@ -15,7 +15,3 @@ uploads_apk/*
 # Packages / archives
 *.zip
 .hypothesis/
-
-# Backup files
-*.bak
-*.bak-*

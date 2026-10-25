@@ -9,8 +9,9 @@ Upgrade v3 (lihat UPGRADE_NOTES.md):
 - Job dapat DIBATALKAN (POST /api/job/<id>/cancel), dibersihkan berkala, ada elapsed.
 - Authorization gate: scan AKTIF wajib authorized=true dari UI (checkbox otorisasi).
   Allowlist opsional via env PTK_ALLOWED_TARGETS="example.com,10.0.0.0/8-host..." (host persis / suffix domain).
-- Login rate-limit per IP (5 gagal / 5 menit -> kunci 60 detik), session cookie bisa
-  Secure via PTK_COOKIE_SECURE=1.
+- Login anti-brute-force per IP: penundaan progresif (kegagalan beruntun
+  membuat respons makin lambat, maks 30 detik — TANPA lockout, percobaan
+  yang sah selalu diproses), session cookie bisa Secure via PTK_COOKIE_SECURE=1.
 - Scan terautentikasi: custom headers + cookie diteruskan ke engine (tidak disimpan di DB).
 - Export temuan JSON/CSV per scan + endpoint diff antar-scan.
 """
@@ -31,6 +32,9 @@ import urllib.request
 import base64
 
 import mobile
+import osint as osint_mod
+import globe_feeds
+import globe_recon
 import passive as passive_mod
 import scanners
 import store
@@ -78,11 +82,16 @@ def _start_canary():
 
 def _canary_opts():
     if CANARY.get("registry"):
-        return {"registry": CANARY["registry"], "base": CANARY["base"]}
+        # base_kind (WS1): "external" when the operator configured a
+        # reachable base (PTK_CANARY_BASE), "builtin" for the loopback
+        # listener this process runs itself.
+        return {"registry": CANARY["registry"], "base": CANARY["base"],
+                "base_kind": "external" if CANARY.get("mode") == "configured"
+                             else "builtin"}
     return None
 LOGIN_FAILS = {}  # ip -> [timestamps]
 SESSION_TTL = 8 * 3600
-SCAN_TYPES = ("vulnscan", "ports", "subdomains", "dirs", "ssl", "headers", "passive", "udp", "vhost", "hybrid", "syn")
+SCAN_TYPES = ("vulnscan", "ports", "subdomains", "dirs", "ssl", "headers", "passive", "udp", "vhost", "hybrid", "syn", "osint")
 
 
 def load_template(name):
@@ -127,6 +136,36 @@ def webui_file(rel):
     return data, ctype
 
 
+_VENDOR_FILES = {"maplibre-gl.js", "maplibre-gl.css", "LICENSE.txt"}
+
+
+def vendor_file(rel):
+    """(bytes, ctype) for a vendored MapLibre file, or None.
+
+    Only the exact v1.22.0 vendor shape is served:
+    vendor/maplibre/<version>/<allowlisted file> — no deeper paths,
+    no traversal, no other filenames, no directory escapes."""
+    parts = rel.split("/")
+    if len(parts) != 4 or parts[0] != "vendor" or parts[1] != "maplibre":
+        return None
+    if parts[2] in ("", ".", "..") or parts[3] not in _VENDOR_FILES:
+        return None
+    if ".." in rel or "\\" in rel:
+        return None
+    path = os.path.join(WEBUI_DIR, rel)
+    if os.path.realpath(path) != os.path.join(os.path.realpath(WEBUI_DIR), rel):
+        return None
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    if parts[3] == "LICENSE.txt":
+        return data, "text/plain"
+    ext = os.path.splitext(parts[3])[1]
+    return data, _WEBUI_CTYPES.get(ext, "application/octet-stream")
+
+
 def allowed_target(host):
     """Allowlist opsional. Kosong = semua host boleh (tetap wajib authorization gate utk aktif)."""
     raw = os.environ.get("PTK_ALLOWED_TARGETS", "").strip()
@@ -166,7 +205,7 @@ def engine_info():
     except Exception:
         profiles = {}
     return {
-        "version": "1.1.1",
+        "version": "1.2.1",
         "engine": 'self-built (no ready-made scanner tools: nmap/nuclei/etc. are never invoked)',
         "libraries": libs,
         "html_parser": "beautifulsoup4" if libs.get("beautifulsoup4") else "regex-fallback",
@@ -251,18 +290,46 @@ def host_of(target):
     return p.hostname or ""
 
 
-def login_locked(ip):
-    now = time.time()
-    fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 300]
-    LOGIN_FAILS[ip] = fails
-    return len(fails) >= 5 and (now - fails[-1] < 60)
+LOGIN_WINDOW = 300          # jendela hitung kegagalan login (detik)
+LOGIN_DELAY_CAP = 30.0      # penundaan maksimum per percobaan (detik)
+
+
+def login_delay(ip, now=None):
+    """Penundaan progresif anti-brute-force untuk /api/login.
+
+    Bukan lockout: percobaan login SELALU diproses (password yang benar
+    tidak pernah ditolak), tetapi kegagalan beruntun dalam jendela
+    LOGIN_WINDOW membuat respons berikutnya makin lambat — 0 detik
+    untuk 2 kegagalan pertama, lalu 1, 2, 4, 8, 16 detik dan seterusnya
+    sampai batas LOGIN_DELAY_CAP. Bucket per IP dibersihkan oleh
+    handler saat ada login yang berhasil; entri kedaluwarsa dipangkas
+    di sini agar dict tidak tumbuh tanpa batas.
+    """
+    now = time.time() if now is None else now
+    fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < LOGIN_WINDOW]
+    if fails:
+        LOGIN_FAILS[ip] = fails
+    else:
+        LOGIN_FAILS.pop(ip, None)
+    if len(fails) < 3:
+        return 0.0
+    return float(min(2 ** (len(fails) - 3), LOGIN_DELAY_CAP))
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "VANTHEX/1.1.1"
+    server_version = "VANTHEX/1.2.1"
 
     def log_message(self, fmt, *args):
         pass
+
+    def setup(self):
+        # Batas waktu diam per koneksi: koneksi menggantung (slow-loris,
+        # body yang tidak pernah selesai dikirim) tidak boleh menahan
+        # thread handler selamanya. Semua endpoint menjawab jauh di
+        # bawah batas ini; upload mobile adalah satu request JSON yang
+        # dikirim berkesinambungan, bukan koneksi diam.
+        self.request.settimeout(120)
+        super().setup()
 
     def _send(self, code, body, ctype="text/html; charset=utf-8", extra=None):
         data = body.encode() if isinstance(body, str) else body
@@ -273,7 +340,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-                         "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                         "style-src 'self' 'unsafe-inline'; img-src 'self' data: "
+                         "https://server.arcgisonline.com https://tilecache.rainviewer.com https://nowcoast.noaa.gov https://tiles.basemaps.cartocdn.com https://s3.amazonaws.com; "
+                         "connect-src 'self' https://api.rainviewer.com https://basemaps.cartocdn.com https://tiles.basemaps.cartocdn.com https://tiles-a.basemaps.cartocdn.com https://tiles-b.basemaps.cartocdn.com https://tiles-c.basemaps.cartocdn.com https://tiles-d.basemaps.cartocdn.com; "
+                         "frame-src https://www.youtube-nocookie.com; "
+                         "worker-src 'self' blob:; "
                          "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; "
                          "form-action 'self'")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -287,6 +358,37 @@ class Handler(BaseHTTPRequestHandler):
         # Respons API memuat data assessment sensitif — jangan pernah di-cache.
         extra = [("Cache-Control", "no-store")] + list(extra or [])
         self._send(code, json.dumps(obj, default=str), "application/json", extra)
+
+    def _stream_ndjson(self, gen):
+        # v1.23.0 FINGERPRINT streaming: headers without
+        # Content-Length, one JSON line per chunk, flush per line.
+        # The CSP literal below is byte-identical to _send's (the
+        # v1.25.0 CSP gate asserts every occurrence); _send itself
+        # is untouched. Client disconnect ends the generator via
+        # GeneratorExit inside globe_recon (single-flight released).
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                         "style-src 'self' 'unsafe-inline'; img-src 'self' data: "
+                         "https://server.arcgisonline.com https://tilecache.rainviewer.com https://nowcoast.noaa.gov https://tiles.basemaps.cartocdn.com https://s3.amazonaws.com; "
+                         "connect-src 'self' https://api.rainviewer.com https://basemaps.cartocdn.com https://tiles.basemaps.cartocdn.com https://tiles-a.basemaps.cartocdn.com https://tiles-b.basemaps.cartocdn.com https://tiles-c.basemaps.cartocdn.com https://tiles-d.basemaps.cartocdn.com; "
+                         "frame-src https://www.youtube-nocookie.com; "
+                         "worker-src 'self' blob:; "
+                         "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; "
+                         "form-action 'self'")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.end_headers()
+        try:
+            for chunk in gen:
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _session(self):
         tok = (self.headers.get("Cookie") or "").split("ptk_session=")[-1].split(";")[0]
@@ -305,6 +407,21 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------- GET ----------------
     def do_GET(self):
+        try:
+            self._do_GET()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:
+            # Jangan jatuhkan koneksi tanpa jawaban: klien menerima
+            # 500 generik; traceback lengkap hanya ke log server.
+            import traceback
+            traceback.print_exc()
+            try:
+                self._json(500, {"error": "internal error"})
+            except Exception:
+                pass
+
+    def _do_GET(self):
         path = urlparse(self.path).path
         if path == "/login":
             self._send(200, load_template("login.html"))
@@ -329,8 +446,177 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, asset[0], asset[1],
                        [("Cache-Control", "public, max-age=86400")])
+        elif path.startswith("/vendor/"):
+            vend = vendor_file(path[len("/"):])
+            if not vend:
+                self._send(404, "not found", "text/plain")
+                return
+            self._send(200, vend[0], vend[1],
+                       [("Cache-Control", "public, max-age=86400")])
         elif path == "/api/me":
             self._json(200, sess)
+        elif path == "/api/osint/globe/status":
+            self._json(200, globe_feeds.status())
+        elif path == "/api/osint/globe/cam":
+            # v1.13.0 CCTV preview proxy (design section 1): cid is
+            # resolved against the server's own CCTV index only; the
+            # media itself is served from 'self', CSP unchanged.
+            _qs = parse_qs(urlparse(self.path).query)
+            _cid = (_qs.get("cid") or [""])[0]
+            _kind = (_qs.get("kind") or ["img"])[0]
+            _res = globe_feeds.get_cam_preview(
+                _cid, _kind, self.headers.get("Range"))
+            if not _res.get("ok"):
+                self._json(_res.get("status", 502),
+                           {"ok": False,
+                            "reason": _res.get("reason", "")})
+            else:
+                _extra = [("Cache-Control", "private, max-age=60")]
+                for _k, _v in (_res.get("headers") or {}).items():
+                    _extra.append((_k, _v))
+                if _res.get("auth"):
+                    _extra.append(("X-VANTHEX-Cam-Authority",
+                                   str(_res["auth"])))
+                if _res.get("fetched_at"):
+                    _extra.append(("X-VANTHEX-Cam-Fetched",
+                                   str(int(_res["fetched_at"]))))
+                self._send(_res["status"], _res["body"],
+                           _res["content_type"], _extra)
+        elif path.startswith("/api/osint/globe/layer/"):
+            _lname = path.rsplit("/", 1)[-1]
+            if _lname in globe_feeds.LAYERS:
+                self._json(200, globe_feeds.get_layer(_lname))
+            else:
+                self._json(404, {"error": "unknown globe layer"})
+        elif path == "/api/osint/globe/entities":
+            _qs = parse_qs(urlparse(self.path).query)
+            _sid = (_qs.get("scan") or [""])[0]
+            _scan = store.get_scan(_sid) if _sid else None
+            if not _scan:
+                for _s in store.list_scans(100):
+                    if _s.get("scan_type") == "osint":
+                        _scan = store.get_scan(_s["id"])
+                        break
+            if not _scan:
+                self._json(200, {"layer": "entities", "points": [],
+                                 "located": 0, "total": 0,
+                                 "note": "NO INVESTIGATION LOADED"})
+            else:
+                _res = json.loads(_scan["result"] or "{}")
+                self._json(200, globe_feeds.get_entities(
+                    _res, scan_id=_scan["id"]))
+        elif path == "/api/osint/globe/search":
+            # v1.18.0 Search places (design §4 item 3): thin read over
+            # the daemon-side Nominatim cache; the query is a fixed
+            # template parameter, never a free-form URL.
+            _qs = parse_qs(urlparse(self.path).query)
+            _q = (_qs.get("q") or [""])[0]
+            self._json(200, globe_feeds.search_places(_q))
+        elif path == "/api/osint/globe/route":
+            # v1.18.0 Directions (design §4 item 5): thin read over the
+            # daemon-side OSRM cache; profile is allowlisted inside
+            # get_route, waypoints are validated numbers only.
+            _qs = parse_qs(urlparse(self.path).query)
+            _prof = (_qs.get("profile") or ["driving"])[0]
+            _wp = (_qs.get("wp") or [""])[0]
+            _wps = []
+            _bad = False
+            for _pair in _wp.split(";"):
+                _pair = _pair.strip()
+                if not _pair:
+                    continue
+                try:
+                    _la, _lo = _pair.split(",", 1)
+                    _wps.append((float(_la), float(_lo)))
+                except (ValueError, TypeError):
+                    _bad = True
+                    break
+            if _bad or len(_wps) < 2:
+                self._json(200, {"ok": False,
+                                 "reason": "waypoints must be lat,lon pairs (min 2)"})
+            else:
+                self._json(200, globe_feeds.get_route(_prof, _wps))
+        elif path == "/api/osint/globe/github":
+            # v1.19.0 GitHub Recon (design §5 item 9): thin read over
+            # the daemon-side GitHub cache; the username is validated
+            # inside github_recon, never a free-form URL.
+            _qs = parse_qs(urlparse(self.path).query)
+            _u = (_qs.get("u") or [""])[0]
+            self._json(200, globe_feeds.github_recon(_u))
+        elif path == "/api/osint/globe/launches":
+            # v1.19.0 ROCKET counter (design §5 item 8): thin read
+            # over the launches family cache (demand-driven refresh).
+            self._json(200, globe_feeds.get_launches())
+        elif path == "/api/osint/globe/news":
+            # v1.19.0 NEWS via RSS (design §5 item 11): thin read over
+            # the daemon-side RSS cache; items only from live outlets.
+            self._json(200, globe_feeds.get_news())
+        elif path == "/api/osint/globe/markets":
+            # v1.20.0 MARKETS (design §6 + §14.4): thin read over the
+            # daemon-side FRED/Coinbase/Stooq caches; optional
+            # ?ticker=SYM is a direct-symbol Stooq lookup (no
+            # autocomplete). No breadth row ever (K25); dollar is the
+            # Fed Broad Index, never DXY.
+            _qs = parse_qs(urlparse(self.path).query)
+            _t = (_qs.get("ticker") or [""])[0]
+            if _t:
+                self._json(200, globe_feeds.get_ticker(_t))
+            else:
+                self._json(200, globe_feeds.get_markets())
+        elif path == "/api/osint/globe/cloudmeta":
+            # v1.21.0 NowCOAST clouds (OSIRIS-aligned): computed
+            # server-side meta (hourly TIME steps); tiles themselves
+            # are browser-direct from nowcoast.noaa.gov.
+            self._json(200, globe_feeds.get_cloudmeta())
+        elif path == "/api/osint/globe/windgrid":
+            # v1.21.0 GFS wind grid (design §7 item 2b): cycle is
+            # YYYYMMDDHH (00/06/12/18), fhour validated inside
+            # get_windgrid (0-120 hourly, then 3-hourly to 384).
+            # A failed step returns ok:false — the client keeps the
+            # previous grid and the Open-Meteo point layer runs on.
+            _qs = parse_qs(urlparse(self.path).query)
+            _cy = (_qs.get("cycle") or [""])[0]
+            try:
+                _fh = int((_qs.get("fhour") or ["0"])[0])
+            except (TypeError, ValueError):
+                _fh = -1
+            self._json(200, globe_feeds.get_windgrid(_cy, _fh))
+        elif path == "/api/osint/globe/iss_telemetry":
+            # v1.21.0 LIVE FROM SPACE telemetry (design §14.2):
+            # ISS ALT/ORBIT from its own TLE via SGP4, no new host.
+            self._json(200, globe_feeds.get_iss_telemetry())
+        elif path == "/api/osint/globe/recon":
+            # v1.23.0 TOOLS panel (design §14.1 + §16.4 + §16.5):
+            # thin read over globe_recon.run_tool. Tool name is
+            # allowlisted and the target locally validated inside
+            # run_tool — user input never becomes a host or URL.
+            # ?tool= &target= ; dataleaks needs &optin=1 ;
+            # arcgis needs &keyword= &bbox=xmin,ymin,xmax,ymax.
+            _qs = parse_qs(urlparse(self.path).query)
+            _tool = (_qs.get("tool") or [""])[0]
+            _target = (_qs.get("target") or [""])[0]
+            _bbox = (_qs.get("bbox") or [""])[0]
+            _extra = {
+                "optin": (_qs.get("optin") or [""])[0] == "1",
+                "keyword": (_qs.get("keyword") or [""])[0],
+                "bbox": [v for v in _bbox.split(",")] if _bbox else [],
+            }
+            self._json(200, globe_recon.run_tool(_tool, _target,
+                                                 _extra))
+        elif path == "/api/osint/globe/fingerprint":
+            # v1.23.0 FINGERPRINT (design §16.3): streaming NDJSON,
+            # one line per site as it answers, then calibration
+            # lines, then a summary line. Single-flight inside
+            # globe_recon; a second concurrent run gets one busy
+            # line. NOT a _json call: the response streams.
+            _qs = parse_qs(urlparse(self.path).query)
+            _u = (_qs.get("u") or [""])[0]
+            if not globe_recon._RE_USER.match(_u or ""):
+                self._json(200, {"ok": False, "tool": "fingerprint",
+                                 "reason": "invalid username"})
+            else:
+                self._stream_ndjson(
+                    globe_recon.fingerprint_stream(_u))
         elif path == "/api/scans":
             self._json(200, store.list_scans())
         elif path == "/api/stats":
@@ -340,8 +626,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, st)
         elif path == "/api/findings":
             qs = parse_qs(urlparse(self.path).query)
+            try:
+                _lim = int((qs.get("limit") or [200])[0])
+            except (TypeError, ValueError):
+                _lim = 200
             self._json(200, store.list_findings_global(
-                limit=int((qs.get("limit") or [200])[0]),
+                limit=max(1, min(1000, _lim)),
                 severity=(qs.get("severity") or [""])[0],
                 status=(qs.get("status") or [""])[0],
                 q=(qs.get("q") or [""])[0]))
@@ -384,7 +674,15 @@ class Handler(BaseHTTPRequestHandler):
             if sess["role"] != "admin":
                 self._json(403, {"error": "admin only"})
             else:
-                self._json(200, {"webhook_url": store.get_setting("webhook_url", "")})
+                self._json(200, {"webhook_url": store.get_setting("webhook_url", ""),
+                                 "secret_baseline": store.list_secret_baseline(),
+                                 "nvd_sync": {
+                                     "enabled": str(store.get_setting("nvd_sync_enabled", "0")) == "1",
+                                     "interval_h": store.get_setting("nvd_sync_interval_h", "24"),
+                                     "last_sync_ts": store.get_setting("nvd_last_sync_ts", ""),
+                                     "last_sync_msg": store.get_setting("nvd_last_sync_msg", ""),
+                                     "state": NVD_SYNC.get("state", "idle"),
+                                     "message": NVD_SYNC.get("message", "")}})
         elif path == "/api/schedules":
             self._json(200, store.list_schedules())
         elif path == "/api/audit":
@@ -472,11 +770,24 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 scan["summary"] = json.loads(scan["summary"] or "{}")
                 fmt = (parse_qs(urlparse(self.path).query).get("fmt") or ["html"])[0]
+                # Bahasa laporan mengikuti bahasa UI peminta (?lang=xx);
+                # absen/tidak valid -> en (perilaku lama).
+                import report_i18n as _RI
+                rlang = _RI.norm_lang(
+                    (parse_qs(urlparse(self.path).query).get("lang") or ["en"])[0])
                 if fmt == "docx":
                     import docx_report
                     fname = f"vanthex_report_{sid}.docx"
-                    fpath = os.path.join("/tmp", fname)
-                    docx_report.generate_docx(scan, store.get_findings(sid), fpath)
+                    # Nama temp unik per request: dua unduhan DOCX untuk
+                    # scan yang sama secara bersamaan tidak boleh saling
+                    # menimpa/menghapus file satu sama lain.
+                    _safe_sid = "".join(
+                        ch for ch in sid
+                        if ch.isalnum() or ch in "-_")[:40] or "scan"
+                    fpath = os.path.join(
+                        "/tmp", f"vanthex_report_{_safe_sid}_"
+                                f"{secrets.token_hex(4)}.docx")
+                    docx_report.generate_docx(scan, store.get_findings(sid), fpath, lang=rlang)
                     with open(fpath, "rb") as fh:
                         data = fh.read()
                     os.unlink(fpath)
@@ -484,14 +795,35 @@ class Handler(BaseHTTPRequestHandler):
                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                [("Content-Disposition", f'attachment; filename="{fname}"')])
                 else:
-                    self._send(200, render_report(scan, store.get_findings(sid)))
+                    self._send(200, render_report(scan, store.get_findings(sid), lang=rlang))
         else:
             self._send(404, "<h1>404</h1>")
 
     # ---------------- POST ----------------
     def do_POST(self):
+        try:
+            self._do_POST()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            try:
+                self._json(500, {"error": "internal error"})
+            except Exception:
+                pass
+
+    def _do_POST(self):
         path = urlparse(self.path).path
-        length = int(self.headers.get("Content-Length", 0) or 0)
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            length = -1
+        if length < 0:
+            # Content-Length negatif akan membuat rfile.read() menunggu
+            # sampai EOF — tolak sebelum membaca apa pun.
+            self._json(400, {"error": "invalid Content-Length"})
+            return
         # Batas ukuran body per route (anti memory-exhaustion): endpoint JSON
         # biasa kecil; hanya analisis APK yang sah menerima puluhan MB.
         cap = 100 * 1024 * 1024 if path in ("/api/mobile/analyze", "/actions") else 2 * 1024 * 1024
@@ -507,9 +839,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/login":
             ip = self.client_address[0]
-            if login_locked(ip):
-                self._json(429, {"error": 'too many failed attempts — try again in 60 seconds'})
-                return
+            # Penundaan progresif (bukan lockout): kegagalan beruntun
+            # memperlambat respons, tetapi password yang benar selalu
+            # diproses — operator tidak bisa terkunci dari deploy-nya
+            # sendiri oleh kegagalan login dari IP yang sama.
+            _delay = login_delay(ip)
+            if _delay:
+                time.sleep(_delay)
             u = store.verify_user(str(payload.get("username", ""))[:60],
                                   str(payload.get("password", ""))[:128])
             if not u:
@@ -519,6 +855,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             LOGIN_FAILS.pop(ip, None)
             store.audit(u["username"], "login", f"ip={ip}")
+            # Pangkas sesi kedaluwarsa secara oportunistik agar dict
+            # sesi tidak tumbuh tanpa batas di proses berumur panjang.
+            _now = time.time()
+            for _t in [t for t, s in SESSIONS.items() if s["exp"] <= _now]:
+                SESSIONS.pop(_t, None)
             tok = secrets.token_hex(24)
             SESSIONS[tok] = {"user": u["username"], "role": u["role"],
                              "exp": time.time() + SESSION_TTL}
@@ -543,8 +884,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 code, envelope = actions_mod.handle_action(
                     name, aargs, self.server.server_address[1])
-            except Exception as e:
-                self._json(500, {"error": str(e)[:300]})
+            except Exception:
+                # Detail pengecualian (path internal, dsb.) hanya ke
+                # log server; klien menerima pesan generik.
+                import traceback
+                traceback.print_exc()
+                self._json(500, {"error": "internal error"})
                 return
             extra = []
             if name == "logout":
@@ -574,14 +919,26 @@ class Handler(BaseHTTPRequestHandler):
             target = str(payload.get("target", "")).strip()[:300]
             stype = payload.get("type", "vulnscan")
             profile = payload.get("profile", "active-deep")
+            if stype == "osint" and not target and payload.get("query"):
+                # Universal OSINT: the free-text query IS the subject
+                # (person name, institution, domain, email, handle, IP).
+                # It is stored as the scan target so history, reports
+                # and suppression keep working unchanged.
+                target = str(payload["query"]).strip()[:300]
             if stype not in SCAN_TYPES or not target:
                 self._json(400, {"error": f"type must be one of {SCAN_TYPES} + target is required"})
                 return
             host = host_of(target)
+            if stype == "osint":
+                # The domain allowlist only applies when the query
+                # itself carries a host (domain / IP / email domain).
+                # Name and handle queries are not domain targets and
+                # must never be blocked by it.
+                host = osint_mod.query_subject_host(target)
             if not allowed_target(host):
                 self._json(403, {"error": f"host {host} outside PTK_ALLOWED_TARGETS"})
                 return
-            is_active = ((stype != "vulnscan") or not profile.startswith("passive")) and stype != "passive"
+            is_active = ((stype != "vulnscan") or not profile.startswith("passive")) and stype not in ("passive", "osint")
             if is_active and payload.get("authorized") is not True:
                 self._json(400, {"error": 'active scans require authorization confirmation (authorized=true) — tick the authorization statement in the UI'})
                 return
@@ -652,6 +1009,18 @@ class Handler(BaseHTTPRequestHandler):
                                     f"[init] effective target being scanned: {_eff}")
                             result["scan_id"] = store.save_scan(
                                 _eff, stype, result.get("profile", profile), result)
+                            _bsupp = [f for f in result.get("findings", [])
+                                      if f.get("baseline_suppressed")]
+                            if _bsupp:
+                                job["log"].append(
+                                    f"[baseline] {len(_bsupp)} secret finding(s) matched the operator baseline — kept, status suppressed (baseline)")
+                                store.audit(job["user"],
+                                            "secret_baseline_suppress",
+                                            f"{len(_bsupp)} finding(s) in scan "
+                                            f"{result['scan_id']}: "
+                                            + ", ".join(
+                                                (f["baseline_suppressed"].get("label") or "?")[:40]
+                                                for f in _bsupp[:5]))
                             job["result"] = result
                             _fire_webhook(result["scan_id"], target, result)
                         job["status"] = "cancelled" if job["cancel"] else "done"
@@ -695,16 +1064,19 @@ class Handler(BaseHTTPRequestHandler):
             store.audit(sess["user"], "mobile_analyze", fname)
 
             def mworker():
+                _acquired = False
                 try:
                     if not GATE.acquire(priority=1, user=job["user"],
                                         cancelled=lambda: job["cancel"]):
                         job["status"] = "cancelled"
                         return
+                    _acquired = True
                     job["status"] = "running"
                     job["log"].append("[mobile] analyzing in sandbox "
                                       "(isolated subprocess, CPU/RAM limits)")
                     result = sandbox_mod.analyze_package_sandboxed(
-                        fpath, fname, log=job["log"])
+                        fpath, fname, log=job["log"],
+                        baseline=store.list_secret_baseline())
                     result["scan_id"] = store.save_scan(
                         result["target"], "mobile", result.get("profile", "apk-static"), result)
                     job["result"] = result
@@ -715,7 +1087,11 @@ class Handler(BaseHTTPRequestHandler):
                     job["result"] = {"error": str(e)[:300]}
                     job["status"] = "error"
                 finally:
-                    if job["status"] != "queued":
+                    # Lepas slot HANYA bila benar-benar diperoleh: job
+                    # yang batal saat mengantre tidak memegang slot —
+                    # melepasnya menggelembungkan kapasitas gate
+                    # melewati batas global/per-user yang ditetapkan.
+                    if _acquired:
                         GATE.release(job["user"])
                     try:
                         os.unlink(fpath)
@@ -791,9 +1167,60 @@ class Handler(BaseHTTPRequestHandler):
             if sess["role"] != "admin":
                 self._json(403, {"error": "admin only"})
                 return
-            store.set_setting("webhook_url", str(payload.get("webhook_url", ""))[:500])
-            store.audit(sess["user"], "settings_update", "webhook_url")
+            # Only keys actually present in the payload are updated —
+            # a partial save (e.g. the NVD schedule panel) must never
+            # wipe an unrelated setting.
+            _changed = []
+            if "webhook_url" in payload:
+                store.set_setting("webhook_url", str(payload.get("webhook_url", ""))[:500])
+                _changed.append("webhook_url")
+            if "nvd_sync_enabled" in payload:
+                store.set_setting("nvd_sync_enabled",
+                                  "1" if payload.get("nvd_sync_enabled") else "0")
+                _changed.append("nvd_sync_enabled")
+            if "nvd_sync_interval_h" in payload:
+                try:
+                    _h = int(payload.get("nvd_sync_interval_h", 24))
+                except Exception:
+                    _h = 24
+                store.set_setting("nvd_sync_interval_h",
+                                  str(min(168, max(1, _h))))
+                _changed.append("nvd_sync_interval_h")
+            store.audit(sess["user"], "settings_update",
+                        ",".join(_changed) or "none")
             self._json(200, {"ok": True})
+        elif path == "/api/settings/baseline":
+            # WS5 (v1.7.0): add an operator secret-baseline entry. The
+            # raw value is hashed (SHA-256) on receipt and DISCARDED —
+            # only the hash + label + reason are stored or audited.
+            if sess["role"] != "admin":
+                self._json(403, {"error": "admin only"})
+                return
+            _val = str(payload.get("value", ""))
+            if len(_val) < 8:
+                self._json(400, {"error": "value too short to baseline"})
+                return
+            import hashlib as _hl
+            _h = _hl.sha256(_val.encode("utf-8", "replace")).hexdigest()
+            store.add_secret_baseline(
+                _h, str(payload.get("kind", "")),
+                str(payload.get("label", ""))[:120] or "baseline entry",
+                str(payload.get("reason", ""))[:300], sess["user"])
+            store.audit(sess["user"], "secret_baseline_add",
+                        f"sha256 {_h[:12]} label="
+                        f"{str(payload.get('label', ''))[:60]}")
+            self._json(200, {"ok": True, "hash": _h,
+                             "baseline": store.list_secret_baseline()})
+        elif path == "/api/settings/baseline/remove":
+            if sess["role"] != "admin":
+                self._json(403, {"error": "admin only"})
+                return
+            _h = str(payload.get("hash", ""))
+            _ok = store.remove_secret_baseline(_h)
+            store.audit(sess["user"], "secret_baseline_remove",
+                        f"sha256 {_h[:12]} removed={_ok}")
+            self._json(200, {"ok": _ok,
+                             "baseline": store.list_secret_baseline()})
         elif path == "/api/tokens":
             if sess["role"] != "admin":
                 self._json(403, {"error": "admin only"})
@@ -809,21 +1236,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(409, {"error": "NVD sync already running"})
             else:
                 store.audit(sess["user"], "nvd_sync", "start")
-                def _sync():
-                    NVD_SYNC.update(state="running", message="fetching NVD...")
-                    try:
-                        res = nvd_mod.sync(
-                            api_key=os.environ.get("PTK_NVD_KEY") or None)
-                        store.cve_upsert(res["rows"])
-                        NVD_SYNC.update(
-                            state="done",
-                            message=f"fetched {res['fetched']} CVEs"
-                                    + (f"; errors: {'; '.join(res['errors'])}"
-                                       if res["errors"] else ""))
-                    except Exception as e:
-                        NVD_SYNC.update(state="error",
-                                        message=str(e)[:200])
-                threading.Thread(target=_sync, daemon=True).start()
+                threading.Thread(target=_do_nvd_sync, args=("manual",),
+                                 daemon=True).start()
                 self._json(200, {"started": True})
         elif path == "/api/suppressions":
             if sess["role"] != "admin":
@@ -894,7 +1308,12 @@ class Handler(BaseHTTPRequestHandler):
             if not allowed_target(host_of(target)):
                 self._json(403, {"error": 'target outside the allowlist'})
                 return
-            interval = max(1.0, min(24 * 30.0, float(payload.get("interval_h", 24))))
+            try:
+                interval = max(1.0, min(24 * 30.0,
+                                        float(payload.get("interval_h", 24))))
+            except (TypeError, ValueError):
+                self._json(400, {"error": "interval_h must be a number"})
+                return
             sid = store.create_schedule(target, profile, interval, sess["user"])
             store.audit(sess["user"], "schedule_create", f"{target} {profile} every {interval} h")
             self._json(200, {"ok": True, "schedule_id": sid})
@@ -1017,6 +1436,12 @@ def run_tool_scan(payload, target, stype, profile, job):
         _can = _canary_opts()
         if _can:
             opts["canary"] = _can
+        try:
+            _bl = store.list_secret_baseline()
+            if _bl:
+                opts["secret_baseline"] = _bl
+        except Exception:
+            pass
         if payload.get("auth_b"):
             opts["auth_b"] = payload["auth_b"]
         if payload.get("headless"):
@@ -1063,6 +1488,29 @@ def run_tool_scan(payload, target, stype, profile, job):
     if stype == "passive":
         log.append(f"[passive] passive recon for {target}")
         return passive_mod.run_passive_recon(target, log)
+    if stype == "osint":
+        oopts = {}
+        if payload.get("query"):
+            oopts["query"] = str(payload["query"])[:300]
+            log.append(f"[osint] universal OSINT query: {oopts['query']}")
+        else:
+            log.append(f"[osint] deep OSINT for {target}")
+        if payload.get("handle"):
+            oopts["handle"] = str(payload["handle"])[:80]
+        if payload.get("breach") is True:
+            oopts["breach"] = True
+            if payload.get("breach_secret_id"):
+                # API key comes from the vault only; the value lives in
+                # the worker's memory and is never logged or stored.
+                try:
+                    row = store.secret_get(int(payload["breach_secret_id"]))
+                    if row:
+                        oopts["breach_api_key"] = secretsmgr.decrypt(
+                            row["secret_enc"])
+                except Exception:
+                    log.append("[osint] breach API key could not be loaded from the vault")
+        return osint_mod.run_osint_recon(target, log, oopts,
+                                         cancelled=cancelled)
     if stype == "subdomains":
         subs = payload.get("subs") or scanners.DEFAULT_SUBS
         subs = [str(s)[:60] for s in subs][:300]
@@ -1316,6 +1764,12 @@ def run_tool_scan(payload, target, stype, profile, job):
         _can = _canary_opts()
         if _can:
             opts["canary"] = _can
+        try:
+            _bl = store.list_secret_baseline()
+            if _bl:
+                opts["secret_baseline"] = _bl
+        except Exception:
+            pass
         if payload.get("auth_b"):
             opts["auth_b"] = payload["auth_b"]
         if payload.get("headless"):
@@ -1344,10 +1798,67 @@ def run_tool_scan(payload, target, stype, profile, job):
                 "checks_detail": vres.get("checks_detail", []),
                 "pages_crawled": vres.get("pages_crawled", 0),
                 "scan_health": vres.get("scan_health", {}),
-                "meta": {"passive": pres.get("meta", {})},
+                "chains": vres.get("chains", []),
+                "bfla_matrix": vres.get("bfla_matrix", []),
+                "meta": {"passive": pres.get("meta", {}),
+                         "vulnscan": vres.get("meta", {})},
                 "warnings": (pres.get("warnings", []) +
                              vres.get("warnings", []))}
     return None
+
+
+def _nvd_schedule_due(now=None):
+    """WS6 (v1.8.0): is the operator-enabled scheduled NVD sync due?
+    Default OFF — nothing syncs until the operator enables it in
+    Settings. Pure function of the stored settings."""
+    now = time.time() if now is None else now
+    try:
+        if str(store.get_setting("nvd_sync_enabled", "0")) != "1":
+            return False
+        hours = float(store.get_setting("nvd_sync_interval_h", "24"))
+        hours = min(168.0, max(1.0, hours))
+        last = float(store.get_setting("nvd_last_sync_ts", "0") or 0)
+    except Exception:
+        return False
+    return (now - last) >= hours * 3600.0
+
+
+_NVD_LOCK = threading.Lock()
+
+
+def _do_nvd_sync(source):
+    """Run one NVD sync (manual endpoint or scheduler) and record
+    the outcome + timestamp in settings either way, so the Settings
+    panel can show when the last sync ran and what it fetched."""
+    if not _NVD_LOCK.acquire(blocking=False):
+        return False
+    try:
+        return _do_nvd_sync_locked(source)
+    finally:
+        _NVD_LOCK.release()
+
+
+def _do_nvd_sync_locked(source):
+    if NVD_SYNC["state"] == "running":
+        return False
+    NVD_SYNC.update(state="running",
+                    message=f"fetching NVD... ({source})")
+    try:
+        res = nvd_mod.sync(api_key=os.environ.get("PTK_NVD_KEY")
+                           or None)
+        store.cve_upsert(res["rows"])
+        msg = (f"fetched {res['fetched']} CVEs"
+               + (f"; errors: {'; '.join(res['errors'])}"
+                  if res["errors"] else ""))
+        NVD_SYNC.update(state="done", message=msg)
+    except Exception as e:
+        NVD_SYNC.update(state="error", message=str(e)[:200])
+    store.set_setting("nvd_last_sync_ts", str(int(time.time())))
+    store.set_setting("nvd_last_sync_msg",
+                      f"{source}: {NVD_SYNC.get('message', '')}"[:200])
+    store.audit("system", "nvd_sync_" + source,
+                NVD_SYNC.get("message", "")[:150])
+    return True
 
 
 def scheduler_loop():
@@ -1377,6 +1888,16 @@ def scheduler_loop():
                 threading.Thread(target=run_one, daemon=True).start()
         except Exception:
             pass
+        # WS6 (v1.8.0): scheduled NVD sync — runs only when the
+        # operator enabled it in Settings (default OFF).
+        try:
+            if _nvd_schedule_due() \
+                    and NVD_SYNC["state"] != "running":
+                threading.Thread(target=_do_nvd_sync,
+                                 args=("scheduled",),
+                                 daemon=True).start()
+        except Exception:
+            pass
 
 
 def main():
@@ -1386,7 +1907,7 @@ def main():
     _start_canary()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"[i] VANTHEX Offensive Security Platform v1.1.1 -> http://0.0.0.0:{port}")
+    print(f"[i] VANTHEX Offensive Security Platform v1.2.1 -> http://0.0.0.0:{port}")
     if getattr(store, "GENERATED_ADMIN_PW", None):
         print(f"[!] PTK_ADMIN_PW not set: generated one-time admin password: {store.GENERATED_ADMIN_PW}")
         print("[!] Record it now (shown only at this first startup); set PTK_ADMIN_PW to use your own.")

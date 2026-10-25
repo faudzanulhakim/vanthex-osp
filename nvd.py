@@ -13,7 +13,10 @@ import passive
 
 API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 DEFAULT_KEYWORDS = ["wordpress", "apache http server", "jquery", "openssl",
-                    "nginx", "php"]
+                    "nginx", "php",
+                    "tomcat", "spring boot", "spring framework", "jetty",
+                    "node.js", "express", "next.js", "django", "laravel",
+                    "ruby on rails", "drupal", "genexus"]
 
 
 def parse_nvd(data):

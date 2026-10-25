@@ -1,6 +1,6 @@
 # VANTHEX — Native Installation Guide
 
-**Version 1.1.0** · For Docker deployment, see [DOCKER.md](DOCKER.md).
+**Version 1.2.1** · For Docker deployment, see [DOCKER.md](DOCKER.md).
 
 > ⚠️ **AUTHORIZED TESTING ONLY.** VANTHEX is an offensive security tool.
 > Run it only against systems you own or are explicitly authorized to test.
@@ -102,7 +102,7 @@ fresh (this discards all history).
 
 ```bash
 curl -s http://localhost:5000/api/engine   # after login; or open the dashboard
-python -m pytest tests/ -q                 # full verification suite (128 tests)
+python -m pytest tests/ -q                 # full verification suite (143 tests)
 ```
 
 ---

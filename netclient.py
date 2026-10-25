@@ -16,20 +16,22 @@ import time
 import urllib.request
 from urllib.parse import urlparse
 
-UA = "VANTHEX/1.1.1 (self-built; authorized testing only)"
+UA = "VANTHEX/1.9.0 (self-built; authorized testing only)"
 MAX_BODY = 262144  # 256 KB
 
 
 class Resp:
-    __slots__ = ("status", "headers", "body", "elapsed", "error", "url")
+    __slots__ = ("status", "headers", "body", "elapsed", "error", "url",
+                 "raw")
 
-    def __init__(self, status=0, headers=None, body="", elapsed=0.0, error="", url=""):
+    def __init__(self, status=0, headers=None, body="", elapsed=0.0, error="", url="", raw=b""):
         self.status = status
         self.headers = headers or []          # list[(k, v)] sesuai urutan wire
         self.body = body
         self.elapsed = elapsed
         self.error = error
         self.url = url
+        self.raw = raw                        # decoded wire bytes (v1.7.0: favicon MD5)
 
     def hdr(self, name, default=""):
         n = name.lower()
@@ -240,7 +242,7 @@ class Client:
                         pass
             body = raw.decode("utf-8", "replace")
             out = Resp(r.status, r.getheaders(), body,
-                       time.time() - t0, url=url_path)
+                       time.time() - t0, url=url_path, raw=raw)
             conn.close()
             self.stats["total"] += 1
             self.stats["status"][r.status] = self.stats["status"].get(r.status, 0) + 1

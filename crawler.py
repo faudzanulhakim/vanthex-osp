@@ -83,6 +83,7 @@ class Surface:
         self.param_urls = []   # path?query yang punya parameter
         self.forms = []        # {action, method, inputs:[name]}
         self.js_endpoints = [] # path dari file JS
+        self.js_urls = []      # path file JS same-host yang ditemukan (dedup, terurut) — untuk c_exposed_secrets
         self.ws_urls = []      # URL WebSocket (ws:// / wss://) dari HTML/JS
         self.robots_paths = [] # Disallow dari robots.txt
         self.homepage = None   # Resp homepage (untuk analisis pasif)
@@ -210,6 +211,10 @@ def crawl(client, log=None, max_pages=30, cancelled=None):
                 u = m.group(0).rstrip(".,;")
                 if u not in surf.ws_urls:
                     surf.ws_urls.append(u)
+    # Daftar file JS same-host untuk konsumen lain (c_exposed_secrets):
+    # dedup + terurut deterministik; prioritas nama bundle diterapkan di
+    # check pemakai, BUKAN cap buta di sini (pelajaran v1.10).
+    surf.js_urls = sorted(dict.fromkeys(js_urls))
     L(f"[crawl] {len(surf.pages)} pages, {len(surf.param_urls)} parameterized URLs, {len(surf.forms)} forms, {len(surf.js_endpoints)} JS endpoints")
     return surf
 

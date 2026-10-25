@@ -1,5 +1,5 @@
 """
-Pentest Toolkit — blind callback (canary) listener (canary.py, v3.14).
+Pentest Toolkit — blind callback (canary) listener (canary.py).
 
 socketserver-based HTTP listener that issues unique canary tokens and
 records callbacks — the out-of-band (OOB) infrastructure for blind
@@ -9,9 +9,18 @@ DEPLOYMENT REALITY (declared, not hidden): a canary only works when the
 target can reach this listener. This VM sits behind NAT/proxy with no
 inbound path from the internet, so on THIS host the listener serves local
 and same-network use only. Run the toolkit on a reachable host (the
-operator's own VPS/Kali) for real OOB work. The module is deliberately NOT
-wired into vulnscan2's blind checks until such a deployment exists —
-findings must never depend on callbacks that cannot arrive.
+operator's own VPS/Kali) for real OOB work. The listener IS wired into
+vulnscan2's blind checks (c_blind_oob) through scan opts: when no
+registry/base is configured the check declares itself skipped instead of
+assuming the target safe, and every scan reports the honest canary
+status (configured / base kind / tokens planted / callbacks received)
+including an explicit "0 callbacks" note after the grace window.
+
+v1.4.0 (WS1): the registry is a FORMAL per-scan token registry — every
+issued token maps to {scan_id, check, target, parameter, payload_class,
+issued_at} (interactsh-audit lesson: the correlation mapping lives on
+the caller side and is a first-class record, not a label string). DNS
+callbacks are NOT recorded (K2: DNS channel deferred) — HTTP only.
 """
 import http.server
 import json
@@ -35,20 +44,47 @@ class Hit:
 
 @dataclass
 class CanaryRegistry:
-    """Token -> label + hits. Thread-safe via a single lock."""
+    """Formal token registry: token -> issuance record + hits.
+
+    An issuance record is {label, scan_id, check, target, parameter,
+    payload_class, issued_at} — enough to attribute any callback to
+    exactly one planted payload in one scan. Thread-safe via one lock."""
     _tokens: Dict[str, str] = field(default_factory=dict)
+    _issued: Dict[str, dict] = field(default_factory=dict)
     _hits: List[Hit] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def issue(self, label: str = "") -> str:
+    def issue(self, label: str = "", meta: Optional[dict] = None) -> str:
         tok = secrets.token_hex(8)
         with self._lock:
             self._tokens[tok] = label or tok
+            rec = {"label": label or tok, "scan_id": "", "check": "",
+                   "target": "", "parameter": "", "payload_class": "",
+                   "issued_at": time.time()}
+            if meta:
+                for k in ("label", "scan_id", "check", "target",
+                          "parameter", "payload_class"):
+                    if meta.get(k):
+                        rec[k] = str(meta[k])[:200]
+            self._issued[tok] = rec
         return tok
 
     def label_of(self, token: str) -> Optional[str]:
         with self._lock:
             return self._tokens.get(token)
+
+    def record_of(self, token: str) -> Optional[dict]:
+        with self._lock:
+            rec = self._issued.get(token)
+            return dict(rec) if rec else None
+
+    def issued(self, scan_id: Optional[str] = None) -> List[dict]:
+        """All issuance records (each with its token), optionally
+        restricted to one scan."""
+        with self._lock:
+            rows = [{"token": t, **r} for t, r in self._issued.items()
+                    if scan_id is None or r.get("scan_id") == scan_id]
+        return rows
 
     def record(self, hit: Hit) -> None:
         with self._lock:
@@ -59,6 +95,18 @@ class CanaryRegistry:
             rows = [h for h in self._hits
                     if token is None or h.token == token]
         return [asdict(h) for h in rows]
+
+    def stats(self, scan_id: Optional[str] = None) -> dict:
+        """{tokens_planted, tokens_hit, callbacks_received} — scoped to
+        one scan when scan_id is given (records carry the scan id)."""
+        with self._lock:
+            toks = [t for t, r in self._issued.items()
+                    if scan_id is None or r.get("scan_id") == scan_id]
+            tset = set(toks)
+            hits = [h for h in self._hits if h.token in tset]
+            return {"tokens_planted": len(toks),
+                    "tokens_hit": len({h.token for h in hits}),
+                    "callbacks_received": len(hits)}
 
     def url(self, base: str, token: str) -> str:
         return base.rstrip("/") + "/" + token

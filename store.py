@@ -106,6 +106,14 @@ def init_db():
 
 def create_user(username, password, role="analyst"):
     import hashlib, secrets
+    # Akun tanpa nama atau dengan password kosong/lemah tidak boleh
+    # lahir: hash PBKDF2 dari password kosong tetap bisa dipakai untuk
+    # login, jadi validasi harus ada di lapisan penyimpanan juga —
+    # bukan hanya di endpoint.
+    if not str(username).strip():
+        raise ValueError("username is required")
+    if not password or len(str(password)) < 8:
+        raise ValueError("password must be at least 8 characters")
     salt = secrets.token_hex(16)
     h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 200_000).hex()
     with _db() as c:
@@ -130,13 +138,14 @@ def save_scan(target, scan_type, profile, result):
     scan_id = uuid.uuid4().hex[:12]
     now = time.time()
     with _db() as c:
+        _migrate_v32(c)  # findings.status must exist for baseline rows
         c.execute("INSERT INTO scans VALUES(?,?,?,?,?,?,?,?,?,?)",
                   (scan_id, target, scan_type, profile, now, now, "completed",
                    result.get("overall_risk", "-"),
                    json.dumps(result.get("summary", {})),
                    json.dumps(result, default=str)))
         for f in result.get("findings", []):
-            c.execute("INSERT INTO findings(scan_id,severity,title,description,"
+            cur = c.execute("INSERT INTO findings(scan_id,severity,title,description,"
                       "evidence,cwe,owasp,cvss,remediation,confidence,location,param,origin) "
                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (scan_id, f.get("severity"), f.get("title"), f.get("description"),
@@ -144,7 +153,48 @@ def save_scan(target, scan_type, profile, result):
                        f.get("cvss", 0), f.get("remediation", ""),
                        f.get("confidence", "probable"), f.get("location", ""),
                        f.get("param", ""), f.get("origin", "active")))
+            if f.get("baseline_suppressed"):
+                # K3 (v1.7.0): the finding stays listed, with the
+                # auditable triage status 'suppressed' (baseline).
+                c.execute("UPDATE findings SET status='suppressed' "
+                          "WHERE id=?", (cur.lastrowid,))
     return scan_id
+
+
+# ------------------------------------------------------- secret baseline
+# Operator baseline for known/accepted secret values (WS5, v1.7.0),
+# detect-secrets style: entries keyed by the SHA-256 of the value.
+# Raw secret values are NEVER stored — only their hashes, a label and
+# a reason. A scan finding whose value hashes to a baseline entry is
+# kept and displayed with status 'suppressed' (see save_scan).
+
+def list_secret_baseline():
+    with _db() as c:
+        _migrate_v34(c)
+        return [dict(r) for r in c.execute(
+            "SELECT hash,kind,label,reason,added_by,added_at "
+            "FROM secret_baseline ORDER BY added_at DESC")]
+
+
+def add_secret_baseline(hash_, kind, label, reason, added_by):
+    with _db() as c:
+        _migrate_v34(c)
+        c.execute("INSERT INTO secret_baseline(hash,kind,label,reason,"
+                  "added_by,added_at) VALUES(?,?,?,?,?,?) "
+                  "ON CONFLICT(hash) DO UPDATE SET kind=excluded.kind,"
+                  "label=excluded.label, reason=excluded.reason,"
+                  "added_by=excluded.added_by, added_at=excluded.added_at",
+                  (str(hash_)[:64], str(kind)[:40], str(label)[:120],
+                   str(reason)[:300], str(added_by)[:60], time.time()))
+    return True
+
+
+def remove_secret_baseline(hash_):
+    with _db() as c:
+        _migrate_v34(c)
+        cur = c.execute("DELETE FROM secret_baseline WHERE hash=?",
+                        (str(hash_)[:64],))
+        return cur.rowcount > 0
 
 
 def list_scans(limit=100):
@@ -229,7 +279,8 @@ def dashboard_stats():
 
 # ------------------------------------------------------------ v3.2 enterprise
 
-FINDING_STATUSES = ("open", "confirmed", "false_positive", "fixed")
+FINDING_STATUSES = ("open", "confirmed", "false_positive", "fixed",
+                    "suppressed")
 
 
 def _migrate_v32(c):
@@ -372,7 +423,7 @@ def assets_summary():
         open_counts = {}
         for r in c.execute("SELECT s.target t, COUNT(*) n FROM findings f JOIN scans s "
                            "ON s.id=f.scan_id WHERE COALESCE(f.status,'open') NOT IN "
-                           "('false_positive','fixed') GROUP BY s.target"):
+                           "('false_positive','fixed','suppressed') GROUP BY s.target"):
             open_counts[r["t"]] = r["n"]
     assets = {}
     for s in scans:
@@ -518,6 +569,10 @@ def _migrate_v34(c):
     CREATE TABLE IF NOT EXISTS api_tokens(
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, token_hash TEXT,
         created_by TEXT, created_at REAL, last_used REAL);
+    CREATE TABLE IF NOT EXISTS secret_baseline(
+        hash TEXT PRIMARY KEY, kind TEXT DEFAULT '', label TEXT DEFAULT '',
+        reason TEXT DEFAULT '', added_by TEXT DEFAULT '',
+        added_at REAL);
     """)
 
 

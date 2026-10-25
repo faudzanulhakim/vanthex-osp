@@ -74,7 +74,7 @@ def test_body_cap_dan_bad_json(tmp_path, monkeypatch):
         srv.shutdown()
 
 
-def test_login_throttle_lockout(tmp_path, monkeypatch):
+def test_login_throttle_progressive_no_lockout(tmp_path, monkeypatch):
     srv, port = _boot(tmp_path, monkeypatch)
     import app2
     app2.LOGIN_FAILS.clear()  # bucket throttle per-IP dipakai bersama antar test
@@ -83,21 +83,28 @@ def test_login_throttle_lockout(tmp_path, monkeypatch):
             st, _, _ = _req(port, "POST", "/api/login",
                             {"username": "admin", "password": "salah"})
             assert st == 401, (i, st)
+        # TIDAK ada lockout (v1.9.1): password yang benar tetap
+        # diterima setelah kegagalan beruntun — responsnya saja yang
+        # diperlambat oleh penundaan progresif.
         st, _, _ = _req(port, "POST", "/api/login",
                         {"username": "admin", "password": "test-admin-pw-123"})
-        assert st == 429, f"percobaan ke-6 harusnya terkunci, dapat {st}"
+        assert st == 200, f"login sah tidak boleh terkunci, dapat {st}"
     finally:
         srv.shutdown()
 
 
-def test_login_locked_logic():
+def test_login_delay_logic():
     import app2
     ip = "10.9.9.9"
     now = time.time()
-    app2.LOGIN_FAILS[ip] = [now - 10] * 4
-    assert app2.login_locked(ip) is False
+    app2.LOGIN_FAILS[ip] = [now - 10] * 2
+    assert app2.login_delay(ip, now=now) == 0.0
+    app2.LOGIN_FAILS[ip] = [now - 10] * 3
+    assert app2.login_delay(ip, now=now) == 1.0
     app2.LOGIN_FAILS[ip] = [now - 10] * 5
-    assert app2.login_locked(ip) is True
-    app2.LOGIN_FAILS[ip] = [now - 120] * 5  # gagal terakhir > 60 dtk lalu
-    assert app2.login_locked(ip) is False
+    assert app2.login_delay(ip, now=now) == 4.0
+    app2.LOGIN_FAILS[ip] = [now - 10] * 20
+    assert app2.login_delay(ip, now=now) == app2.LOGIN_DELAY_CAP
+    app2.LOGIN_FAILS[ip] = [now - 400] * 6  # di luar jendela 300 dtk
+    assert app2.login_delay(ip, now=now) == 0.0
     app2.LOGIN_FAILS.pop(ip, None)

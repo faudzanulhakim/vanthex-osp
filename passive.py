@@ -241,7 +241,7 @@ class _PageSignals:
         from html.parser import HTMLParser
 
         outer = self
-        self.comments, self.images = [], []
+        self.comments, self.images, self.links = [], [], []
 
         class _P(HTMLParser):
             def handle_comment(self, data):
@@ -252,12 +252,123 @@ class _PageSignals:
                     for k, v in attrs:
                         if k == "src" and v:
                             outer.images.append(v)
+                elif tag == "a":
+                    for k, v in attrs:
+                        if k == "href" and v:
+                            outer.links.append(v)
 
         parser = _P(convert_charrefs=True)
         try:
             parser.feed(html_text or "")
         except Exception:
             pass
+
+
+def _pdf_str_decode(kind, data):
+    """Decode a PDF string token: literal (already-unescaped bytes) or
+    hex. Handles the UTF-16BE BOM form Office tools emit."""
+    try:
+        if kind == "hex":
+            raw = bytes.fromhex(re.sub(rb"\s+", b"", data).decode())
+        else:
+            raw = data
+        if raw.startswith(b"\xfe\xff"):
+            return raw[2:].decode("utf-16-be", "replace").strip()
+        return raw.decode("latin-1", "replace").strip()
+    except Exception:
+        return ""
+
+
+def _pdf_metadata(raw):
+    """WS6d (v1.8.0): PDF document metadata with the stdlib only —
+    the Info dictionary plus the XMP packet. Returns a flat dict of
+    the fields that were actually present (nothing invented)."""
+    out = {}
+    if not raw or not raw.startswith(b"%PDF"):
+        return out
+    lit_re = re.compile(
+        rb"/(Title|Author|Creator|Producer|CreationDate|ModDate)\s*"
+        rb"(\((?:\\.|[^\\()])*\)|<([0-9A-Fa-f\s]+)>)")
+    keymap = {"Title": "title", "Author": "author",
+              "Creator": "creator", "Producer": "producer",
+              "CreationDate": "created", "ModDate": "modified"}
+    for m in lit_re.finditer(raw[:2 * 1024 * 1024]):
+        key = keymap.get(m.group(1).decode("latin-1"), "")
+        if not key or key in out:
+            continue
+        if m.group(3) is not None:
+            val = _pdf_str_decode("hex", m.group(3))
+        else:
+            body = m.group(2)[1:-1]
+            body = re.sub(rb"\\([0-7]{1,3})",
+                          lambda mm: bytes(
+                              [int(mm.group(1), 8) & 0xFF]), body)
+            body = body.replace(b"\\(", b"(").replace(b"\\)", b")") \
+                       .replace(b"\\n", b"\n").replace(b"\\\\", b"\\")
+            val = _pdf_str_decode("lit", body)
+        if val:
+            out[key] = val[:120]
+    xmp = re.search(rb"<x:xmpmeta.*?</x:xmpmeta>", raw, re.S)
+    if xmp:
+        pkt = xmp.group(0).decode("utf-8", "replace")
+        if "author" not in out:
+            cm = re.search(r"<dc:creator>.*?<rdf:li[^>]*>([^<]+)</rdf:li>",
+                           pkt, re.S)
+            if cm:
+                out["author"] = cm.group(1).strip()[:120]
+        for pat, key in ((r'pdf:Producer="([^"]+)"', "producer"),
+                         (r"<pdf:Producer>([^<]+)</pdf:Producer>",
+                          "producer"),
+                         (r'xmp:CreatorTool="([^"]+)"', "creator"),
+                         (r"<xmp:CreatorTool>([^<]+)</xmp:CreatorTool>",
+                          "creator"),
+                         (r'xmp:CreateDate="([^"]+)"', "created"),
+                         (r"<xmp:CreateDate>([^<]+)</xmp:CreateDate>",
+                          "created"),
+                         (r'xmp:ModifyDate="([^"]+)"', "modified"),
+                         (r"<xmp:ModifyDate>([^<]+)</xmp:ModifyDate>",
+                          "modified")):
+            if key in out:
+                continue
+            mm = re.search(pat, pkt)
+            if mm:
+                out[key] = mm.group(1).strip()[:120]
+    return out
+
+
+def _docx_metadata(raw):
+    """WS6d (v1.8.0): DOCX core/app properties (author, software,
+    dates) via zipfile + a safe XML parser (python-docx's container
+    is a plain zip; no library call needed)."""
+    out = {}
+    try:
+        import zipfile
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        names = set(zf.namelist())
+    except Exception:
+        return out
+    try:
+        from defusedxml import ElementTree as DET
+    except Exception:
+        from xml.etree import ElementTree as DET
+    keymap = {"creator": "author", "lastModifiedBy": "last_modified_by",
+              "title": "title", "created": "created",
+              "modified": "modified", "Application": "software",
+              "AppVersion": "software_version", "Company": "company"}
+    for part in ("docProps/core.xml", "docProps/app.xml"):
+        if part not in names:
+            continue
+        try:
+            root = DET.fromstring(zf.read(part))
+        except Exception:
+            continue
+        for el in root.iter():
+            local = (el.tag or "").rsplit("}", 1)[-1]
+            key = keymap.get(local)
+            if key and key not in out and el.text \
+                    and el.text.strip():
+                out[key] = el.text.strip()[:120]
+    return out
 
 
 def _robots_rules(text):
@@ -531,6 +642,46 @@ def run_passive_recon(target, log=None):
     if exif_meta and not exif_hits:
         L(f"[passive] EXIF: metadata in {len(exif_meta)} image(s), no GPS")
 
+    # ---- WS6d (v1.8.0): dokumen publik (PDF/DOCX) — metadata
+    # author/software/tanggal sering bocor dari file yang sengaja
+    # diterbitkan; dipanen dari tautan homepage + contoh sitemap.
+    doc_meta = {}
+    doc_urls, _dseen = [], set()
+    for u in list(signals.links) + list(files_meta.get("sitemap_sample")
+                                        or []):
+        if not u:
+            continue
+        full = urljoin(origin_url + "/", u)
+        if urlparse(full).netloc != urlparse(origin_url).netloc:
+            continue
+        if re.search(r"\.(pdf|docx)($|\?)", full, re.I) \
+                and full not in _dseen:
+            _dseen.add(full)
+            doc_urls.append(full)
+    for du in doc_urls[:4]:
+        st, _h, raw = _fetch_bytes(du, timeout=8, cap=5 * 1024 * 1024)
+        if st != 200 or not raw:
+            continue
+        _is_pdf = du.lower().split("?")[0].endswith(".pdf")
+        dm = _pdf_metadata(raw) if _is_pdf else _docx_metadata(raw)
+        if not dm:
+            continue
+        doc_meta[du[:160]] = dm
+        if any(dm.get(k) for k in ("author", "creator", "producer",
+                                   "software", "last_modified_by")):
+            ev = "; ".join(f"{k}={v}" for k, v in
+                           sorted(dm.items()))[:240]
+            add(F("INFO", f"Document metadata harvested: {du[:120]}",
+                  "A publicly linked document carries authoring metadata (author / producing software / timestamps). Author names and exact tool versions help target phishing and version-specific exploits; documents intended for publication should be scrubbed.",
+                  evidence=ev, cwe="CWE-200", owasp="ASVS V14",
+                  cvss=0.0,
+                  remed="Scrub document metadata (author, producer, timestamps) before publishing documents.",
+                  confidence="candidate", location=du[:160],
+                  origin="passive"))
+    if doc_meta:
+        L(f"[passive] document metadata harvested from "
+          f"{len(doc_meta)} document(s)")
+
     summary = {}
     for f in findings:
         summary[f["severity"]] = summary.get(f["severity"], 0) + 1
@@ -541,6 +692,7 @@ def run_passive_recon(target, log=None):
             "wildcard_dns": wildcard, "ct": ct, "rdap": rdap,
             "favicon": fav, "files": files_meta, "tech_profile": tech,
             "cdn_indication": cdn_hint, "exif": exif_meta,
+            "documents": doc_meta,
             "homepage_status": home.status}
     L(f"[passive] done: {len(findings)} findings | risk {risk} | score {score}/100")
     return {"type": "passive", "target": target, "profile": "passive-recon",

@@ -31,13 +31,21 @@ def _apply_limits():
 def main():
     _apply_limits()
     fpath, fname = sys.argv[1], sys.argv[2]
+    baseline = None
+    if len(sys.argv) > 3:  # v1.9.0: operator secret baseline (hashes only)
+        try:
+            with open(sys.argv[3]) as fh:
+                baseline = json.load(fh)
+        except Exception:
+            baseline = None
     real_stdout = sys.stdout
     log = []
     try:
         sys.stdout = open(os.devnull, "w")
         try:
             import mobile
-            result = mobile.analyze_package(fpath, fname, log=log)
+            result = mobile.analyze_package(fpath, fname, log=log,
+                                            baseline=baseline)
         finally:
             sys.stdout.close()
             sys.stdout = real_stdout

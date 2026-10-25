@@ -1,0 +1,616 @@
+{
+ "disabled": {
+  "Bitbucket": {
+   "reason": "claimed handle 'bitbucket' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Docker Hub": {
+   "reason": "claimed handle 'docker' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Hashnode": {
+   "reason": "claimed handle 'hashnode' not confirmed (verdict: candidate)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Medium": {
+   "reason": "claimed handle 'medium' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Reddit": {
+   "reason": "claimed handle 'reddit' not confirmed (verdict: candidate)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Instagram": {
+   "reason": "claimed handle 'instagram' not confirmed (verdict: candidate)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Facebook": {
+   "reason": "claimed handle 'facebook' not confirmed (verdict: candidate)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "LinkedIn": {
+   "reason": "claimed handle 'reidhoffman' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "TikTok": {
+   "reason": "claimed handle 'tiktok' not confirmed (verdict: candidate)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Snapchat": {
+   "reason": "claimed handle 'snapchat' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Telegram": {
+   "reason": "claimed handle 'telegram' not confirmed (verdict: candidate)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "npm": {
+   "reason": "claimed handle 'npm' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "PyPI": {
+   "reason": "claimed handle 'django' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Kaggle": {
+   "reason": "claimed handle 'kaggle' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "HackerRank": {
+   "reason": "claimed handle 'hackerrank' not confirmed (verdict: candidate)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Behance": {
+   "reason": "claimed handle 'behance' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Unsplash": {
+   "reason": "claimed handle 'unsplash' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Vimeo": {
+   "reason": "claimed handle 'vimeo' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "TryHackMe": {
+   "reason": "claimed handle 'tryhackme' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Threads": {
+   "reason": "claimed handle 'threads' not confirmed (verdict: candidate)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Mixcloud": {
+   "reason": "claimed handle 'mixcloud' not confirmed (verdict: candidate)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Last.fm": {
+   "reason": "claimed handle 'lastfm' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "FACEIT": {
+   "reason": "claimed handle 'faceit' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "JSFiddle": {
+   "reason": "claimed handle 'jsfiddle' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "CodeChef": {
+   "reason": "claimed handle 'codechef' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Exercism": {
+   "reason": "claimed handle 'exercism' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Spoj": {
+   "reason": "claimed handle 'spoj' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "SourceForge": {
+   "reason": "claimed handle 'sourceforge' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "freeCodeCamp": {
+   "reason": "claimed handle 'freecodecamp' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Frontend Mentor": {
+   "reason": "claimed handle 'frontendmentor' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Lobsters": {
+   "reason": "claimed handle 'lobsters' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "MyFitnessPal": {
+   "reason": "claimed handle 'myfitnesspal' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Peerlist": {
+   "reason": "claimed handle 'peerlist' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Read.cv": {
+   "reason": "claimed handle 'readcv' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Duolingo": {
+   "reason": "claimed handle 'duolingo' not confirmed (verdict: candidate)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Buy Me a Coffee": {
+   "reason": "claimed handle 'buymeacoffee' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Figma": {
+   "reason": "claimed handle 'figma' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "OpenStreetMap": {
+   "reason": "claimed handle 'openstreetmap' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Foursquare": {
+   "reason": "claimed handle 'foursquare' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "CGTrader": {
+   "reason": "claimed handle 'cgtrader' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "Fur Affinity": {
+   "reason": "claimed handle 'furaffinity' not confirmed (verdict: absent)",
+   "at": "2026-10-21T10:54:01Z"
+  },
+  "HackerEarth": {
+   "reason": "claimed handle 'naveennamani877' not confirmed (verdict: absent)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Topcoder": {
+   "reason": "claimed handle 'USER' not confirmed (verdict: absent)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "CodersRank": {
+   "reason": "claimed handle 'rootkit7628' not confirmed (verdict: candidate)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "CryptoHack": {
+   "reason": "claimed handle 'blue' not confirmed (verdict: absent)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "DMOJ": {
+   "reason": "claimed handle 'junferno' not confirmed (verdict: absent)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "CSSBattle": {
+   "reason": "claimed handle 'beo' not confirmed (verdict: candidate)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Codolio": {
+   "reason": "claimed handle 'testuser' not confirmed (verdict: candidate)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Packagist": {
+   "reason": "claimed handle 'psr' not confirmed (verdict: candidate)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "VirusTotal": {
+   "reason": "claimed handle 'blue' not confirmed (verdict: absent)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "FortniteTracker": {
+   "reason": "claimed handle 'blue' not confirmed (verdict: absent)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Gamespot": {
+   "reason": "claimed handle 'blue' not confirmed (verdict: absent)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Wikipedia": {
+   "reason": "claimed handle 'Hoadlck' not confirmed (verdict: candidate)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Archive.org": {
+   "reason": "claimed handle 'blue' not confirmed (verdict: absent)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "GeeksforGeeks": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "GitBook": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Giant Bomb": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Kongregate": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Minecraft": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Ninja Kiwi": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "NintendoLife": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Pokemon Showdown": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Realmeye": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "RuneScape": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "TETR.IO": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Terraria Forums": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "osu!": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Typeracer": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Monkeytype": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "NitroType": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Wowhead": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Carbonmade": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "ColourLovers": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Coroflot": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Crevado": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Cults3D": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "MyMiniFactory": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "OpenGameArt": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "EyeEm": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "SmugMug": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Blipfoto": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "LottieFiles": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Freesound": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "MuseScore": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Instructables": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Airbit": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "ReverbNation": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "PromoDJ": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "TRAKTRAIN": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Smule": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Splice": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "YandexMusic": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Rumble": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Clapper": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Itemfix": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Giphy": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Tenor": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "YouPic": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "SpaceHey": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Myspace": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "LiveJournal": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Clubhouse": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "AllMyLinks": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Listed": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Hubski": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "LessWrong": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "SoylentNews": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Fandom": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Fanpop": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "GaiaOnline": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Kaskus": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Pikabu": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Interpals": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Couchsurfing": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Archive of Our Own (AO3)": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Blogger": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "HubPages": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Scribd": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "SlideShare": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "SpeakerDeck": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "ResearchGate": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Academia.edu": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "LibraryThing": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Mydramalist": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Rate Your Music": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Credly": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Memrise": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Clozemaster": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Platzi": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "BuyMeACoffee": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Contently": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Houzz": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "BiggerPockets": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Sessionize": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Arduino Forum": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Naver": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Linux.org.ru": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "LinuxFR.org": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Habr": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Habr Career": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Tistory": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Velog": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "note.com": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "DCinside": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Jeuxvideo": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Wykop": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Pr0gramm": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Ultimate-Guitar": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Geocaching": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Venmo": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Vero": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "SOOP": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  },
+  "Tellonym": {
+   "reason": "self-check not evaluated (batch v1.11.0; egress approval stop \u2014 platform kept inactive until a self-check can run)",
+   "at": "2026-10-23T07:47:23Z"
+  }
+ }
+}

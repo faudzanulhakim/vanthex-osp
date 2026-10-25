@@ -1,6 +1,6 @@
 # VANTHEX — Docker Compose Deployment
 
-**Version 1.1.0** · For native (non-Docker) installation, see
+**Version 1.2.1** · For native (non-Docker) installation, see
 [INSTALL.md](INSTALL.md). Engine, features, and scan behavior are
 identical in both installation methods; only the runtime differs.
 
@@ -41,7 +41,7 @@ Open <http://localhost:5000> and sign in as `admin` with the
 
 What this does:
 
-- Builds the image (tag `vanthex:1.1.0`) from the `Dockerfile`
+- Builds the image (tag `vanthex:1.9.0`) from the `Dockerfile`
 - Starts one container, publishing host port **5000** → container 5000
 - Creates the named volume **`vanthex-data`** mounted at `/data`
 - Adds the `NET_RAW` capability
@@ -69,7 +69,7 @@ Edit `.env`:
 PTK_ADMIN_PW=a-long-random-password
 GHCR_OWNER=<your-github-user>        # image: ghcr.io/<owner>/vanthex-osp
 GHCR_REPO=vanthex-osp
-VANTHEX_TAG=1.1                      # or 1.1.0, or latest
+VANTHEX_TAG=1.9.0                    # or latest
 # PTK_NVD_KEY=...                    # optional, recommended
 ```
 

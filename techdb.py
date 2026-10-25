@@ -21,8 +21,19 @@ DB = [
     {"name": "Apache", "cat": "Web Server", "rules": [("header", r"server:\s*apache/?(?P<v>[\d.]+)?")]},
     {"name": "nginx", "cat": "Web Server", "rules": [("header", r"server:\s*nginx/?(?P<v>[\d.]+)?")]},
     {"name": "Microsoft IIS", "cat": "Web Server", "rules": [("header", r"server:\s*microsoft-iis/(?P<v>[\d.]+)")]},
-    {"name": "Tomcat", "cat": "Web Server", "rules": [("header", r"server:.*tomcat/?(?P<v>[\d.]+)?")]},
-    {"name": "Jetty", "cat": "Web Server", "rules": [("header", r"server:\s*jetty\(?(?P<v>[\d.]+)?")]},
+    {"name": "Tomcat", "cat": "Web Server", "rules": [("header", r"server:.*tomcat/?(?P<v>[\d.]+)?"), ("error", r"apache tomcat/(?P<v>\d+(?:\.\d+)+)")]},
+    {"name": "Jetty", "cat": "Web Server", "rules": [("header", r"server:\s*jetty\(?(?P<v>[\d.]+)?"), ("error", r"powered by jetty://\s*(?P<v>\d+(?:\.\d+)+)")]},
+    # --- Java app server (v1.10.0 WS1): versi HANYA dari angka tercetak di
+    # header/footer error bawaan; nama vendor di teks biasa tidak cukup.
+    {"name": "WildFly", "cat": "App Server", "rules": [("header", r"server:\s*wildfly/?(?P<v>[\d.]+)?")]},
+    {"name": "JBoss EAP", "cat": "App Server", "rules": [("header", r"server:\s*jboss[\s-]?eap/?(?P<v>[\d.]+)?")]},
+    {"name": "Undertow", "cat": "Web Server", "rules": [("header", r"server:\s*undertow/?(?P<v>[\d.]+)?")]},
+    {"name": "GlassFish", "cat": "App Server", "rules": [("header", r"server:\s*glassfish[^:]*?(?P<v>\d+\.\d+[\d.]*)")]},
+    {"name": "Payara", "cat": "App Server", "rules": [("header", r"server:\s*payara[^:]*?(?P<v>\d+\.\d+[\d.]*)")]},
+    {"name": "WebLogic", "cat": "App Server", "rules": [("html", r"<title>oracle weblogic"), ("error", r"error 404--not found")]},
+    {"name": "WebSphere", "cat": "App Server", "rules": [("header", r"server:\s*websphere application server/?(?P<v>[\d.]+)?"), ("html", r"<title>[^<]*websphere")]},
+    {"name": "gunicorn", "cat": "Web Server", "rules": [("header", r"server:\s*gunicorn/?(?P<v>[\d.]+)?")]},
+    {"name": "Phusion Passenger", "cat": "Web Server", "rules": [("header", r"server:\s*phusion passenger\s*(?P<v>[\d.]+)?")]},
     {"name": "LiteSpeed", "cat": "Web Server", "rules": [("header", r"server:\s*litespeed")]},
     {"name": "OpenResty", "cat": "Web Server", "rules": [("header", r"server:\s*openresty/?(?P<v>[\d.]+)?")]},
     {"name": "Cloudflare", "cat": "CDN", "rules": [("header", r"cf-ray:"), ("header", r"server:\s*cloudflare")]},
@@ -32,15 +43,19 @@ DB = [
     {"name": "PHP", "cat": "Runtime", "rules": [("header", r"x-powered-by:\s*php/(?P<v>[\d.]+)"), ("cookie", r"^PHPSESSID$")]},
     {"name": "ASP.NET", "cat": "Runtime", "rules": [("header", r"x-aspnet-version:\s*(?P<v>[\d.]+)"), ("cookie", r"^ASP\.NET_SessionId$"), ("header", r"x-powered-by:\s*asp\.net")]},
     {"name": "Java (Servlet)", "cat": "Runtime", "rules": [("cookie", r"^JSESSIONID$")]},
-    {"name": "Express (Node.js)", "cat": "Runtime", "rules": [("header", r"x-powered-by:\s*express")]},
-    {"name": "Django", "cat": "Framework", "rules": [("cookie", r"^csrftoken$"), ("html", r"csrfmiddlewaretoken")]},
-    {"name": "Laravel", "cat": "Framework", "rules": [("cookie", r"^laravel_session$"), ("cookie", r"^XSRF-TOKEN$")]},
+    {"name": "Express (Node.js)", "cat": "Runtime", "rules": [("header", r"x-powered-by:\s*express"), ("error", r"<pre>Cannot (GET|POST|PUT|DELETE|HEAD) /")]},
+    {"name": "Node.js", "cat": "Runtime", "rules": [("cookie", r"^connect\.sid$")]},
+    {"name": "NestJS", "cat": "Framework", "rules": [("error", r'"statusCode"\s*:\s*\d{3}\s*,\s*"message"\s*:\s*"Cannot (GET|POST|PUT|DELETE|PATCH) ')]},
+    {"name": "Koa", "cat": "Framework", "rules": []},
+    {"name": "Fastify", "cat": "Framework", "rules": []},
+    {"name": "Django", "cat": "Framework", "rules": [("cookie", r"^csrftoken$"), ("html", r"csrfmiddlewaretoken"), ("error", r"django version:\s*(?P<v>[\d.]+)")]},
+    {"name": "Laravel", "cat": "Framework", "rules": [("cookie", r"^laravel_session$"), ("cookie", r"^XSRF-TOKEN$"), ("error", r"whoops, looks like something went wrong")]},
     {"name": "Ruby on Rails", "cat": "Framework", "rules": [("header", r"x-powered-by:.*phusion passenger"), ("html", r"csrf-token.*authenticity")]},
-    {"name": "GeneXus", "cat": "Framework", "rules": [("cookie", r"^GXSESSION"), ("html", r'"gx[_ ]ajax_key"'), ("html", r"[Gg]ene[Xx]us")]},
+    {"name": "GeneXus", "cat": "Framework", "rules": [("cookie", r"^GXSESSION"), ("html", r'"gx[_ ]ajax_key"'), ("html", r"[Gg]ene[Xx]us"), ("script", r"gxgral\.js|gxcfg\.js|gxcommon\.js")]},
     # ---------------- CMS & e-commerce ----------------
     {"name": "WordPress", "cat": "CMS", "rules": [("html", r'<meta[^>]+generator[^>]+content="WordPress\s*(?P<v>[\d.]+)?'), ("html", r"/wp-(content|includes)/")]},
     {"name": "Joomla", "cat": "CMS", "rules": [("html", r'<meta[^>]+generator[^>]+content="Joomla'), ("html", r"/media/jui/")]},
-    {"name": "Drupal", "cat": "CMS", "rules": [("html", r"drupal-settings-json|/sites/default/files"), ("header", r"x-generator:\s*drupal")]},
+    {"name": "Drupal", "cat": "CMS", "rules": [("html", r"drupal-settings-json|/sites/default/files"), ("header", r"x-generator:\s*drupal"), ("header", r"x-generator:\s*drupal\s+(?P<v>[\d.]+)"), ("html", r'content="Drupal\s+(?P<v>[\d.]+)')]},
     {"name": "Ghost", "cat": "CMS", "rules": [("html", r'<meta[^>]+generator[^>]+content="Ghost\s*(?P<v>[\d.]+)?')]},
     {"name": "Magento", "cat": "E-commerce", "rules": [("html", r"Mage\.Cookies|/static/frontend/magento"), ("cookie", r"^PHPSESSID$|mage-")]},
     {"name": "Shopify", "cat": "E-commerce", "rules": [("html", r"cdn\.shopify\.com|Shopify\.theme"), ("header", r"x-shopid:")]},
@@ -50,9 +65,9 @@ DB = [
     # ---------------- framework & library JS ----------------
     {"name": "Next.js", "cat": "Framework JS", "rules": [("html", r"__NEXT_DATA__|/_next/static/"), ("header", r"x-powered-by:\s*next\.js")]},
     {"name": "Nuxt", "cat": "Framework JS", "rules": [("html", r"__NUXT__|/_nuxt/")]},
-    {"name": "React", "cat": "Library JS", "rules": [("html", r"data-reactroot|data-reactid"), ("script", r"react(-dom)?[.-](?P<v>[\d.]+)?(\.min)?\.js")]},
-    {"name": "Angular", "cat": "Framework JS", "rules": [("html", r'ng-version="(?P<v>[\d.]+)"'), ("html", r"<app-root|ng-app")]},
-    {"name": "Vue.js", "cat": "Library JS", "rules": [("script", r"vue[.-](?P<v>[\d.]+)?(\.min)?\.js|vue\.global"), ("html", r"data-v-app|v-cloak")]},
+    {"name": "React", "cat": "Library JS", "rules": [("html", r"data-reactroot|data-reactid"), ("script", r"react(-dom)?[.-](?P<v>[\d.]+)?(\.min)?\.js"), ("script", r"react@(?P<v>\d+(?:\.\d+)+)"), ("script", r"react/(?P<v>[\d.]+)/")]},
+    {"name": "Angular", "cat": "Framework JS", "rules": [("html", r'ng-version="(?P<v>[\d.]+)"'), ("html", r"<app-root|ng-app"), ("script", r"angular[-.](?P<v>\d+(?:\.\d+)+)"), ("script", r"angular\.js/(?P<v>[\d.]+)/")]},
+    {"name": "Vue.js", "cat": "Library JS", "rules": [("script", r"vue[.-](?P<v>[\d.]+)?(\.min)?\.js|vue\.global"), ("html", r"data-v-app|v-cloak"), ("script", r"vue@(?P<v>\d+(?:\.\d+)+)")]},
     {"name": "Svelte", "cat": "Framework JS", "rules": [("html", r"svelte-[a-z0-9]{6,}")]},
     {"name": "jQuery", "cat": "Library JS", "rules": [("script", r"jquery[-.](?P<v>[\d.]+)(\.min)?\.js"), ("script", r"jquery\.js\?ver=(?P<v>[\d.]+)")]},
     {"name": "jQuery UI", "cat": "Library JS", "rules": [("script", r"jquery-ui[-.](?P<v>[\d.]+)")]},
@@ -105,8 +120,15 @@ DB = [
     {"name": "YouTube Embed", "cat": "Media", "rules": [("html", r"youtube\.com/embed/|youtube-nocookie\.com/embed/")]},
     {"name": "Vimeo Embed", "cat": "Media", "rules": [("html", r"player\.vimeo\.com/video/")]},
     # ---------------- framework tambahan ----------------
-    {"name": "CodeIgniter", "cat": "Framework", "rules": [("cookie", r"^ci_session$")]},
-    {"name": "Spring Boot", "cat": "Framework", "rules": [("html", r"Whitelabel Error Page"), ("error", r"Whitelabel Error Page")]},
+    {"name": "CodeIgniter", "cat": "Framework", "rules": [("cookie", r"^ci_session$"), ("html", r"welcome to codeigniter")]},
+    {"name": "CakePHP", "cat": "Framework", "rules": [("cookie", r"^CAKEPHP$"), ("error", r"cakephp\s+(?P<v>\d+(?:\.\d+)+)")]},
+    {"name": "Yii", "cat": "Framework", "rules": [("error", r"yii framework\s*/?\s*(?P<v>[\d.]+)?"), ("html", r"powered by yii framework")]},
+    {"name": "Spring Boot", "cat": "Framework", "rules": [("html", r"Whitelabel Error Page"), ("error", r"Whitelabel Error Page"), ("error", r'"timestamp"\s*:\s*"[^"]{10,}"\s*,\s*"status"\s*:\s*\d{3}\s*,\s*"error"\s*:')]},
+    {"name": "Apache Struts", "cat": "Framework", "rules": [("error", r"struts problem report")]},
+    {"name": "JSF (Jakarta Faces)", "cat": "Framework", "rules": [("html", r"javax\.faces\.ViewState|jakarta\.faces\.ViewState"), ("error", r"javax\.faces\.|jakarta\.faces\.")]},
+    {"name": "ASP.NET MVC", "cat": "Framework", "rules": [("header", r"x-aspnetmvc-version:\s*(?P<v>[\d.]+)")]},
+    {"name": "DNN (DotNetNuke)", "cat": "CMS", "rules": [("html", r"dotnetnuke|/desktopmodules/")]},
+    {"name": "Umbraco", "cat": "CMS", "rules": [("html", r'content="Umbraco|/umbraco/')]},
     {"name": "Flask", "cat": "Framework", "rules": [("error", r"<title>werkzeug|The Werkzeug Debugger"), ("header", r"server:\s*werkzeug/?(?P<v>[\d.]+)?")]},
     {"name": "Werkzeug", "cat": "Web Server", "rules": [("header", r"server:\s*werkzeug/?(?P<v>[\d.]+)?")]},
     {"name": "FastAPI", "cat": "Framework", "rules": [("html", r"<title>FastAPI( - Swagger UI)?</title>")]},
@@ -141,6 +163,28 @@ DETAILS = {
     "nginx": "nginx — high-performance web server / reverse proxy fronting the application; also terminates TLS and often proxies to app runtimes behind it.",
     "Microsoft IIS": "Microsoft IIS — Windows web server; frequently paired with ASP.NET applications and Windows authentication.",
     "Tomcat": "Apache Tomcat — Java servlet container running Java web applications.",
+    "Jetty": "Eclipse Jetty — lightweight Java servlet container / embedded web server, common in microservices and tooling.",
+    "WildFly": "WildFly (formerly JBoss AS) — Java EE/Jakarta EE application server from Red Hat running the application.",
+    "JBoss EAP": "JBoss Enterprise Application Platform — Red Hat's supported Jakarta EE application server.",
+    "Undertow": "Undertow — high-performance Java web server (WildFly's web layer, also used standalone and by Spring Boot).",
+    "GlassFish": "GlassFish — Jakarta EE application server (reference implementation lineage) running the application.",
+    "Payara": "Payara Server — Jakarta EE application server derived from GlassFish.",
+    "WebLogic": "Oracle WebLogic Server — enterprise Java EE application server; its console is a high-value admin surface.",
+    "WebSphere": "IBM WebSphere Application Server / Liberty — enterprise Java application server.",
+    "gunicorn": "gunicorn — Python WSGI application server fronting the Python web application.",
+    "Phusion Passenger": "Phusion Passenger — application server for Ruby/Python/Node applications, typically behind Apache/nginx.",
+    "Node.js": "Node.js runtime — the application is a Node.js service (session cookie of the express-session family observed). Dependency (npm) supply chain is part of its attack surface.",
+    "NestJS": "NestJS — TypeScript Node.js framework (Express/Fastify based) behind the API.",
+    "Koa": "Koa — Node.js web framework (Express successor lineage by the same authors).",
+    "Fastify": "Fastify — Node.js web framework focused on performance and plugin encapsulation.",
+    "CakePHP": "CakePHP — PHP application framework behind the application.",
+    "Yii": "Yii — PHP application framework behind the application.",
+    "Apache Struts": "Apache Struts — Java MVC framework; its history includes critical OGNL remote code execution CVEs, so exact version matters.",
+    "JSF (Jakarta Faces)": "Jakarta Faces (JSF) — Java server-side UI component framework (Mojarra/MyFaces) rendering the interface.",
+    "ASP.NET MVC": "ASP.NET MVC — Microsoft's MVC web framework on the .NET runtime; version disclosed by its own response header.",
+    "DNN (DotNetNuke)": "DNN (DotNetNuke) — .NET CMS platform; module and core versions carry their own CVE surface.",
+    "Umbraco": "Umbraco — .NET CMS; the backoffice is a sensitive admin surface and versions carry specific CVEs.",
+    "Adobe ColdFusion": "Adobe ColdFusion — CFML application server inferred from .cfm URL extensions in the crawl surface.",
     "PHP": "PHP runtime executing the server-side application code; its version determines which language-level and extension CVEs apply.",
     "ASP.NET": "Microsoft ASP.NET runtime for .NET web applications.",
     "Express (Node.js)": "Express on Node.js — the application is a Node.js web service; dependency (npm) supply chain is part of its attack surface.",
@@ -421,3 +465,106 @@ COMPONENT_PROBES = [
     ("/", "Qdrant", "Database", _p_qdrant, "GET", None),
     ("/.well-known/openid-configuration", "OpenID Connect (OIDC)", "Auth/SSO", _p_oidc, "GET", None),
 ]
+
+
+# ------------------------------------------------------------ WS4 (v1.7.0)
+# Scored-claim relations between technology detections, in the spirit
+# of the v1.4.0 WAF scoring model: a detection carried by stronger
+# independent evidence vetoes a mutually exclusive competitor carried
+# by a single weak artifact — the vetoed detection is CAPPED at
+# candidate (its score still travels into evidence; it is never
+# silently dropped). IMPLIES adds derivative detections at candidate
+# tier only, labelled as implied.
+
+IMPLIES = {
+    "Next.js": ("React", "Node.js"),
+    "Nuxt": ("Vue.js", "Node.js"),
+    "Express (Node.js)": ("Node.js",),
+    "NestJS": ("Node.js",),
+    "Koa": ("Node.js",),
+    "Fastify": ("Node.js",),
+    "WooCommerce": ("WordPress",),
+    "WordPress": ("PHP",),
+    "Drupal": ("PHP",),
+    "Joomla": ("PHP",),
+    "Magento": ("PHP",),
+    "PrestaShop": ("PHP",),
+    "OpenCart": ("PHP",),
+    "Laravel": ("PHP",),
+    "Symfony": ("PHP",),
+    "CodeIgniter": ("PHP",),
+    "CakePHP": ("PHP",),
+    "Yii": ("PHP",),
+}
+
+# Slots where one origin normally runs exactly ONE primary product.
+# (Servlet containers are deliberately absent: Tomcat/Jetty routinely
+# sit BEHIND Apache/nginx, so excluding them would fabricate vetoes.)
+EXCLUSIVE_GROUPS = [
+    ("CMS", ("WordPress", "Drupal", "Joomla", "Ghost")),
+    ("Web Server", ("Apache", "nginx", "Microsoft IIS", "LiteSpeed",
+                    "OpenResty")),
+]
+
+# Known product favicon MD5 hashes (escalation probe). The mechanism
+# is complete — a /favicon.ico whose MD5 is listed here corroborates
+# (or introduces) the named technology as an independent artifact.
+# The table ships EMPTY on purpose: hash constants are only admitted
+# with a verifiable source, and none may be guessed into a security
+# tool (the bare-name/substring FP lesson). Operators extend it from
+# their own ground truth: md5 of the product's stock favicon.ico.
+FAVICON_MD5 = {
+}
+
+_CAT_BY_NAME = {e["name"]: e["cat"] for e in DB}
+
+
+def _strength(d):
+    n = len(d.get("sources") or ([d["source"]] if d.get("source")
+                                  else []))
+    return n + (3 if d.get("verified") else 0)
+
+
+def apply_relations(detections):
+    """Apply IMPLIES / EXCLUDES to a list of techdb detection dicts
+    (in place; also returns the list). Vetoed detections get
+    confidence='candidate' and a 'vetoed_by' marker; implied
+    detections are appended at candidate tier, labelled as implied."""
+    by_name = {d["name"]: d for d in detections}
+    for src, targets in IMPLIES.items():
+        s = by_name.get(src)
+        if not s or s.get("confidence") == "candidate" or s.get("vetoed_by"):
+            continue
+        for tname in targets:
+            if tname in by_name:
+                continue
+            nd = {"name": tname,
+                  "category": _CAT_BY_NAME.get(tname, ""),
+                  "version": "",
+                  "evidence": f"implied by {src} detection",
+                  "source": "implied",
+                  "evidence_list": [f"implied by {src} detection"],
+                  "sources": ["implied"],
+                  "detail": DETAILS.get(tname, ""),
+                  "confidence": "candidate",
+                  "implied_by": src}
+            detections.append(nd)
+            by_name[tname] = nd
+    for group, members in EXCLUSIVE_GROUPS:
+        present = [by_name[n] for n in members if n in by_name]
+        if len(present) < 2:
+            continue
+        winner = max(present, key=_strength)
+        for d in present:
+            if d is winner or d.get("verified"):
+                continue
+            ds = d.get("sources") or ([d["source"]] if d.get("source")
+                                       else [])
+            if _strength(winner) > _strength(d) and len(ds) == 1:
+                d["confidence"] = "candidate"
+                d["vetoed_by"] = winner["name"]
+                d.setdefault("evidence_list", []).append(
+                    f"vetoed by stronger {winner['name']} detection "
+                    f"(mutually exclusive {group} slot) — capped at "
+                    "candidate, score retained in evidence")
+    return detections
