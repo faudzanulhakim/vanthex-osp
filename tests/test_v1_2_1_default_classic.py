@@ -37,7 +37,11 @@ MD5_OSINT = "65ec21c31b4aad76aa304fcb411388ae"
 # 2026-10-25 total parity port (Command Deck, shell extras, card-only
 # alert clicks) superseded the 21:37 routing-flip template; the pin now
 # tracks the post-port template, verified by test_v1_2_1_total_parity.py.
-MD5_APP_HTML = "e7c6a4c07f0bb788f8a84d398748a9b8"
+# 2026-10-25 visual parity pass (ADE 22:45 WIB: hero welcome, health
+# waveform, KPI sparklines, posture gauge + spectrum row, topbar search
+# pill) superseded the total-parity template; the pin now tracks the
+# post-pass template, verified by test_v1_2_1_visual_parity.py.
+MD5_APP_HTML = "b4741a3d1fd16aa5ef3713e710568682"
 MD5_WEBUI_BUNDLE = "1751c095c5decc17c80907283fb6635d"
 MD5_WEBUI_INDEX = "d67036f15cbaf4efaac6f2153a910260"
 

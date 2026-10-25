@@ -2000,6 +2000,11 @@ html[data-theme="dark"] .b-active{ color:var(--accent); }
           <span id="liveScanText">Scan in progress</span>
         </div>
       </div>
+      <div class="topbar-center">
+        <button type="button" class="pt-searchpill" id="ptSearchPill" onclick="ptPaletteOpen()" aria-label="Search">
+          <span>🔍</span><span class="pt-searchpill-text">Search targets, scans, findings…</span><kbd>Ctrl K</kbd>
+        </button>
+      </div>
       <div class="topbar-right">
         <div class="pt-bellwrap">
           <button class="pt-bell" id="ptBell" title="Notifications" aria-label="Notifications">🔔<span class="pt-bell-dot" id="ptBellDot"></span></button>
@@ -2026,6 +2031,8 @@ html[data-theme="dark"] .b-active{ color:var(--accent); }
           <option value="ar">العربية</option>
           <option value="hi">हिन्दी</option>
         </select>
+        <button type="button" class="pt-themebtn" id="ptThemeBtn" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme">🌙</button>
+        <button type="button" class="btn" id="ptLogoutBtn" onclick="ptLogout()">Log Out</button>
       </div>
     </div>
 
@@ -2334,6 +2341,7 @@ function updateThemeButton() {
       ? '<circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>'
       : '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>';
   }
+  const tb = document.getElementById('ptThemeBtn'); if (tb) tb.textContent = isDark ? '☀️' : '🌙';
 }
 
 function toggleTheme() {
@@ -2378,19 +2386,19 @@ async function viewDash() {
   const userName = (window._ptUser || 'admin');
 
   const welcome = `
-    <section class="panel pt-welcome pt-deck-sec" data-deck="welcome" draggable="true">
+    <section class="panel pt-welcome pt-hero pt-deck-sec" data-deck="welcome" draggable="true">
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
-      <div><h3>Welcome back, <span id="ptWelcomeName">${esc(userName)}</span></h3>
-      <div style="color:var(--fg-muted);font-size:var(--fs-12)">Security posture overview of your assets</div></div>
-      <div class="pt-clock">LOCAL <b id="ptClock">${new Date().toLocaleString('en-GB')}</b></div>
-      <button class="btn" onclick="ptDeckReset()">Reset layout</button>
+      <div class="pt-hero-text"><h3 class="pt-hero-title">Welcome back, <span id="ptWelcomeName">${esc(userName)}</span></h3>
+      <div class="pt-hero-sub">Security posture overview of your assets</div></div>
+      <div class="pt-hero-clock"><div class="pt-clock-time" id="ptClock">${new Date().toLocaleTimeString('en-GB')}</div><div class="pt-clock-date" id="ptClockDate">${new Date().toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'}).toUpperCase()} · LOCAL TIME</div></div>
+      <button class="btn" style="margin-right:26px" onclick="ptDeckReset()">Reset layout</button>
     </section>`;
 
   const health = `
     <section class="panel pt-deck-sec" data-deck="health" draggable="true">
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
       <details class="pt-health" open>
-        <summary>System &amp; Engine Health · ${healthStatus}</summary>
+        <summary class="pt-health-sum">System &amp; Engine Health · ${healthStatus}</summary>
         <div class="pt-health-grid">
           <div class="pt-health-row"><b>Engine version</b>${esc((eng && eng.version) || 'unknown')}</div>
           <div class="pt-health-row"><b>Status</b>${healthStatus}</div>
@@ -2402,27 +2410,51 @@ async function viewDash() {
           <div class="pt-health-row"><b>Canary loopback</b>${can.mode ? esc(can.mode) : '—'}${can.base ? ' · ' + esc(can.base) : ''}${can.hits != null ? ' · hits ' + can.hits : ''}</div>
           <div class="pt-health-row"><b>Audit chain</b>${(met && met.audit_chain_ok != null) ? (met.audit_chain_ok ? 'ok' : 'failed') : 'unknown'}</div>
         </div>
+        <div class="pt-health-wave">
+          <div class="pt-health-wave-label">LIVE TRACE · CPU / MEMORY (30S POLL)</div>
+          <div id="ptVitalsHealth">${typeof ptVitalsSvg === 'function' ? ptVitalsSvg() : '<div class="empty">Collecting vitals…</div>'}</div>
+        </div>
       </details>
     </section>`;
 
   const pScore = st.posture_score;
   const pLabel = pScore == null ? '—' : (pScore >= 70 ? 'At risk' : pScore >= 40 ? 'Fair' : 'Good');
   const pColor = pScore == null ? 'var(--fg-muted)' : (pScore >= 70 ? 'var(--crit)' : pScore >= 40 ? 'var(--med)' : 'var(--ok)');
+  const pCirc = 2 * Math.PI * 52;
+  const pOff = pScore != null ? (pCirc * (1 - pScore / 100)).toFixed(1) : pCirc.toFixed(1);
   const posture = `
     <section class="panel pt-deck-sec" data-deck="posture" draggable="true">
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
-      <h3>Security Posture</h3>
-      <div style="font-size:44px;font-weight:800;color:${pColor};line-height:1">${pScore != null ? pScore : '—'}<span style="font-size:14px;color:var(--fg-muted)">/100</span></div>
-      <div style="color:var(--fg-muted);font-size:var(--fs-12)">${pLabel}</div>
+      <h3 class="pt-micro">Security Posture</h3>
+      <div class="pt-gauge">
+        <svg width="132" height="132" viewBox="0 0 132 132" aria-hidden="true">
+          <circle cx="66" cy="66" r="52" fill="none" stroke="var(--bg2)" stroke-width="11"/>
+          <circle cx="66" cy="66" r="52" fill="none" stroke="${pColor}" stroke-width="11" stroke-linecap="round" stroke-dasharray="${pCirc.toFixed(1)}" stroke-dashoffset="${pOff}" transform="rotate(-90 66 66)"/>
+        </svg>
+        <div class="pt-gauge-center"><div class="pt-gauge-n" style="color:${pColor}">${pScore != null ? pScore : '—'}</div><div class="pt-gauge-sub">OUT OF 100<br>${pLabel}</div></div>
+      </div>
+      <div class="pt-posture-method">Methodology: each scan's risk score (0–100) is a weighted aggregate of severity × confidence across that scan's findings. The posture score is the average of the latest risk score per asset — higher means higher risk.</div>
       <div style="font-size:var(--fs-12);margin-top:8px">Unique Targets: <b class="text-fg">${st.total_targets || 0}</b></div>
+      <button class="btn" style="margin-top:10px" onclick="document.getElementById('trendChart') && document.getElementById('trendChart').scrollIntoView({behavior:'smooth',block:'center'})">Per-asset breakdown</button>
     </section>`;
 
+  const trendDates = (st.trend || []).slice(-14).map(d => d.date);
+  const scansSeries = (st.trend || []).slice(-14).map(d => d.scans || 0);
+  const dayOf = t => { try { return new Date(t * 1000).toISOString().slice(0, 10); } catch(e) { return ''; } };
+  const bucket = sev => { const m = {}; trendDates.forEach(d => { m[d] = 0; }); (fnd || []).forEach(f => { const d = dayOf(f.started_at); if (m[d] != null && (!sev || f.severity === sev)) m[d]++; }); return trendDates.map(d => m[d]); };
+  const spark = (vals, color) => {
+    if (!vals.length) return '<div class="pt-spark-empty">—</div>';
+    const W = 260, H = 44, pad = 3;
+    const mx = Math.max(1, ...vals);
+    const line = vals.map((v, i) => `${(pad + i * (W - 2 * pad) / Math.max(1, vals.length - 1)).toFixed(1)},${(H - pad - (v / mx) * (H - 2 * pad)).toFixed(1)}`).join(' ');
+    return `<svg class="pt-spark" width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round"/></svg>`;
+  };
   const kpi = `
     <section class="pt-kpi pt-deck-sec" data-deck="kpi" draggable="true">
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
-      <div class="stat"><div class="ic">🎯</div><div class="n">${st.total_scans}</div><div class="l">Total Scans</div></div>
-      <div class="stat"><div class="ic"><span class="text-crit">●</span></div><div class="n" style="color:var(--crit)">${critN}</div><div class="l">Critical Findings</div></div>
-      <div class="stat"><div class="ic">📋</div><div class="n">${sevTotal}</div><div class="l">Total Findings</div></div>
+      <div class="pt-kpi-card"><div class="pt-kpi-ic">🎯</div><div class="pt-kpi-n">${st.total_scans}</div><div class="pt-kpi-l">Total Scans</div>${spark(scansSeries, 'var(--crit)')}</div>
+      <div class="pt-kpi-card"><div class="pt-kpi-ic"><span class="text-crit">●</span></div><div class="pt-kpi-n" style="color:var(--crit)">${critN}</div><div class="pt-kpi-l">Critical Findings</div>${spark(bucket('CRITICAL'), 'var(--crit)')}</div>
+      <div class="pt-kpi-card"><div class="pt-kpi-ic">📋</div><div class="pt-kpi-n">${sevTotal}</div><div class="pt-kpi-l">Total Findings</div>${spark(bucket(null), 'var(--accent)')}</div>
     </section>`;
 
   const quick = `
@@ -2440,13 +2472,13 @@ async function viewDash() {
 
   const specSegs = sevEntries.map(([s, v]) => v ? `<div style="flex:${v};background:${COLORS[s]}" title="${s} ${v}"></div>` : '').join('');
   const specRows = sevEntries.map(([s, v]) => `
-    <div class="pt-spec-row"><span style="width:75px;font-weight:600;color:var(--fg-muted)">${s}</span>
-    <div style="flex:1;height:8px;background:var(--bg2);border-radius:var(--radius-xs);overflow:hidden"><div style="width:${sevTotal ? (v / sevTotal * 100) : 0}%;height:100%;background:${COLORS[s]}"></div></div>
-    <b>${v}</b><span style="width:52px;text-align:right;color:var(--fg-muted)">${sevTotal ? (v / sevTotal * 100).toFixed(1) : '0.0'}%</span></div>`).join('');
+    <div class="pt-spec-row"><span class="pt-spec-dot" style="background:${COLORS[s]}"></span><span class="pt-spec-name">${s}</span>
+    <div style="flex:1;height:10px;background:var(--bg2);border-radius:999px;overflow:hidden"><div style="width:${sevTotal ? (v / sevTotal * 100) : 0}%;height:100%;background:${COLORS[s]}"></div></div>
+    <b class="pt-spec-pct">${sevTotal ? (v / sevTotal * 100).toFixed(1) : '0.0'}%</b><span class="pt-spec-count">${v}</span></div>`).join('');
   const spectrum = `
     <section class="panel pt-deck-sec" data-deck="severity" draggable="true">
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
-      <h3>Severity Spectrum</h3>
+      <h3 class="pt-micro">Severity Spectrum</h3>
       <div class="pt-spec-bar">${specSegs || '<div style="flex:1"></div>'}</div>
       ${specRows || '<div class="empty">No data yet</div>'}
     </section>`;
@@ -10111,6 +10143,11 @@ document.getElementById('nav-logout').onclick = async () => {
   location.href = '/login';
 };
 
+async function ptLogout() {
+  await fetch('/api/logout', { method: 'POST' });
+  location.href = '/login';
+}
+
 (async () => {
   try {
     const me = await $('/api/me');
@@ -10316,20 +10353,24 @@ function ptVitalsSvg() {
 function ptVitalsStart() {
   if (window._ptVitalsTimer) return;
   window._ptVitalsTimer = setInterval(async () => {
-    const el = document.getElementById('ptVitals'); if (!el) return;
+    const el = document.getElementById('ptVitals'); const hEl = document.getElementById('ptVitalsHealth');
+    if (!el && !hEl) return;
     try {
       const j = await $('/api/stats');
       const s2 = j.system || {};
       window._ptVitals.push({ cpu: s2.host_cpu_percent || 0, mem: s2.host_mem_percent || 0 });
       if (window._ptVitals.length > 48) window._ptVitals.shift();
-      el.innerHTML = ptVitalsSvg();
+      if (el) el.innerHTML = ptVitalsSvg();
+      if (hEl) hEl.innerHTML = ptVitalsSvg();
     } catch(e) {}
   }, 30000);
 }
 if (!window._ptClockTimer) {
   window._ptClockTimer = setInterval(() => {
     const el = document.getElementById('ptClock');
-    if (el) el.textContent = new Date().toLocaleString('en-GB');
+    if (el) el.textContent = new Date().toLocaleTimeString('en-GB');
+    const dEl = document.getElementById('ptClockDate');
+    if (dEl) dEl.textContent = new Date().toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'}).toUpperCase() + ' · LOCAL TIME';
   }, 1000);
 }
 function ptHelpToggle() {
@@ -10363,6 +10404,56 @@ $('/api/me').then(me => {
   document.querySelectorAll('.pt-sess-user').forEach(el => el.textContent = me.user);
 }).catch(() => {});
 </script>
+<style id="vanthex-v1210-visual">
+/* v1.2.1 visual parity (ADE 2026-10-25 22:45 WIB): classic dashboard renders
+   the artifact Command Deck look — hero welcome, health waveform, KPI
+   sparklines, posture gauge beside spectrum. Data sources unchanged.
+   Deck grid auto-placement pairs posture + severity side by side WITHOUT
+   changing DOM order, so drag-reorder (ptDeckApply/ptDeckBind) keeps working. */
+.topbar-center{flex:1;display:flex;justify-content:center;padding:0 16px;min-width:0}
+.pt-searchpill{display:flex;align-items:center;gap:10px;width:100%;max-width:640px;background:var(--bg2);border:1px solid var(--border);border-radius:999px;padding:9px 16px;color:var(--fg-muted);cursor:pointer;font-size:var(--fs-13);text-align:left}
+.pt-searchpill:hover{border-color:var(--accent);color:var(--fg)}
+.pt-searchpill-text{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pt-searchpill kbd{font-family:inherit;font-size:var(--fs-11);background:var(--card);border:1px solid var(--border);border-radius:6px;padding:2px 6px;color:var(--fg-muted);white-space:nowrap}
+.pt-themebtn{background:transparent;border:1px solid var(--border);border-radius:999px;cursor:pointer;padding:6px 10px;font-size:14px;line-height:1}
+#dashDeck{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+#dashDeck > .pt-deck-sec{grid-column:1 / -1;border-radius:20px}
+#dashDeck > .panel{margin-bottom:0}
+#dashDeck > [data-deck="posture"]{grid-column:1}
+#dashDeck > [data-deck="severity"]{grid-column:2}
+#dashDeck .pt-hero{align-items:center}
+#dashDeck .pt-hero-title{margin:0;font-size:30px;font-weight:800;letter-spacing:-.02em;line-height:1.15}
+.pt-hero-sub{color:var(--fg-muted);font-size:var(--fs-13);margin-top:4px}
+.pt-hero-clock{margin-left:auto;text-align:right}
+.pt-clock-time{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:24px;font-weight:800;letter-spacing:-.01em;line-height:1.1}
+.pt-clock-date{font-size:var(--fs-11);color:var(--fg-muted);letter-spacing:.06em;margin-top:2px}
+#dashDeck .pt-micro{text-transform:uppercase;letter-spacing:.08em;font-size:var(--fs-11);color:var(--fg-muted)}
+#dashDeck .pt-health-sum{text-transform:uppercase;letter-spacing:.08em}
+.pt-health-wave{margin-top:14px;border-top:1px solid var(--border);padding-top:10px}
+.pt-health-wave-label{font-size:var(--fs-11);color:var(--fg-muted);letter-spacing:.08em;margin-bottom:6px}
+.pt-gauge{position:relative;width:132px;height:132px;margin:6px 0 10px}
+.pt-gauge-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.pt-gauge-n{font-size:40px;font-weight:800;letter-spacing:-.02em;line-height:1}
+.pt-gauge-sub{font-size:var(--fs-11);color:var(--fg-muted);letter-spacing:.06em;margin-top:2px}
+.pt-posture-method{font-size:var(--fs-12);color:var(--fg-muted);line-height:1.55}
+.pt-kpi-card{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:20px;position:relative;overflow:hidden;box-shadow:var(--shadow-sm)}
+.pt-kpi-ic{position:absolute;right:16px;top:16px;font-size:var(--fs-16);opacity:.85}
+.pt-kpi-n{font-size:36px;font-weight:800;letter-spacing:-.03em;line-height:1.1}
+.pt-kpi-l{font-size:var(--fs-11);color:var(--fg-muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600;margin-top:6px}
+.pt-spark{display:block;margin-top:12px}
+.pt-spark-empty{margin-top:12px;color:var(--fg-muted)}
+.pt-spec-dot{width:10px;height:10px;border-radius:50%;flex:none}
+.pt-spec-name{width:75px;font-weight:600;color:var(--fg-muted);flex:none}
+.pt-spec-pct{font-size:20px;font-weight:800;letter-spacing:-.01em;width:64px;text-align:right}
+.pt-spec-count{width:32px;text-align:right;color:var(--fg-muted)}
+@media (max-width:900px){
+  #dashDeck{grid-template-columns:1fr}
+  #dashDeck > [data-deck="posture"],#dashDeck > [data-deck="severity"]{grid-column:1 / -1}
+  #dashDeck .pt-hero-title{font-size:24px}
+  .pt-searchpill-text{display:none}
+  .topbar-center{padding:0 8px}
+}
+</style>
 <style id="vanthex-v1210-total">
 /* v1.2.1 total parity: artifact Command Deck composition, health panel,
    command palette, bell, accent picker, deck reorder, merged help. */
