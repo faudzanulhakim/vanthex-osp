@@ -2418,7 +2418,7 @@ async function viewDash() {
     </section>`;
 
   const pScore = st.posture_score;
-  const pLabel = pScore == null ? '—' : (pScore >= 70 ? 'At risk' : pScore >= 40 ? 'Fair' : 'Good');
+  const pLabel = pScore == null ? '—' : (pScore >= 70 ? 'High risk' : pScore >= 40 ? 'Medium risk' : 'Low risk');
   const pColor = pScore == null ? 'var(--fg-muted)' : (pScore >= 70 ? 'var(--crit)' : pScore >= 40 ? 'var(--med)' : 'var(--ok)');
   const pCirc = 2 * Math.PI * 52;
   const pOff = pScore != null ? (pCirc * (1 - pScore / 100)).toFixed(1) : pCirc.toFixed(1);
@@ -2629,25 +2629,23 @@ async function viewDash() {
     </section>`;
 
   if (!st.total_scans && !(st.recent || []).length) {
-    document.getElementById('main').innerHTML = head('Security Dashboard', 'Security posture overview of your assets') + welcome + health + `
+    document.getElementById('main').innerHTML = welcome + health + `
       <div class="panel">
         <h3>No scan data yet</h3>
         <p class="text-muted">Run your first scan to populate posture, severity, trend, findings, target risk, and SLA panels. Until then, this single summary replaces the empty chart panels.</p>
         <button class="btn primary" onclick="show('scan')">⚡ New Scan</button>
       </div>`;
-    document.getElementById('ph-r').innerHTML = `<button class="btn primary" onclick="show('scan')">⚡ New Scan</button>`;
     if (window.ptDeckBind) window.ptDeckBind();
     return;
   }
 
   const deck = [welcome, health, posture, kpi, quick, spectrum, liveops, trendSec, topvuln, brand, recentSec, insights].join('');
-  document.getElementById('main').innerHTML = head('Security Dashboard', 'Security posture overview of your assets') + `<div id="dashDeck">${deck}</div>`;
+  document.getElementById('main').innerHTML = `<div id="dashDeck">${deck}</div>`;
   if (typeof ptTrendDays === 'function') ptTrendDays(14);
   if (window.ptDeckApply) window.ptDeckApply();
   if (window.ptDeckBind) window.ptDeckBind();
   if (window.ptVitalsStart) window.ptVitalsStart();
   if (Object.keys(ins.trend_by_target || {}).length) renderTargetTrend();
-  document.getElementById('ph-r').innerHTML = `<button class="btn primary" onclick="show('scan')">⚡ New Scan</button>`;
 }
 
 function renderTargetTrend() {

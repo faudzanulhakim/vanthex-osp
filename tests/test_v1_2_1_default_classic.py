@@ -41,7 +41,12 @@ MD5_OSINT = "65ec21c31b4aad76aa304fcb411388ae"
 # waveform, KPI sparklines, posture gauge + spectrum row, topbar search
 # pill) superseded the total-parity template; the pin now tracks the
 # post-pass template, verified by test_v1_2_1_visual_parity.py.
-MD5_APP_HTML = "b4741a3d1fd16aa5ef3713e710568682"
+# 2026-10-25 small visual fix pass (ADE 22:59 WIB: posture label words
+# aligned to artifact risk vocabulary; "Security Dashboard" title block
+# removed from the dashboard view only) superseded the visual-pass
+# template; the pin now tracks the post-fix template, verified by the
+# appended tests in test_v1_2_1_visual_parity.py.
+MD5_APP_HTML = "345c0c6c0866c9c47ac2604ae95769d3"
 MD5_WEBUI_BUNDLE = "1751c095c5decc17c80907283fb6635d"
 MD5_WEBUI_INDEX = "d67036f15cbaf4efaac6f2153a910260"
 

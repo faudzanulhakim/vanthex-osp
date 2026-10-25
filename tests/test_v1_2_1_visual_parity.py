@@ -194,3 +194,72 @@ def test_untouched_files_byte_identical():
             return hashlib.md5(f.read()).hexdigest()
     assert md5("osint.py") == "65ec21c31b4aad76aa304fcb411388ae"
     assert md5("app2.py") == "a9804483d2c3ec6779d0199be4e775b3"
+
+
+# ---- 2026-10-25 small visual fix pass (ADE 22:59 WIB screenshot) ----
+# FIX 1: posture label WORDS aligned to the artifact's risk vocabulary.
+# Bands and thresholds are UNCHANGED (score math untouched); only the
+# words changed: <40 "Low risk", 40-69 "Medium risk", >=70 "High risk".
+# The artifact labels score 25 "Low risk"; classic used to say "Good".
+
+def test_posture_label_words_match_artifact_risk_vocabulary():
+    dash = _dash()
+    m = re.search(r"const pLabel = ([^\n]+)", dash)
+    assert m, "pLabel line missing from viewDash"
+    line = m.group(1)
+    assert "'High risk'" in line and "'Medium risk'" in line and "'Low risk'" in line
+    assert ">= 70" in line and ">= 40" in line
+    assert "'At risk'" not in line
+    assert "'Fair'" not in line
+    assert "'Good'" not in line
+    # Gauge math untouched: same color bands, same circle math.
+    assert "pScore >= 70 ? 'var(--crit)'" in dash
+    assert "pScore >= 40 ? 'var(--med)'" in dash
+
+
+# FIX 2: the "Security Dashboard" title block is gone from the DASHBOARD
+# view only, so the Welcome hero is the top of the page like the artifact.
+# Other views keep their own headers via head(); the sidebar nav label
+# and the i18n dictionary are untouched (they are not the title block).
+
+def test_dashboard_view_has_no_title_block():
+    dash = _dash()
+    assert "head('Security Dashboard'" not in dash
+    assert "head(\"Security Dashboard\"" not in dash
+    # The Welcome hero is now the first dashboard content.
+    assert dash.index("pt-hero-title") < dash.index("pt-health")
+    assert "pt-hero-title" in dash
+
+
+def test_other_views_keep_their_headers():
+    html = _html()
+    for title in ("New Scan", "OSINT Search", "Mobile Application Testing",
+                  "Vulnerability Findings", "Assets Management",
+                  "Scan Schedules", "Audit Logs", "System Settings",
+                  "Scan History", "Scan Detail"):
+        assert "head('%s'" % title in html, "missing header: %s" % title
+    # head() itself and the sidebar nav label are untouched.
+    assert "function head(t, c) {" in html
+    assert 'id="nav-dash"' in html
+
+
+def test_new_scan_still_reachable_without_pagehead_button():
+    html = _html()
+    # No dashboard-local ph-r write remains (ph-r only ever existed via
+    # head(); no other view populated it, so nothing else breaks).
+    assert "getElementById('ph-r').innerHTML" not in html
+    # Sidebar nav, Quick Actions, and the Command Palette all reach it.
+    assert 'id="nav-scan"' in html
+    assert "onclick=\"show('scan')\"" in html
+    assert "['New Scan', 'scan']" in html
+    assert 'id="ptSearchPill"' in html
+
+
+def test_previous_visual_markers_intact_after_fix_pass():
+    dash = _dash()
+    for marker in ("pt-hero-title", "ptVitalsHealth", "pt-gauge",
+                   "pt-spec-pct", "pt-spark"):
+        assert marker in dash, "visual marker lost: %s" % marker
+    html = _html()
+    for marker in ("ptSearchPill", "ptLogoutBtn", "ptThemeBtn"):
+        assert marker in html, "topbar marker lost: %s" % marker
