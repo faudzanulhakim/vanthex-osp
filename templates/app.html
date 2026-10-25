@@ -1984,6 +1984,7 @@ html[data-theme="dark"] .b-active{ color:var(--accent); }
           <div id="urole" class="urole">—</div>
         </div>
       </div>
+      <div class="side-ver" id="sideVer">VANTHEX V1.2.1, <span id="footUname">admin</span></div>
     </div>
   </aside>
 
@@ -2000,7 +2001,18 @@ html[data-theme="dark"] .b-active{ color:var(--accent); }
         </div>
       </div>
       <div class="topbar-right">
-        <select class="lang-pill-select" id="langsel" onchange="setLang(this.value)">
+        <div class="pt-bellwrap">
+          <button class="pt-bell" id="ptBell" title="Notifications" aria-label="Notifications">🔔<span class="pt-bell-dot" id="ptBellDot"></span></button>
+          <div class="pt-belldrop" id="ptBellDrop" style="display:none"></div>
+        </div>
+        <div class="pt-accent" id="ptAccent" title="Accent color">
+          <button type="button" data-accent="crimson" style="background:#DC2626" aria-label="Crimson"></button>
+          <button type="button" data-accent="cyan" style="background:#06B6D4" aria-label="Cyan"></button>
+          <button type="button" data-accent="violet" style="background:#8B5CF6" aria-label="Violet"></button>
+          <button type="button" data-accent="amber" style="background:#F59E0B" aria-label="Amber"></button>
+        </div>
+        <span class="sess-chip" id="sessChip">admin · V1.2.1</span>
+        <select id="langsel">
           <option value="en">English</option>
           <option value="id">Bahasa Indonesia</option>
           <option value="es">Español</option>
@@ -2022,6 +2034,31 @@ html[data-theme="dark"] .b-active{ color:var(--accent); }
 
   <!-- Toast Notification Container -->
   <div id="toast-container"></div>
+  <div class="pt-palette" id="ptPalette" style="display:none" role="dialog" aria-label="Command Palette">
+    <div class="pt-palette-box">
+      <input id="ptPaletteInput" placeholder="Type a command or search…" autocomplete="off">
+      <div id="ptPaletteList"></div>
+      <div class="pt-palette-foot">↑↓ navigate · Enter open · Esc close</div>
+    </div>
+  </div>
+  <div class="pt-help" id="ptHelp" style="display:none" role="dialog" aria-label="Keyboard Shortcuts">
+    <h4>KEYBOARD SHORTCUTS</h4>
+    <div class="pt-help-row"><span class="pt-help-key">Ctrl+K</span><span>Command Palette</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">/</span><span>Command Palette</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">g d</span><span>Dashboard</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">g s</span><span>Scan History</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">g f</span><span>Findings</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">g a</span><span>Assets</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">n</span><span>New scan</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">F</span><span>Fullscreen (globe)</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">S</span><span>Share / copy link (globe)</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">L</span><span>Layer panel (globe)</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">M</span><span>Markets panel (globe)</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">R</span><span>Reset view (globe)</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">?</span><span>Help</span></div>
+    <div class="pt-help-row"><span class="pt-help-key">ESC</span><span>Close</span></div>
+    <div style="text-align:right;margin-top:8px"><button class="btn" onclick="document.getElementById('ptHelp').style.display='none'">Close</button></div>
+  </div>
 
   <!-- Modal Dialog -->
   <div class="modal-overlay" id="confirmModal">
@@ -2310,223 +2347,273 @@ updateThemeButton();
 /* ---------------- dashboard ---------------- */
 async function viewDash() {
   const st = await $('/api/stats');
-  let ins = { overdue_counts: {}, overdue: [], mttr_days: {}, trend_by_target: {}, sla_days: {} };
+  let ins = { overdue_counts: {}, overdue: [], mttr_days: {}, trend_by_target: {}, sla_days: null, owasp_top: {}, top_targets: [] };
   try { ins = await $('/api/insights'); } catch(e) {}
   window._ins = ins;
+  let eng = null, met = null, fnd = [];
+  try { eng = await $('/api/engine'); } catch(e) {}
+  try { met = await $('/api/metrics'); } catch(e) {}
+  try { const r = await $('/api/findings?limit=1000'); fnd = Array.isArray(r) ? r : (r.findings || []); } catch(e) {}
+  let auditRows = [];
+  try { auditRows = await $('/api/audit'); } catch(e) {}
+  window._ptTrend = st.trend || [];
+  window._ptVitals = window._ptVitals || [];
+  const sys = st.system || {};
+  if (!window._ptVitals.length && sys.host_cpu_percent != null)
+    window._ptVitals.push({ cpu: sys.host_cpu_percent, mem: sys.host_mem_percent || 0 });
 
-  const icons = {
-    CRITICAL: '<span class="text-crit">●</span>',
-    HIGH: '<span style="color:var(--high)">●</span>',
-    MEDIUM: '<span class="text-med">●</span>',
-    LOW: '<span style="color:var(--low)">●</span>',
-    INFO: '<span style="color:var(--info)">●</span>'
-  };
+  const icons = { CRITICAL: '💥', HIGH: '🔴', MEDIUM: '🟠', LOW: '🟡', INFO: '🔵' };
+  const sevTotal = Object.values(st.by_severity).reduce((a, b) => a + b, 0) || 0;
+  const critN = st.by_severity.CRITICAL || 0;
+  const sevMax = Math.max(1, ...Object.values(st.by_severity));
+  const confMax = Math.max(1, ...Object.values(st.by_confidence || {}));
+  const sevEntries = Object.entries(st.by_severity).sort((a, b) => (ORDER[a[0]] ?? 9) - (ORDER[b[0]] ?? 9));
+  const fmtUp = s => { if (s == null) return '—'; s = Math.floor(s); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? d + 'd ' + h + 'h' : (h ? h + 'h ' + m + 'm' : m + 'm'); };
+  const fmtDT = t => { if (t == null) return null; const d = (typeof t === 'number') ? new Date(t * 1000) : new Date(t); return isNaN(d) ? null : d.toLocaleString('en-GB'); };
+  const jobs = (met && met.jobs) || {};
+  const nvd = (met && met.nvd) || {};
+  const can = (met && met.canary) || {};
+  const healthOk = !!(eng && met);
+  const healthStatus = healthOk ? 'All Systems Operational' : 'Degraded — some sources unavailable';
+  const userName = (window._ptUser || 'admin');
 
-  let cards = `
-    <div class="stat"><div class="ic">🎯</div><div class="n">${st.total_scans}</div><div class="l">Total Scans</div></div>
-    <div class="stat"><div class="ic">🌐</div><div class="n">${st.total_targets || 0}</div><div class="l">Unique Targets</div></div>`;
+  const welcome = `
+    <section class="panel pt-welcome pt-deck-sec" data-deck="welcome" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <div><h3>Welcome back, <span id="ptWelcomeName">${esc(userName)}</span></h3>
+      <div style="color:var(--fg-muted);font-size:var(--fs-12)">Security posture overview of your assets</div></div>
+      <div class="pt-clock">LOCAL <b id="ptClock">${new Date().toLocaleString('en-GB')}</b></div>
+      <button class="btn" onclick="ptDeckReset()">Reset layout</button>
+    </section>`;
 
-  for (const s of ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']) {
-    if (st.by_severity[s]) {
-      cards += `<div class="stat"><div class="ic">${icons[s]}</div>
-      <div class="n" style="color:${COLORS[s]}">${st.by_severity[s]}</div><div class="l">${s} findings</div></div>`;
-    }
-  }
+  const health = `
+    <section class="panel pt-deck-sec" data-deck="health" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <details class="pt-health" open>
+        <summary>System &amp; Engine Health · ${healthStatus}</summary>
+        <div class="pt-health-grid">
+          <div class="pt-health-row"><b>Engine version</b>${esc((eng && eng.version) || 'unknown')}</div>
+          <div class="pt-health-row"><b>Status</b>${healthStatus}</div>
+          <div class="pt-health-row"><b>Job queue</b>active ${jobs.active ?? '—'} · waiting ${jobs.waiting ?? '—'} · running ${sys.jobs_active ?? '—'}</div>
+          <div class="pt-health-row"><b>Uptime</b>${fmtUp(sys.app_uptime_s)}</div>
+          <div class="pt-health-row"><b>Memory</b>${sys.app_mem_mb != null ? Math.round(sys.app_mem_mb) + ' MB (app)' : '—'} · host ${sys.host_mem_percent != null ? (+sys.host_mem_percent).toFixed(1) + '%' : '—'}</div>
+          <div class="pt-health-row"><b>CPU</b>${sys.host_cpu_percent != null ? (+sys.host_cpu_percent).toFixed(1) + '%' : '—'}</div>
+          <div class="pt-health-row"><b>CVE cache</b>${nvd.count != null ? nvd.count + ' entries' : '—'}${fmtDT(nvd.last_fetched) ? ' · last ' + fmtDT(nvd.last_fetched) : ''}</div>
+          <div class="pt-health-row"><b>Canary loopback</b>${can.mode ? esc(can.mode) : '—'}${can.base ? ' · ' + esc(can.base) : ''}${can.hits != null ? ' · hits ' + can.hits : ''}</div>
+          <div class="pt-health-row"><b>Audit chain</b>${(met && met.audit_chain_ok != null) ? (met.audit_chain_ok ? 'ok' : 'failed') : 'unknown'}</div>
+        </div>
+      </details>
+    </section>`;
 
-  if (st.posture_score != null) {
-    cards += `<div class="stat ${st.posture_score >= 70 ? 'red' : st.posture_score >= 40 ? 'amber' : 'green'}">
-      <div class="ic">🛡️</div>
-      <div class="n" style="color:${st.posture_score >= 70 ? 'var(--crit)' : st.posture_score >= 40 ? 'var(--med)' : 'var(--ok)'}">
-        ${st.posture_score}<span style="font-size:13px;color:var(--fg-muted)">/100</span>
+  const pScore = st.posture_score;
+  const pLabel = pScore == null ? '—' : (pScore >= 70 ? 'At risk' : pScore >= 40 ? 'Fair' : 'Good');
+  const pColor = pScore == null ? 'var(--fg-muted)' : (pScore >= 70 ? 'var(--crit)' : pScore >= 40 ? 'var(--med)' : 'var(--ok)');
+  const posture = `
+    <section class="panel pt-deck-sec" data-deck="posture" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <h3>Security Posture</h3>
+      <div style="font-size:44px;font-weight:800;color:${pColor};line-height:1">${pScore != null ? pScore : '—'}<span style="font-size:14px;color:var(--fg-muted)">/100</span></div>
+      <div style="color:var(--fg-muted);font-size:var(--fs-12)">${pLabel}</div>
+      <div style="font-size:var(--fs-12);margin-top:8px">Unique Targets: <b class="text-fg">${st.total_targets || 0}</b></div>
+    </section>`;
+
+  const kpi = `
+    <section class="pt-kpi pt-deck-sec" data-deck="kpi" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <div class="stat"><div class="ic">🎯</div><div class="n">${st.total_scans}</div><div class="l">Total Scans</div></div>
+      <div class="stat"><div class="ic"><span class="text-crit">●</span></div><div class="n" style="color:var(--crit)">${critN}</div><div class="l">Critical Findings</div></div>
+      <div class="stat"><div class="ic">📋</div><div class="n">${sevTotal}</div><div class="l">Total Findings</div></div>
+    </section>`;
+
+  const quick = `
+    <section class="panel pt-deck-sec" data-deck="quick" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <h3>Quick Actions</h3>
+      <div class="pt-quick">
+        <button class="btn primary" onclick="show('scan')">⚡ New Scan</button>
+        <button class="btn" onclick="show('osint')">🔍 OSINT Search</button>
+        <button class="btn" onclick="show('mobile')">📱 Mobile Test</button>
+        <button class="btn" onclick="show('hist')">🕘 Scan History</button>
+        <button class="btn" onclick="show('findings')">🐛 Findings</button>
       </div>
-      <div class="l">Posture Score (asset average)</div>
-    </div>`;
-  }
+    </section>`;
 
-  const hasData = Number(st.total_scans || 0) > 0 || (st.recent || []).length > 0;
-  if (!hasData) {
-    document.getElementById('main').innerHTML = head('Security Dashboard', 'Security posture overview of your assets') + `
-      <div class="cards">${cards}</div>
-      <div class="panel empty-state">
+  const specSegs = sevEntries.map(([s, v]) => v ? `<div style="flex:${v};background:${COLORS[s]}" title="${s} ${v}"></div>` : '').join('');
+  const specRows = sevEntries.map(([s, v]) => `
+    <div class="pt-spec-row"><span style="width:75px;font-weight:600;color:var(--fg-muted)">${s}</span>
+    <div style="flex:1;height:8px;background:var(--bg2);border-radius:var(--radius-xs);overflow:hidden"><div style="width:${sevTotal ? (v / sevTotal * 100) : 0}%;height:100%;background:${COLORS[s]}"></div></div>
+    <b>${v}</b><span style="width:52px;text-align:right;color:var(--fg-muted)">${sevTotal ? (v / sevTotal * 100).toFixed(1) : '0.0'}%</span></div>`).join('');
+  const spectrum = `
+    <section class="panel pt-deck-sec" data-deck="severity" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <h3>Severity Spectrum</h3>
+      <div class="pt-spec-bar">${specSegs || '<div style="flex:1"></div>'}</div>
+      ${specRows || '<div class="empty">No data yet</div>'}
+    </section>`;
+
+  const opsText = (Array.isArray(auditRows) ? auditRows : []).slice(0, 15).map(r =>
+    `${r.ts ? new Date(r.ts * 1000).toLocaleString('en-GB') : '—'} ${r.username || '—'} ${r.action || '—'} — ${r.detail || ''}`).join('\n') || 'No recent activity';
+  const liveops = `
+    <section class="panel pt-deck-sec" data-deck="liveops" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <h3>Live Operations</h3>
+      <div style="font-size:var(--fs-12);color:var(--fg-muted);margin-bottom:6px">Recent activity (audit trail)</div>
+      <div class="pt-liveops">${esc(opsText)}</div>
+      <div class="pt-vitals"><div style="font-size:var(--fs-12);color:var(--fg-muted);margin-bottom:6px">Vitals — CPU / memory (live, 30s poll)</div><div id="ptVitals">${typeof ptVitalsSvg === 'function' ? ptVitalsSvg() : '<div class="empty">Collecting vitals…</div>'}</div></div>
+    </section>`;
+
+  const trendSec = `
+    <section class="panel pt-deck-sec" data-deck="trend" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <h3>Scan Trend</h3>
+      <div class="pt-trend-toggle" id="ptTrendToggle">
+        <button class="btn" data-td="7" onclick="ptTrendDays(7)">7D</button>
+        <button class="btn on" data-td="14" onclick="ptTrendDays(14)">14D</button>
+      </div>
+      <div id="ptTrendSvg"></div>
+    </section>`;
+
+  const topV = [...(st.recent_findings || [])].sort((a, b) => (ORDER[a.severity] ?? 9) - (ORDER[b.severity] ?? 9) || (b.started_at || 0) - (a.started_at || 0)).slice(0, 6).map(f => `
+      <div class="feed-item">
+        <span class="feed-ic">${icons[f.severity] || '🔵'}</span>
+        <div>
+          <div><span class="badge b-${f.severity}">${f.severity}</span> <b>${esc(f.title)}</b>${f.cvss != null ? ' <span style="color:var(--fg-muted);font-size:var(--fs-12)">CVSS ' + f.cvss + '</span>' : ''}</div>
+          <div class="feed-meta">${esc(f.target)} · ${f.started_at ? new Date(f.started_at * 1000).toLocaleString('en-GB') : '—'}</div>
+        </div>
+      </div>`).join('') || '<div class="empty">No findings yet</div>';
+  const topvuln = `
+    <section class="panel pt-deck-sec" data-deck="topvuln" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <h3>Top Vulnerabilities</h3>
+      ${topV}
+    </section>`;
+
+  const brand = `
+    <section class="panel pt-brand pt-deck-sec" data-deck="brand" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <h3>VANTHEX</h3>
+      <div>Enterprise Offensive Security Platform</div>
+      <div>Discover. Validate. Remediate.</div>
+    </section>`;
+
+  const recent = (st.recent || []).map(s => `
+      <tr class="clickable-row" onclick="show('hist')">
+        <td><span class="text-strong">${esc(s.target)}</span><div class="sub-note">${esc(s.scan_type)} · ${esc(s.profile)}</div></td>
+        <td><span class="badge b-${s.status}">${s.status}</span></td>
+        <td>${s.started_at ? new Date(s.started_at * 1000).toLocaleString('en-GB') : '—'}</td>
+      </tr>`).join('') || '<tr><td colspan=3 class="empty">No scans yet</td></tr>';
+  const recentSec = `
+    <section class="panel pt-deck-sec" data-deck="recent" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <h3>Recent Scans</h3>
+      <div class="table-scroll flush"><table>
+        <tr><th>Target</th><th>Status</th><th>Started</th></tr>
+        ${recent}
+      </table></div>
+    </section>`;
+
+  const bars = sevEntries.map(([s, v]) => `
+      <div class="stat-line">
+        <span style="width:75px;color:var(--fg-muted)">${s}</span>
+        <span class="bar-wrap"><span class="bar" style="width:${sevMax ? (v / sevMax * 100) : 0}%;background:${COLORS[s]}"></span></span>
+        <b>${v}</b>
+      </div>`).join('');
+  const conf = Object.entries(st.by_confidence || {}).map(([c, v]) => `
+      <div class="stat-line">
+        <span style="width:90px;color:var(--fg-muted)">${c}</span>
+        <span class="bar-wrap"><span class="bar" style="width:${confMax ? (v / confMax * 100) : 0}%;background:var(--accent)"></span></span>
+        <b>${v}</b>
+      </div>`).join('');
+  const owasp = Object.entries(ins.owasp_top || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('');
+  const topT = (ins.top_targets || []).map(t => `
+      <tr>
+        <td><span class="text-strong">${esc(t.target)}</span></td>
+        <td><span class="badge b-${t.risk_level}">${t.risk_level}</span></td>
+        <td>${t.total_findings}</td>
+        <td>${t.latest_score ?? '—'}</td>
+      </tr>`).join('') || '<tr><td colspan=4 class="empty">No data</td></tr>';
+  const slaEmpty = (ins.sla_days == null) && !Object.keys(ins.overdue_counts || {}).length && !Object.keys(ins.mttr_days || {}).length && !(ins.overdue || []).length;
+  const slaBlock = slaEmpty ? `<div class="empty">${tr('No SLA data')}</div>` : `
+      <div class="grid2">
+        <div>
+          <div class="section-note">SLA targets: ${ins.sla_days != null ? ins.sla_days + ' days' : '—'}</div>
+          <div class="sub-note">MTTR: ${Object.entries(ins.mttr_days || {}).map(([k, v]) => `${k} ${v}`).join(' / ') || '—'}</div>
+          <div class="sub-note">Overdue: ${Object.entries(ins.overdue_counts || {}).map(([k, v]) => `${k} ${v}`).join(' / ') || '—'}</div>
+        </div>
+        <div>
+          <div class="section-note">Overdue findings (${(ins.overdue || []).length})</div>
+          <div class="table-scroll flush">
+            <table>
+              <tr><th>Severity</th><th>Title</th><th>Target</th></tr>
+              ${(ins.overdue || []).map(f => `<tr><td><span class="badge b-${f.severity}">${f.severity}</span></td><td>${esc(f.title)}</td><td>${esc(f.target)}</td></tr>`).join('')}
+            </table>
+          </div>
+        </div>
+      </div>`;
+  const SEVS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
+  const confSet = [...new Set(fnd.map(f => String(f.confidence || 'unknown').toLowerCase()))];
+  const confOrder = ['confirmed', 'probable', 'candidate'];
+  const confs = [...confOrder.filter(c => confSet.includes(c)), ...confSet.filter(c => !confOrder.includes(c)).sort()];
+  const mx = {}; SEVS.forEach(s => { mx[s] = {}; confs.forEach(c => mx[s][c] = 0); });
+  let mxN = 0;
+  fnd.forEach(f => { if (!mx[f.severity]) return; const c = String(f.confidence || 'unknown').toLowerCase(); if (mx[f.severity][c] == null) mx[f.severity][c] = 0; mx[f.severity][c]++; mxN++; });
+  const mxTotals = {}; confs.forEach(c => mxTotals[c] = SEVS.reduce((a, s) => a + (mx[s][c] || 0), 0));
+  const mxGrand = SEVS.reduce((a, s) => a + confs.reduce((b, c) => b + (mx[s][c] || 0), 0), 0);
+  const matrix = !fnd.length ? '<div class="empty">Findings data unavailable</div>' : `
+      <div class="table-scroll flush"><table class="pt-matrix">
+        <tr><th>Severity</th>${confs.map(c => `<th>${esc(c)}</th>`).join('')}<th>Total</th></tr>
+        ${SEVS.map(s => `<tr><td><b>${s}</b></td>${confs.map(c => `<td>${mx[s][c] || 0}</td>`).join('')}<td><b>${confs.reduce((a, c) => a + (mx[s][c] || 0), 0)}</b></td></tr>`).join('')}
+        <tr><td><b>Total</b></td>${confs.map(c => `<td><b>${mxTotals[c]}</b></td>`).join('')}<td><b>${mxGrand}</b></td></tr>
+      </table></div>
+      <div class="section-note">Severity × confidence, from ${mxN} findings${fnd.length >= 1000 ? ' (cap 1000)' : ''}.</div>`;
+  const insights = `
+    <section class="panel pt-deck-sec" data-deck="insights" draggable="true">
+      <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
+      <h3>Insights</h3>
+      <h3 class="mt-20">Posture Trend</h3>
+      <select id="trendTarget" onchange="renderTargetTrend()" style="margin-bottom:10px">
+        ${Object.keys(ins.trend_by_target || {}).map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+      </select>
+      <div id="trendChart"></div>
+      <div class="section-note">Risk scores of the selected asset's latest scans (lower is better).</div>
+      <h3 class="mt-20">Cross-Check Matrix</h3>
+      ${matrix}
+      <h3 class="mt-20">Findings by Severity</h3>
+      ${bars || '<div class="empty">No data</div>'}
+      <h3 class="mt-20">Findings by Confidence</h3>
+      ${conf || '<div class="empty">No data</div>'}
+      <h3 class="mt-20">Coverage OWASP</h3>
+      <div class="table-scroll flush"><table>
+        <tr><th>OWASP</th><th>Count</th></tr>
+        ${owasp || '<tr><td colspan=2 class="empty">No data</td></tr>'}
+      </table></div>
+      <h3 class="mt-20">Top Targets by Risk</h3>
+      <div class="table-scroll flush"><table>
+        <tr><th>Target</th><th>Risk</th><th>Findings</th><th>Score</th></tr>
+        ${topT}
+      </table></div>
+      <h3 class="mt-20">Remediation SLA &amp; MTTR</h3>
+      ${slaBlock}
+    </section>`;
+
+  if (!st.total_scans && !(st.recent || []).length) {
+    document.getElementById('main').innerHTML = head('Security Dashboard', 'Security posture overview of your assets') + welcome + health + `
+      <div class="panel">
         <h3>No scan data yet</h3>
-        <p>Run your first scan to populate posture, severity, trend, findings, target risk, and SLA panels. Until then, this single summary replaces the empty chart panels.</p>
+        <p class="text-muted">Run your first scan to populate posture, severity, trend, findings, target risk, and SLA panels. Until then, this single summary replaces the empty chart panels.</p>
         <button class="btn primary" onclick="show('scan')">⚡ New Scan</button>
       </div>`;
     document.getElementById('ph-r').innerHTML = `<button class="btn primary" onclick="show('scan')">⚡ New Scan</button>`;
+    if (window.ptDeckBind) window.ptDeckBind();
     return;
   }
 
-  const max = Math.max(1, ...Object.values(st.by_severity));
-  const bars = Object.entries(st.by_severity).map(([s, v]) => `
-    <div style="display:flex;align-items:center;gap:12px;margin:8px 0">
-      <span style="width:75px;font-size:11px;font-weight:600;color:var(--fg-muted)">${s}</span>
-      <div style="flex:1;height:8px;background:var(--bg2);border-radius:var(--radius-xs);overflow:hidden">
-        <div style="width:${(v / max) * 100}%;height:100%;border-radius:var(--radius-xs);background:${COLORS[s]};transition:width 0.4s ease"></div>
-      </div>
-      <b style="width:28px;text-align:right;font-size:12px">${v}</b>
-    </div>
-  `).join('');
-
-  const conf = Object.entries(st.by_confidence || {}).map(([k, v]) => `
-    <div style="margin:6px 0;font-size:var(--fs-13)"><span class="badge b-${k}">${k.toUpperCase()}</span> &nbsp;${v} findings</div>
-  `).join('');
-
-  const owaspMax = Math.max(1, ...Object.values(st.by_owasp || {}));
-  const owasp = Object.entries(st.by_owasp || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `
-    <div style="display:flex;align-items:center;gap:12px;margin:7px 0">
-      <span style="width:200px;font-size:var(--fs-12);color:var(--fg-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(k)}">${esc(k)}</span>
-      <div style="flex:1;height:8px;background:var(--bg2);border-radius:var(--radius-xs);overflow:hidden">
-        <div style="width:${(v / owaspMax) * 100}%;height:100%;border-radius:var(--radius-xs);background:var(--accent);transition:width 0.4s ease"></div>
-      </div>
-      <b style="width:28px;text-align:right;font-size:12px">${v}</b>
-    </div>
-  `).join('');
-
-  const recent = st.recent.map(r => `
-    <tr>
-      <td class="text-strong">${esc(r.target)}</td>
-      <td>${badge(r.overall_risk)}</td>
-      <td class="text-muted">${esc(r.profile || '')}</td>
-      <td class="text-muted">${new Date(r.started_at * 1000).toLocaleString('en-GB')}</td>
-    </tr>
-  `).join('');
-
-  const sevTotal = Object.values(st.by_severity).reduce((a, b) => a + b, 0) || 1;
-  let off = 0; const C = 2 * Math.PI * 34;
-  const donutSeg = Object.entries(st.by_severity).map(([s, v]) => {
-    const frac = v / sevTotal;
-    const seg = `<circle r="34" cx="44" cy="44" fill="none" stroke="${COLORS[s]}" stroke-width="12"
-      stroke-dasharray="${frac * C} ${C}" stroke-dashoffset="${-off}" transform="rotate(-90 44 44)" style="transition:all 0.3s"/>`;
-    off += frac * C;
-    return seg;
-  }).join('');
-
-  const donut = `
-    <svg width="88" height="88" viewBox="0 0 88 88">
-      ${donutSeg}
-      <text x="44" y="50" text-anchor="middle" fill="var(--fg)" font-size="16" font-weight="800">${Object.values(st.by_severity).reduce((a, b) => a + b, 0)}</text>
-    </svg>`;
-
-  const tmax = Math.max(1, ...(st.trend || []).map(d => d.scans));
-  const trendSvg = `<svg width="100%" height="90" viewBox="0 0 300 90" preserveAspectRatio="none">` +
-    (st.trend || []).map((d, i) => {
-      const h = Math.max(3, (d.scans / tmax) * 64);
-      return `<rect x="${8 + i * 21}" y="${74 - h}" width="14" height="${h}" rx="3" fill="var(--accent)">
-        <title>${d.date}: ${d.scans} scan</title>
-      </rect>
-      <text x="${15 + i * 21}" y="86" text-anchor="middle" font-size="7" fill="var(--fg-muted)">${d.date.slice(8)}</text>`;
-    }).join('') + '</svg>';
-
-  const topT = (st.top_targets || []).map(a => `
-    <tr>
-      <td class="text-strong">${esc(a.target)}</td>
-      <td>${badge(a.latest_risk)}</td>
-      <td><span class="badge" style="background:${a.latest_score >= 70 ? 'var(--crit)' : a.latest_score >= 40 ? 'var(--med)' : 'var(--ok)'}">${a.latest_score ?? '-'}</span></td>
-      <td>${a.open_findings}</td>
-      <td class="text-muted">${new Date(a.last_scan * 1000).toLocaleDateString('en-GB')}</td>
-      <td style="white-space:nowrap"><a class="btn btn-compact-lg" onclick="viewScanDetail('${a.latest_scan_id}')">Detail →</a> <a class="btn" style="padding:4px 10px;font-size:11px;color:var(--crit)" onclick="deleteAsset('${esc(a.target)}', ${a.scans})">Delete</a></td>
-    </tr>
-  `).join('');
-
-  const feed = (st.recent_findings || []).map(f => `
-    <div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
-        <span class="badge b-${f.severity}">${f.severity}</span>
-        <b>${esc(f.title)}</b>
-      </div>
-      <div style="font-size:var(--fs-12);color:var(--fg-muted)">${esc(f.target)} · ${new Date(f.started_at * 1000).toLocaleString('en-GB')}</div>
-    </div>
-  `).join('');
-
-  document.getElementById('main').innerHTML = head('Security Dashboard', 'Security posture overview of your assets') + `
-    <div class="cards">${cards}</div>
-    <div class="grid2">
-      <div class="panel">
-        <h3>Findings by Severity</h3>
-        ${bars || '<div class="empty">No data yet</div>'}
-      </div>
-      <div class="panel">
-        <h3>Scan Trend — 14 Days</h3>
-        ${trendSvg}
-      </div>
-    </div>
-
-    <div class="grid2 stack-gap">
-      <div class="panel">
-        <h3>Latest Findings</h3>
-        <div class="feed">${feed || '<div class="empty">—</div>'}</div>
-      </div>
-      <div class="panel">
-        <h3>Latest Scans</h3>
-        <div class="table-scroll flush"><table>
-          <tr><th>Target</th><th>Risk</th><th>Profile</th><th>Time</th></tr>
-          ${recent || '<tr><td colspan=4 class="empty">No scans yet</td></tr>'}
-        </table></div>
-      </div>
-    </div>
-
-    <div class="grid2 stack-gap">
-      <div class="panel">
-        <h3>Top Targets by Risk</h3>
-        <div class="table-scroll flush"><table>
-          <tr><th>Target</th><th>Risk</th><th>Score</th><th>Open</th><th>Last Scan</th><th></th></tr>
-          ${topT || '<tr><td colspan=6 class="empty">—</td></tr>'}
-        </table></div>
-      </div>
-      <div class="panel">
-        <h3>Remediation SLA & MTTR</h3>
-        ${Object.keys(ins.overdue_counts || {}).length ? `
-          <div style="font-size:var(--fs-13);margin-bottom:8px">Findings past SLA: ` +
-          Object.entries(ins.overdue_counts).map(([s, v]) => `<span class="badge b-${s}">${s} ${v}</span>`).join(' ') + `</div>`
-          : '<div style="font-size:var(--fs-13);color:var(--ok);margin-bottom:8px">✔ No findings past SLA</div>'}
-        <div style="font-size:12px;color:var(--fg-muted);margin-bottom:10px">
-          SLA: CRITICAL ${ins.sla_days?.CRITICAL || 7}d · HIGH ${ins.sla_days?.HIGH || 30}d · MEDIUM ${ins.sla_days?.MEDIUM || 90}d · LOW ${ins.sla_days?.LOW || 180}d
-          ${Object.keys(ins.mttr_days || {}).length ? `<br>MTTR (avg days to fix): ` + Object.entries(ins.mttr_days).filter(([k]) => k !== 'ALL').map(([s, v]) => `${s} <b class="text-fg">${v}d</b>`).join(' · ') + (ins.mttr_days.ALL ? ` · <b class="text-fg">all ${ins.mttr_days.ALL}d</b>` : '') : ''}
-        </div>
-        ${(ins.overdue || []).slice(0, 6).map(f => `
-          <div style="font-size:12px;margin:6px 0;padding:6px 0;border-bottom:1px solid var(--border)">
-            <span class="badge b-${f.severity}">${f.severity}</span> <b>${esc(f.title)}</b>
-            <div style="font-size:11px;color:var(--crit);margin-top:2px">overdue ${f.overdue_days} days · ${esc(f.target)}${f.assignee ? ' · ' + esc(f.assignee) : ''}</div>
-          </div>
-        `).join('') || ''}
-      </div>
-    </div>
-
-    <div class="section-group">Details</div>
-    <div class="grid2">
-      <div class="panel">
-        <h3>Findings by Confidence</h3>
-        ${conf || '<div class="empty">—</div>'}
-        <div style="font-size:var(--fs-12);color:var(--fg-muted);margin-top:8px">
-          Confirmed = verified by automated signatures or baseline diffs. Candidate = version heuristics.
-        </div>
-        <h3 class="mt-20">Findings Distribution</h3>
-        <div style="display:flex;gap:24px;align-items:center">
-          ${donut}
-          <div style="display:flex;flex-direction:column;gap:6px">
-            ${Object.entries(st.by_severity).map(([s, v]) => `
-              <div style="font-size:12px;display:flex;align-items:center;gap:8px">
-                <span style="width:10px;height:10px;border-radius:var(--radius-xs);background:${COLORS[s]}"></span>
-                <span style="color:var(--fg-muted);width:70px">${s}:</span>
-                <b class="text-fg">${v}</b>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      </div>
-      <div class="panel">
-        <h3>Coverage OWASP</h3>
-        ${owasp || '<div class="empty">—</div>'}
-        <h3 class="mt-20">Risk Score Trend per Asset</h3>
-        <select id="trendTarget" onchange="renderTargetTrend()" style="margin-bottom:12px">
-          ${Object.keys(ins.trend_by_target || {}).map(t => `<option>${esc(t)}</option>`).join('') || '<option value="">—</option>'}
-        </select>
-        <div id="trendChart">${Object.keys(ins.trend_by_target || {}).length ? '' : '<div class="empty">No scan history yet</div>'}</div>
-        <div style="font-size:var(--fs-12);color:var(--fg-muted);margin-top:8px">Risk scores of the selected asset's latest scans (lower is better).</div>
-      </div>
-    </div>
-  `;
-
+  const deck = [welcome, health, posture, kpi, quick, spectrum, liveops, trendSec, topvuln, brand, recentSec, insights].join('');
+  document.getElementById('main').innerHTML = head('Security Dashboard', 'Security posture overview of your assets') + `<div id="dashDeck">${deck}</div>`;
+  if (typeof ptTrendDays === 'function') ptTrendDays(14);
+  if (window.ptDeckApply) window.ptDeckApply();
+  if (window.ptDeckBind) window.ptDeckBind();
+  if (window.ptVitalsStart) window.ptVitalsStart();
   if (Object.keys(ins.trend_by_target || {}).length) renderTargetTrend();
   document.getElementById('ph-r').innerHTML = `<button class="btn primary" onclick="show('scan')">⚡ New Scan</button>`;
 }
@@ -4707,7 +4794,7 @@ function glHud() {
 function glTicker() {
   const el = document.getElementById('gl-ticker');
   if (!el) return;
-  /* v1.24.0 §16.6: scrolling strip. Quake items fly to the quake,
+  /* v1.24.0 §16.6: scrolling strip. Quake items show the alert card,
      market items open the MARKETS panel. Hidden when no quake
      points AND no market rows exist (all offline). Offline warnings
      were deliberately removed from the ticker: they stay visible in
@@ -4729,7 +4816,7 @@ function glTicker() {
       if (!sp) return;
       const it = (el._tkItems || [])[+sp.dataset.tk];
       if (!it) return;
-      if (it.kind === 'quake') glAlertsFlyTo({ la: it.la, lo: it.lo });
+      if (it.kind === 'quake') glAlertsCard({ cat: 'QUAKE', title: it.label, detail: '', la: it.la, lo: it.lo, tms: null });
       else glMarketsToggle(true);
     });
   }
@@ -5013,7 +5100,7 @@ function glAlertsBind() {
     if (it && _gl.alerts && _gl.alerts.view) {
       const r = _gl.alerts.view[+it.dataset.aitem];
       if (!r) return;
-      if (r.la != null && r.lo != null) glAlertsFlyTo(r);
+      /* v1.2.1 total parity (ADE 22:18 WIB): alert click shows the card only, no fly-to. */
       glAlertsCard(r);
     }
   });
@@ -5091,7 +5178,7 @@ function glAlertsRenderList() {
       + '<div class="al-det">' + esc(r.detail) + (r.noTime ? ' · ' + esc(tr('Time unknown')) : '') + '</div></span>'
       + (r.tms ? '<span class="al-time">' + esc(glAlertsFmtTime(r.tms)) + '</span>' : '') + '</button>';
   }).join('');
-  let foot = esc(tr('Click an item to locate it on the globe'));
+  let foot = esc(tr('Click an item to view its card'));
   if (view.total > GL_ALERT_CAP) foot += ' · ' + GL_ALERT_CAP + ' ' + esc(tr('of')) + ' ' + view.total;
   if (built.offline.length) foot += ' · ' + esc(tr('OFFLINE')) + ': ' + esc(built.offline.join(' · '));
   if (built.newsLive !== undefined) foot += ' · ' + esc(tr('FEEDS')) + ' ' + built.famLive + '/3 · ' + esc(tr('NEWS')) + ' ' + built.newsLive + '/' + built.newsTotal;
@@ -8612,6 +8699,13 @@ function glHelpHtml() {
     + row('L', 'Layer panel')
     + row('M', 'Markets panel')
     + row('R', 'Reset view')
+    + row('Ctrl+K', 'Command Palette')
+    + row('/', 'Command Palette')
+    + row('g d', 'Dashboard')
+    + row('g s', 'Scan History')
+    + row('g f', 'Findings')
+    + row('g a', 'Assets')
+    + row('n', 'New scan')
     + row('?', 'Help')
     + row('ESC', 'Close panel / popup')
     + row('O', 'Not assigned', 'OI removed')
@@ -9627,8 +9721,37 @@ async function viewUsers() {
       </p>
       <button class="btn" onclick="document.getElementById('langsel').focus()">Go to language selector</button>
     </div>
-    `;
 
+    <div class="settings-group">Engine</div>
+    <div class="panel">
+      <h3>Engine Reference</h3>
+      <div id="ptEngineRef">Loading…</div>
+    </div>
+
+    <div class="settings-group">Session</div>
+    <div class="panel">
+      <h3>Service Session</h3>
+      <p style="color:var(--fg-muted);font-size:12px;line-height:1.7;margin:6px 0">
+        Signed in as <b class="text-fg pt-sess-user">admin</b>. The dashboard signs you out automatically after 4 hours without activity.
+      </p>
+    </div>
+    `;
+  try {
+    const ptEg = await $('/api/engine');
+    const ptEr = document.getElementById('ptEngineRef');
+    if (ptEr) {
+      const ptProf = Object.entries(ptEg.profiles || {}).map(([n, p]) => `<tr><td class="text-strong">${esc(n)}</td><td>${p.checks}</td></tr>`).join('') || '<tr><td colspan=2 class="empty">—</td></tr>';
+      const ptLibs = Object.entries(ptEg.libraries || {}).map(([n, ok]) => `<span style="color:${ok ? 'var(--ok)' : 'var(--crit)'}">${esc(n)} ${ok ? 'installed' : 'missing'}</span>`).join(' &nbsp; ');
+      const ptLayers = (ptEg.verification_layers || []).map(l => `<div style="font-size:12px;margin:4px 0">• <b>${esc(l.name)}</b> <span style="color:var(--fg-muted)">${esc(l.detail || '')}</span></div>`).join('');
+      ptEr.innerHTML = `<div style="font-size:12px;color:var(--fg-muted);margin-bottom:8px">Engine version <b class="text-fg">${esc(ptEg.version || '—')}</b> · ${esc(ptEg.engine || '')}</div>`
+        + `<div class="table-scroll flush"><table><tr><th>Profile</th><th>Checks</th></tr>${ptProf}</table></div>`
+        + `<div style="margin-top:10px;font-size:12px">Libraries (live): ${ptLibs || '—'}</div>`
+        + `<div style="margin-top:10px"><b style="font-size:12px">Verification layers</b>${ptLayers || '<div class="empty">—</div>'}</div>`;
+    }
+  } catch(e) {
+    const ptEr = document.getElementById('ptEngineRef');
+    if (ptEr) ptEr.innerHTML = '<div class="empty">Engine data unavailable</div>';
+  }
   const _ls = document.getElementById('langsel');
   if (_ls) _ls.value = curLang();
 }
@@ -10004,20 +10127,24 @@ applyI18n();
 
 <script>
 /* ============ INTERACTIVE PASS v1.13.0 (service UI) ============
-   Safe, self-contained interaction layer: stat-card tilt + Ctrl+K
-   search focus. Touches no data, no API, no existing handlers. */
+   Safe, self-contained interaction layer: stat-card tilt + Ctrl+K / /
+   command palette (palette owns navigation; tilt touches no data). */
 (function(){
   try{
     var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     document.addEventListener("keydown", function(e){
       var tag = (e.target && e.target.tagName) || "";
       var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target && e.target.isContentEditable);
+      /* Ctrl/Cmd+K and "/" open the Command Palette (v1.2.1 total parity);
+         header search focus survives only as a fallback if the palette is absent. */
       if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")){
-        var s = document.getElementById("hsearch");
-        if (s){ e.preventDefault(); s.focus(); s.select && s.select(); }
+        e.preventDefault();
+        if (typeof ptPaletteOpen === "function") ptPaletteOpen();
+        else { var s = document.getElementById("hsearch"); if (s){ s.focus(); s.select && s.select(); } }
       } else if (e.key === "/" && !typing){
-        var s2 = document.getElementById("hsearch");
-        if (s2){ e.preventDefault(); s2.focus(); }
+        e.preventDefault();
+        if (typeof ptPaletteOpen === "function") ptPaletteOpen();
+        else { var s2 = document.getElementById("hsearch"); if (s2){ s2.focus(); } }
       } else if (e.key === "Escape" && document.activeElement){
         document.activeElement.blur();
       }
@@ -10040,6 +10167,247 @@ applyI18n();
   }catch(err){ /* interaksi tidak boleh menjatuhkan aplikasi */ }
 })();
 </script>
+<script>
+/* ============ v1.2.1 total parity: palette, bell, accent, deck, merged keys ============ */
+const PT_ACCENTS = {
+  crimson: ['#DC2626', '#B91C1C', 'rgba(220,38,38,.12)', 'rgba(220,38,38,.35)'],
+  cyan: ['#06B6D4', '#0891B2', 'rgba(6,182,212,.12)', 'rgba(6,182,212,.35)'],
+  violet: ['#8B5CF6', '#7C3AED', 'rgba(139,92,246,.12)', 'rgba(139,92,246,.35)'],
+  amber: ['#F59E0B', '#D97706', 'rgba(245,158,11,.12)', 'rgba(245,158,11,.35)']
+};
+function ptApplyAccent(name) {
+  const a = PT_ACCENTS[name];
+  const r = document.documentElement.style;
+  if (!a) { ['--accent', '--accent2', '--accent-light', '--accent-glow'].forEach(k => r.removeProperty(k)); }
+  else { r.setProperty('--accent', a[0]); r.setProperty('--accent2', a[1]); r.setProperty('--accent-light', a[2]); r.setProperty('--accent-glow', a[3]); }
+  try { if (name) localStorage.setItem('pt-accent', name); else localStorage.removeItem('pt-accent'); } catch(e) {}
+  document.querySelectorAll('#ptAccent [data-accent]').forEach(b => b.classList.toggle('on', b.dataset.accent === name));
+}
+try { const ptSaved = localStorage.getItem('pt-accent'); if (ptSaved && PT_ACCENTS[ptSaved]) ptApplyAccent(ptSaved); } catch(e) {}
+document.querySelectorAll('#ptAccent [data-accent]').forEach(b => b.onclick = () => {
+  let cur = null; try { cur = localStorage.getItem('pt-accent'); } catch(e) {}
+  ptApplyAccent(b.dataset.accent === cur ? null : b.dataset.accent);
+});
+const ptBellEl = document.getElementById('ptBell');
+const ptBellDropEl = document.getElementById('ptBellDrop');
+const ptBellDotEl = document.getElementById('ptBellDot');
+try { if (sessionStorage.getItem('ptBellSeen') && ptBellDotEl) ptBellDotEl.style.display = 'none'; } catch(e) {}
+if (ptBellEl && ptBellDropEl) {
+  ptBellEl.onclick = async ev => {
+    ev.stopPropagation();
+    if (ptBellDropEl.style.display === 'block') { ptBellDropEl.style.display = 'none'; return; }
+    ptBellDropEl.innerHTML = '<div class="empty">Loading…</div>'; ptBellDropEl.style.display = 'block';
+    try { sessionStorage.setItem('ptBellSeen', '1'); } catch(e) {}
+    if (ptBellDotEl) ptBellDotEl.style.display = 'none';
+    try {
+      const rows = await $('/api/audit');
+      const items = (Array.isArray(rows) ? rows : []).slice(0, 10).map(r =>
+        `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><b>${esc(r.username || '—')}</b> <span style="color:var(--fg-muted)">${r.ts ? new Date(r.ts * 1000).toLocaleString('en-GB') : ''}</span><br>${esc(r.action || '')} <span style="color:var(--fg-muted)">${esc(r.detail || '')}</span></div>`).join('') || '<div class="empty">No recent activity</div>';
+      ptBellDropEl.innerHTML = '<div style="font-weight:700;margin-bottom:6px">Recent Activity</div>' + items + `<div style="margin-top:8px"><button class="btn" onclick="document.getElementById('ptBellDrop').style.display='none';show('audit')">View Audit Logs</button></div>`;
+    } catch(e) { ptBellDropEl.innerHTML = '<div class="empty">Activity unavailable</div>'; }
+  };
+  document.addEventListener('click', e => {
+    if (!e.target.closest || !e.target.closest('.pt-bellwrap')) ptBellDropEl.style.display = 'none';
+  });
+}
+const PT_PALETTE_ITEMS = [
+  ['Security Dashboard', 'dash'], ['New Scan', 'scan'], ['OSINT Search', 'osint'],
+  ['Mobile Application Testing', 'mobile'], ['Scan History', 'hist'],
+  ['Vulnerability Findings', 'findings'], ['Assets Management', 'assets'],
+  ['Scan Schedules', 'sched'], ['Audit Logs', 'audit'], ['System Settings', 'users'],
+  ['Search findings', 'findings-search'], ['Reset layout', 'deck-reset'], ['Toggle theme', 'theme']
+];
+let ptPalSel = 0, ptPalList = PT_PALETTE_ITEMS;
+function ptPaletteRender() {
+  const inp = document.getElementById('ptPaletteInput');
+  const q = (inp.value || '').toLowerCase();
+  ptPalList = PT_PALETTE_ITEMS.filter(([l]) => !q || l.toLowerCase().includes(q));
+  ptPalSel = 0;
+  document.getElementById('ptPaletteList').innerHTML = ptPalList.map(([l], i) =>
+    `<button type="button" class="pt-palette-item${i === 0 ? ' on' : ''}" data-pi="${i}">${l}</button>`).join('')
+    || '<div class="empty">No matching commands</div>';
+  document.querySelectorAll('#ptPaletteList .pt-palette-item').forEach(b => b.onclick = () => ptPaletteRun(+b.dataset.pi));
+}
+function ptPaletteRun(i) {
+  const it = ptPalList[i]; if (!it) return;
+  ptPaletteClose();
+  if (it[1] === 'findings-search') { show('findings'); setTimeout(() => { const s = document.getElementById('hsearch'); if (s) s.focus(); }, 300); }
+  else if (it[1] === 'deck-reset') { ptDeckReset(); }
+  else if (it[1] === 'theme') { toggleTheme(); }
+  else show(it[1]);
+}
+function ptPaletteOpen() {
+  const p = document.getElementById('ptPalette'); if (!p) return;
+  p.style.display = 'flex';
+  const inp = document.getElementById('ptPaletteInput'); inp.value = '';
+  ptPaletteRender(); inp.focus();
+}
+function ptPaletteClose() { const p = document.getElementById('ptPalette'); if (p) p.style.display = 'none'; }
+const ptPalInputEl = document.getElementById('ptPaletteInput');
+if (ptPalInputEl) {
+  ptPalInputEl.addEventListener('input', ptPaletteRender);
+  ptPalInputEl.addEventListener('keydown', e => {
+    const items = document.querySelectorAll('#ptPaletteList .pt-palette-item');
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (items.length) { ptPalSel = (ptPalSel + 1) % items.length; items.forEach((b, i) => b.classList.toggle('on', i === ptPalSel)); } }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); if (items.length) { ptPalSel = (ptPalSel - 1 + items.length) % items.length; items.forEach((b, i) => b.classList.toggle('on', i === ptPalSel)); } }
+    else if (e.key === 'Enter') { e.preventDefault(); ptPaletteRun(ptPalSel); }
+    else if (e.key === 'Escape') { ptPaletteClose(); }
+  });
+}
+const ptPalEl = document.getElementById('ptPalette');
+if (ptPalEl) ptPalEl.addEventListener('click', e => { if (e.target === ptPalEl) ptPaletteClose(); });
+function ptDeckApply() {
+  const deck = document.getElementById('dashDeck'); if (!deck) return;
+  let order = null;
+  try { order = JSON.parse(localStorage.getItem('pt-deck-order') || 'null'); } catch(e) {}
+  if (!Array.isArray(order) || !order.length) return;
+  const secs = {}; deck.querySelectorAll('[data-deck]').forEach(s => secs[s.dataset.deck] = s);
+  order.forEach(id => { if (secs[id]) deck.appendChild(secs[id]); });
+}
+function ptDeckBind() {
+  const deck = document.getElementById('dashDeck'); if (!deck || deck.dataset.dbound) return;
+  deck.dataset.dbound = '1';
+  let dragId = null;
+  deck.addEventListener('dragstart', e => {
+    const h = e.target.closest ? e.target.closest('.pt-deck-handle') : null;
+    const sec = e.target.closest ? e.target.closest('[data-deck]') : null;
+    if (!h || !sec) { e.preventDefault(); return; }
+    dragId = sec.dataset.deck;
+    try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId); } catch(err) {}
+    sec.classList.add('pt-dragging');
+  });
+  deck.addEventListener('dragend', () => deck.querySelectorAll('.pt-dragging').forEach(s => s.classList.remove('pt-dragging')));
+  deck.addEventListener('dragover', e => {
+    const sec = e.target.closest ? e.target.closest('[data-deck]') : null;
+    if (sec && dragId && sec.dataset.deck !== dragId) e.preventDefault();
+  });
+  deck.addEventListener('drop', e => {
+    e.preventDefault();
+    const sec = e.target.closest ? e.target.closest('[data-deck]') : null;
+    if (!sec || !dragId) return;
+    const dragged = deck.querySelector('[data-deck="' + dragId + '"]');
+    if (!dragged || dragged === sec) return;
+    deck.insertBefore(dragged, sec);
+    try { localStorage.setItem('pt-deck-order', JSON.stringify([...deck.querySelectorAll('[data-deck]')].map(s => s.dataset.deck))); } catch(err) {}
+  });
+}
+function ptDeckReset() { try { localStorage.removeItem('pt-deck-order'); } catch(e) {} if (typeof viewDash === 'function') viewDash(); }
+function ptTrendDays(days) {
+  const box = document.getElementById('ptTrendSvg'); if (!box || !window._ptTrend) return;
+  const arr = window._ptTrend.slice(-days);
+  const tmax = Math.max(1, ...arr.map(d => d.scans));
+  box.innerHTML = `<svg width="100%" height="90" viewBox="0 0 300 90" preserveAspectRatio="none">` + arr.map((d, i) => {
+    const h = Math.max(3, (d.scans / tmax) * 64);
+    return `<rect x="${8 + i * 21}" y="${74 - h}" width="14" height="${h}" rx="3" fill="var(--accent)"><title>${d.date}: ${d.scans} scan</title></rect><text x="${15 + i * 21}" y="86" text-anchor="middle" font-size="7" fill="var(--fg-muted)">${d.date.slice(8)}</text>`;
+  }).join('') + '</svg>';
+  document.querySelectorAll('#ptTrendToggle [data-td]').forEach(b => b.classList.toggle('on', +b.dataset.td === days));
+}
+window._ptVitals = window._ptVitals || [];
+function ptVitalsSvg() {
+  const pts = window._ptVitals;
+  if (!pts.length) return '<div class="empty">Collecting vitals…</div>';
+  const W = 320, H = 60, pad = 4;
+  const mk = (key, color) => {
+    const line = pts.map((p, i) => `${(pad + i * (W - 2 * pad) / Math.max(1, pts.length - 1)).toFixed(1)},${(H - pad - ((p[key] || 0) / 100) * (H - 2 * pad)).toFixed(1)}`).join(' ');
+    return `<polyline points="${line}" fill="none" stroke="${color}" stroke-width="2"/>`;
+  };
+  return `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}">${mk('cpu', 'var(--accent)')}${mk('mem', 'var(--fg-muted)')}</svg><div style="font-size:11px;color:var(--fg-muted)">CPU (accent) · memory % (grey) — last ${pts.length} polls</div>`;
+}
+function ptVitalsStart() {
+  if (window._ptVitalsTimer) return;
+  window._ptVitalsTimer = setInterval(async () => {
+    const el = document.getElementById('ptVitals'); if (!el) return;
+    try {
+      const j = await $('/api/stats');
+      const s2 = j.system || {};
+      window._ptVitals.push({ cpu: s2.host_cpu_percent || 0, mem: s2.host_mem_percent || 0 });
+      if (window._ptVitals.length > 48) window._ptVitals.shift();
+      el.innerHTML = ptVitalsSvg();
+    } catch(e) {}
+  }, 30000);
+}
+if (!window._ptClockTimer) {
+  window._ptClockTimer = setInterval(() => {
+    const el = document.getElementById('ptClock');
+    if (el) el.textContent = new Date().toLocaleString('en-GB');
+  }, 1000);
+}
+function ptHelpToggle() {
+  const h = document.getElementById('ptHelp'); if (!h) return;
+  h.style.display = (h.style.display === 'block') ? 'none' : 'block';
+}
+function ptCloseAll() {
+  ptPaletteClose();
+  const b = document.getElementById('ptBellDrop'); if (b) b.style.display = 'none';
+  const h = document.getElementById('ptHelp'); if (h) h.style.display = 'none';
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { ptCloseAll(); return; }
+  const t = e.target && e.target.tagName;
+  const typing = t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || (e.target && e.target.isContentEditable);
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === '?') { if (!document.getElementById('gl-help')) ptHelpToggle(); return; }
+  if (e.key === 'n') { show('scan'); return; }
+  if (e.key === 'g') { window._ptG = Date.now(); return; }
+  if (window._ptG && Date.now() - window._ptG < 800) {
+    const m = { d: 'dash', s: 'hist', f: 'findings', a: 'assets' };
+    if (m[e.key]) { window._ptG = 0; show(m[e.key]); return; }
+    window._ptG = 0;
+  }
+});
+$('/api/me').then(me => {
+  window._ptUser = me.user;
+  const fn = document.getElementById('footUname'); if (fn) fn.textContent = me.user;
+  const sc = document.getElementById('sessChip'); if (sc) sc.textContent = me.user + ' · V1.2.1';
+  const wn = document.getElementById('ptWelcomeName'); if (wn) wn.textContent = me.user;
+  document.querySelectorAll('.pt-sess-user').forEach(el => el.textContent = me.user);
+}).catch(() => {});
+</script>
+<style id="vanthex-v1210-total">
+/* v1.2.1 total parity: artifact Command Deck composition, health panel,
+   command palette, bell, accent picker, deck reorder, merged help. */
+.pt-welcome{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.pt-welcome h3{margin:0}
+.pt-clock{margin-left:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:var(--fs-13);color:var(--fg-muted)}
+.pt-health summary{cursor:pointer;font-weight:700}
+.pt-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:10px}
+.pt-health-row{background:var(--bg2);border-radius:var(--radius-sm);padding:8px 10px;font-size:var(--fs-12)}
+.pt-health-row b{display:block;font-size:var(--fs-11);color:var(--fg-muted);letter-spacing:.04em}
+.pt-kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.pt-quick{display:flex;gap:8px;flex-wrap:wrap}
+.pt-spec-bar{display:flex;height:14px;border-radius:999px;overflow:hidden;background:var(--bg2)}
+.pt-spec-row{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:var(--fs-12)}
+.pt-liveops{background:#0B1520;border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.6;color:#C7D5E0;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.pt-vitals{margin-top:10px}
+.pt-brand{text-align:center;padding:18px 10px}
+.pt-brand h3{margin:0;font-size:20px;letter-spacing:.08em}
+.pt-brand div{color:var(--fg-muted);font-size:var(--fs-12)}
+.pt-deck-sec{position:relative}
+.pt-deck-handle{position:absolute;top:10px;right:12px;cursor:grab;color:var(--fg-muted);font-size:14px;padding:2px 4px}
+.pt-deck-sec.pt-dragging{opacity:.55}
+.pt-palette{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:12vh}
+.pt-palette-box{width:min(560px,92%);background:var(--surface,#0F1B29);border:1px solid var(--border);border-radius:14px;padding:12px}
+.pt-palette-box input{width:100%;margin:0 0 8px}
+.pt-palette-item{display:block;width:100%;text-align:left;background:transparent;border:0;border-radius:8px;color:var(--fg);padding:8px 10px;cursor:pointer;font-size:var(--fs-13)}
+.pt-palette-item.on{background:var(--bg2)}
+.pt-palette-foot{color:var(--fg-muted);font-size:var(--fs-11);margin-top:8px}
+.pt-bellwrap{position:relative}
+.pt-bell{background:transparent;border:1px solid var(--border);border-radius:999px;color:var(--fg);cursor:pointer;padding:6px 10px;font-size:14px;position:relative}
+.pt-bell-dot{position:absolute;top:4px;right:6px;width:8px;height:8px;border-radius:50%;background:var(--crit)}
+.pt-belldrop{position:absolute;right:0;top:calc(100% + 8px);z-index:150;width:min(360px,86vw);background:var(--surface,#0F1B29);border:1px solid var(--border);border-radius:12px;padding:10px 12px;max-height:60vh;overflow:auto}
+.pt-accent{display:flex;gap:6px;align-items:center}
+.pt-accent button{width:18px;height:18px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.pt-accent button.on{border-color:var(--fg)}
+.side-ver{margin-top:10px;font-size:var(--fs-11);color:var(--fg-muted);letter-spacing:.04em}
+.sess-chip{font-size:var(--fs-12);color:var(--fg-muted);border:1px solid var(--border);border-radius:999px;padding:5px 10px;white-space:nowrap}
+.pt-help{position:fixed;top:12vh;left:50%;transform:translateX(-50%);z-index:200;width:min(420px,92%);background:var(--surface,#0F1B29);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
+.pt-help h4{margin:2px 0 8px}
+.pt-help-row{display:flex;gap:10px;padding:3px 0;font-size:var(--fs-12)}
+.pt-help-key{min-width:64px;font-weight:800;color:#E7C65B}
+.pt-trend-toggle{display:flex;gap:6px;margin-bottom:10px}
+.pt-trend-toggle button.on{background:var(--accent);color:#fff}
+.pt-matrix td,.pt-matrix th{padding:5px 8px;font-size:var(--fs-12)}
+</style>
 <style id="vanthex-v1240">
 /* v1.24.0: ticker strip, help overlay, studio panel, panel tokens. */
 .gl-ticker{ display:flex; overflow:hidden; text-overflow:clip; }
