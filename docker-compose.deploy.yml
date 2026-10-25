@@ -21,6 +21,8 @@ services:
       PTK_NVD_KEY: ${PTK_NVD_KEY:-}
       PTK_ALLOWED_TARGETS: ${PTK_ALLOWED_TARGETS:-}
       PTK_CANARY_BASE: ${PTK_CANARY_BASE:-}
+      VANTHEX_FIRMS_MAP_KEY: ${VANTHEX_FIRMS_MAP_KEY:-}
+      VANTHEX_ABUSECH_AUTH_KEY: ${VANTHEX_ABUSECH_AUTH_KEY:-}
     volumes:
       - vanthex-data:/data
     cap_add:

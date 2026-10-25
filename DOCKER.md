@@ -4,6 +4,10 @@
 [INSTALL.md](INSTALL.md). Engine, features, and scan behavior are
 identical in both installation methods; only the runtime differs.
 
+**Dashboard URLs** (after sign-in): `/` serves the classic dashboard,
+at parity with the chat artifact; `/classic` is an alias for it;
+`/webui` serves the legacy webui SPA.
+
 ---
 
 ## 1. Prerequisites
@@ -41,7 +45,7 @@ Open <http://localhost:5000> and sign in as `admin` with the
 
 What this does:
 
-- Builds the image (tag `vanthex:1.9.0`) from the `Dockerfile`
+- Builds the image from the `Dockerfile`
 - Starts one container, publishing host port **5000** → container 5000
 - Creates the named volume **`vanthex-data`** mounted at `/data`
 - Adds the `NET_RAW` capability
@@ -69,8 +73,10 @@ Edit `.env`:
 PTK_ADMIN_PW=a-long-random-password
 GHCR_OWNER=<your-github-user>        # image: ghcr.io/<owner>/vanthex-osp
 GHCR_REPO=vanthex-osp
-VANTHEX_TAG=1.9.0                    # or latest
+VANTHEX_TAG=1.2.1                    # or latest
 # PTK_NVD_KEY=...                    # optional, recommended
+# VANTHEX_FIRMS_MAP_KEY              # optional: NASA FIRMS key for live fire hotspots (unset = EONET fallback)
+# VANTHEX_ABUSECH_AUTH_KEY           # optional: abuse.ch key for keyed threat-intel families (unset = offline)
 ```
 
 Then:
@@ -104,6 +110,8 @@ If the package is private, authenticate first:
 | `PTK_COOKIE_SECURE` | `1` marks session cookies `Secure` (HTTPS deployments) | — |
 | `GHCR_OWNER` / `GHCR_REPO` | Image coordinates for the deploy compose file | — / `vanthex-osp` |
 | `VANTHEX_TAG` | Image tag for the deploy compose file | `latest` |
+| `VANTHEX_FIRMS_MAP_KEY` | NASA FIRMS MAP_KEY for live fire hotspots on the globe | — (unset = EONET fallback) |
+| `VANTHEX_ABUSECH_AUTH_KEY` | abuse.ch auth key for keyed threat-intel families | — (unset = those families stay offline) |
 
 ---
 

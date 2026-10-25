@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.9.0-crimson">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.2.1-crimson">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-blue">
   <img alt="Engine" src="https://img.shields.io/badge/engine-self--built-success">
   <img alt="Tests" src="https://img.shields.io/badge/tests-143%20passing-brightgreen">
@@ -90,9 +90,10 @@ and its evidence is inspectable.
   exported components, cleartext, secrets patterns, network security
   config) and IPA analyzer
 - **One interface everywhere** — the dashboard served by the service
-  itself (native and Docker alike) is the full VANTHEX web UI: glass
-  Command Deck, posture gauge, live operations, command palette; the
-  previous classic UI remains available at `/classic`
+  itself (native and Docker alike) is the classic dashboard, at parity
+  with the chat artifact: glass Command Deck, posture gauge, live
+  operations, command palette; `/classic` is an alias for it, and the
+  legacy webui SPA remains available at `/webui`
 - **Platform** — hash-chained (SHA-256) audit log, encrypted secrets
   vault (Fernet) for scan credentials, scan scheduling, webhooks,
   role-based users, 12-language UI with full RTL support, dark/light
@@ -252,6 +253,8 @@ All configuration is via environment variables:
 | `PTK_CANARY_PORT` | Canary listener port | `8977` |
 | `PTK_COOKIE_SECURE` | Set `1` to mark session cookies `Secure` (HTTPS deployments) | — |
 | `GHCR_OWNER` / `VANTHEX_TAG` | Image owner/tag for `docker-compose.deploy.yml` | — / `latest` |
+| `VANTHEX_FIRMS_MAP_KEY` | NASA FIRMS MAP_KEY for live fire hotspots on the globe | — (unset = EONET fallback) |
+| `VANTHEX_ABUSECH_AUTH_KEY` | abuse.ch auth key for keyed threat-intel families | — (unset = those families stay offline) |
 
 ## CI/CD — GitHub Actions → GHCR
 
@@ -262,7 +265,7 @@ Registry on every push to `main` and every version tag:
 | Git event | Image tags |
 |---|---|
 | Push to `main` | `latest`, `sha-<short>` |
-| Tag `v1.2.3` | `1.2.3`, `1.2`, `sha-<short>` |
+| Tag `v1.2.1` | `1.2.1`, `1.2`, `sha-<short>` |
 | Pull request | build only (never published) |
 
 Authentication uses the workflow's built-in `GITHUB_TOKEN`

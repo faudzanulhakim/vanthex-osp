@@ -431,13 +431,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(302, "", extra=[("Location", "/login")])
             return
         if path == "/":
+            self._send(200, load_template("app.html"))
+        elif path == "/classic":
+            self._send(200, load_template("app.html"))
+        elif path == "/webui":
             if sess.get("role") == "admin" and ACTIONS_OK:
                 ui = webui_file("index.html")
                 if ui:
                     self._send(200, ui[0], ui[1], [("Cache-Control", "no-store")])
                     return
-            self._send(200, load_template("app.html"))
-        elif path == "/classic":
             self._send(200, load_template("app.html"))
         elif path.startswith("/assets/"):
             asset = webui_file("assets/" + path[len("/assets/"):])

@@ -85,6 +85,10 @@ Then open <http://localhost:5000> and sign in:
   first run, a strong random password is generated and printed once at
   startup — there is no default password)
 
+**Dashboard URLs** (after sign-in): `/` serves the classic dashboard,
+at parity with the chat artifact; `/classic` is an alias for it;
+`/webui` serves the legacy webui SPA.
+
 Notes on state created at first run, in the application directory:
 
 | File | Purpose |
@@ -119,6 +123,8 @@ python -m pytest tests/ -q                 # full verification suite (143 tests)
 | `PTK_COOKIE_SECURE` | `1` marks session cookies `Secure` (use behind HTTPS) | — |
 | `PTK_COMPANY` | Company name printed on reports | — |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (or `PTK_PROXY`) | Egress proxy for the web layer | — |
+| `VANTHEX_FIRMS_MAP_KEY` | NASA FIRMS MAP_KEY for live fire hotspots on the globe | — (unset = EONET fallback) |
+| `VANTHEX_ABUSECH_AUTH_KEY` | abuse.ch auth key for keyed threat-intel families | — (unset = those families stay offline) |
 
 ---
 
