@@ -99,6 +99,15 @@ import requests
 # TypeScript original writes them, whatever port is actually in use.
 FETCH_TIMEOUT_S = 12.0
 
+# Globe layers on a cold cache refresh synchronously (sats: CelesTrak
+# download + SGP4 propagation of thousands of objects; fires: FIRMS
+# fetch) and exceed the 12 s default — the client then gets
+# error/serviceDown and shows 0, even though the server-side refresh
+# still completes. Globe handlers pass this budget instead. It matches
+# the artifact worker's 120 s cap, which remains the ceiling for any
+# single globe read (2026-10-26, diagnosed 12 s timeout race).
+GLOBE_TIMEOUT_MS = 120000
+
 _session_cookie = ""
 _session_exp = 0.0  # epoch milliseconds, like Date.now()
 _login_stage_error = ""
@@ -2069,7 +2078,8 @@ def _globe_qs(params: dict) -> str:
 
 
 def _a_get_globe_status(args: dict, port: int) -> dict:
-    res = call_service(port, "GET", "/api/osint/globe/status")
+    res = call_service(port, "GET", "/api/osint/globe/status",
+                       timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
@@ -2092,21 +2102,24 @@ def _a_get_globe_cam(args: dict, port: int) -> dict:
 def _a_get_globe_layer(args: dict, port: int) -> dict:
     layer_id = _arg_str(args, "layerId") or _arg_str(args, "id")
     res = call_service(port, "GET",
-                       f"/api/osint/globe/layer/{_enc(layer_id)}")
+                       f"/api/osint/globe/layer/{_enc(layer_id)}",
+                       timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
 def _a_get_globe_entities(args: dict, port: int) -> dict:
     qs = _globe_qs({"scan": _arg_str(args, "scanId") or _arg_str(args, "scan")})
     res = call_service(
-        port, "GET", "/api/osint/globe/entities" + ("?" + qs if qs else ""))
+        port, "GET", "/api/osint/globe/entities" + ("?" + qs if qs else ""),
+        timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
 def _a_get_globe_search(args: dict, port: int) -> dict:
     qs = _globe_qs({"q": _arg_str(args, "q") or _arg_str(args, "query")})
     res = call_service(
-        port, "GET", "/api/osint/globe/search" + ("?" + qs if qs else ""))
+        port, "GET", "/api/osint/globe/search" + ("?" + qs if qs else ""),
+        timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
@@ -2119,34 +2132,40 @@ def _a_get_globe_route(args: dict, port: int) -> dict:
     qs = _globe_qs({"profile": _arg_str(args, "profile", "driving"),
                     "wp": str(wps)})
     res = call_service(
-        port, "GET", "/api/osint/globe/route" + ("?" + qs if qs else ""))
+        port, "GET", "/api/osint/globe/route" + ("?" + qs if qs else ""),
+        timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
 def _a_get_globe_github(args: dict, port: int) -> dict:
     qs = _globe_qs({"u": _arg_str(args, "u") or _arg_str(args, "username")})
     res = call_service(
-        port, "GET", "/api/osint/globe/github" + ("?" + qs if qs else ""))
+        port, "GET", "/api/osint/globe/github" + ("?" + qs if qs else ""),
+        timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
 def _a_get_globe_launches(args: dict, port: int) -> dict:
-    res = call_service(port, "GET", "/api/osint/globe/launches")
+    res = call_service(port, "GET", "/api/osint/globe/launches",
+                       timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
 def _a_get_globe_news(args: dict, port: int) -> dict:
-    res = call_service(port, "GET", "/api/osint/globe/news")
+    res = call_service(port, "GET", "/api/osint/globe/news",
+                       timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
 def _a_get_globe_markets(args: dict, port: int) -> dict:
-    res = call_service(port, "GET", "/api/osint/globe/markets")
+    res = call_service(port, "GET", "/api/osint/globe/markets",
+                       timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
 def _a_get_globe_cloudmeta(args: dict, port: int) -> dict:
-    res = call_service(port, "GET", "/api/osint/globe/cloudmeta")
+    res = call_service(port, "GET", "/api/osint/globe/cloudmeta",
+                       timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
@@ -2154,12 +2173,14 @@ def _a_get_globe_windgrid(args: dict, port: int) -> dict:
     qs = _globe_qs({"cycle": _arg_str(args, "cycle"),
                     "fhour": str(args.get("fhour", ""))})
     res = call_service(
-        port, "GET", "/api/osint/globe/windgrid" + ("?" + qs if qs else ""))
+        port, "GET", "/api/osint/globe/windgrid" + ("?" + qs if qs else ""),
+        timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
 def _a_get_globe_iss_telemetry(args: dict, port: int) -> dict:
-    res = call_service(port, "GET", "/api/osint/globe/iss_telemetry")
+    res = call_service(port, "GET", "/api/osint/globe/iss_telemetry",
+                       timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
@@ -2175,7 +2196,8 @@ def _a_get_globe_recon(args: dict, port: int) -> dict:
         "bbox": str(bbox),
     })
     res = call_service(
-        port, "GET", "/api/osint/globe/recon" + ("?" + qs if qs else ""))
+        port, "GET", "/api/osint/globe/recon" + ("?" + qs if qs else ""),
+        timeout_ms=GLOBE_TIMEOUT_MS)
     return _globe_passthrough(res)
 
 
@@ -2189,7 +2211,8 @@ def _a_get_globe_ticker(args: dict, port: int) -> dict:
     # integration time and replace it if the client expects more.
     symbol = (_arg_str(args, "symbol") or _arg_str(args, "ticker")
               or _arg_str(args, "id"))
-    res = call_service(port, "GET", "/api/osint/globe/markets")
+    res = call_service(port, "GET", "/api/osint/globe/markets",
+                       timeout_ms=GLOBE_TIMEOUT_MS)
     if res["down"] or not is_record(res["json"]):
         return {"symbol": symbol, "derived": True,
                 "derivedFrom": "/api/osint/globe/markets",

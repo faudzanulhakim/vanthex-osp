@@ -120,13 +120,18 @@ def test_compose_deploy_has_feed_key_env():
     assert "VANTHEX_ABUSECH_AUTH_KEY: ${VANTHEX_ABUSECH_AUTH_KEY:-}" in content
 
 
-def test_env_example_documents_keys_as_comments_only():
+def test_env_example_documents_keys_as_empty_assignments():
+    # 2026-10-26 (ADE order): feed keys are EMPTY assignments, not
+    # comments-only, so `cp .env.example .env` yields fillable lines.
+    # The standing security rule is unchanged: NO VALUE may ever be
+    # committed here — values live only in the deployer's own .env.
     with open(ENV_EXAMPLE, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
     for key in ("VANTHEX_FIRMS_MAP_KEY", "VANTHEX_ABUSECH_AUTH_KEY"):
         hits = [ln for ln in lines if key in ln]
         assert hits, "missing placeholder for %s" % key
-        assert all(ln.lstrip().startswith("#") for ln in hits), key
+        assigns = [ln for ln in hits if not ln.lstrip().startswith("#")]
+        assert assigns == [key + "="], key
 
 
 def test_protected_files_byte_identical():
