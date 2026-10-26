@@ -1985,6 +1985,11 @@ def main():
     store.init_v32()
     _start_canary()
     threading.Thread(target=scheduler_loop, daemon=True).start()
+    try:
+        import globe_warmer
+        globe_warmer.start_warmer()
+    except Exception as e:  # noqa: BLE001 — warmer is best-effort
+        print(f"[globe] warmer failed to start: {e!r}", flush=True)
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"[i] VANTHEX Offensive Security Platform v1.2.1 -> http://0.0.0.0:{port}")
     if getattr(store, "GENERATED_ADMIN_PW", None):
