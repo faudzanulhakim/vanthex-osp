@@ -337,7 +337,7 @@ def test_artifact_file_shape_guards():
     assert data
 
 
-# ------------------------------------------------- real bundle (2026-10-26 swap)
+# ------------------------------------------------- real bundle (2026-10-26 swap; JS re-pinned to count-fix bundle 2026-10-26)
 
 def test_real_bundle_present_not_placeholder():
     idx = _read(os.path.join("artifact-ui", "index.html"))
@@ -346,10 +346,10 @@ def test_real_bundle_present_not_placeholder():
     # Bundle markers: platform root div + rewritten asset refs.
     assert "data-generated-space-root" in idx
     assert "/artifact-assets/assets/index-tzw0cgqg.css" in idx
-    assert "/artifact-assets/assets/index-wg5q354a.js" in idx
+    assert "/artifact-assets/assets/index-kmc432vj.js" in idx
     assert "./assets/" not in idx
     # All 10 asset files present.
-    for name in ("index-tzw0cgqg.css", "index-wg5q354a.js",
+    for name in ("index-tzw0cgqg.css", "index-kmc432vj.js",
                  "vhantex-logo-blue-471smhmh.png",
                  "vhantex-logo-orange-erzkbnsm.png",
                  "vhantex-logo-purple-c5f2jxas.png",
@@ -361,7 +361,7 @@ def test_real_bundle_present_not_placeholder():
         assert os.path.exists(os.path.join("artifact-ui", "assets", name)), name
     # Currency markers in the bundle JS (current artifact, not stale):
     # the 22:21 session-text fix ("4 hours") is in, "30 minutes" is out.
-    js = _read(os.path.join("artifact-ui", "assets", "index-wg5q354a.js"))
+    js = _read(os.path.join("artifact-ui", "assets", "index-kmc432vj.js"))
     assert "4 hours" in js
     assert "Severe risk" in js
     assert "30 minutes" not in js
