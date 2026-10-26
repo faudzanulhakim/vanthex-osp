@@ -272,6 +272,19 @@ _lock = threading.Lock()
 _cache = {}          # sublayer id -> entry dict
 _kp = {"value": None, "time_tag": "", "fetched_at": 0.0, "ok": False,
        "error": ""}
+# Kp refresh policy (v1.2.1 Kp-nonblocking fix, 2026-10-26): status()
+# must never wait on the SWPC fetch. A due refresh runs in a daemon
+# thread; the triggering call waits at most _KP_SYNC_GRACE_S so an
+# already-fast answer still lands synchronously, while a hung fetch
+# costs ~grace instead of the 30 s _fetch timeout (up to ~90 s via
+# the daemon helper path). A failed fetch is not retried for
+# _KP_FAIL_TTL_S; calls in that window return unavailable at once.
+_KP_SUCCESS_TTL_S = 900
+_KP_FAIL_TTL_S = 300
+_KP_SYNC_GRACE_S = 2.0
+_kp_refresh_lock = threading.Lock()
+_kp_refresh_in_flight = False
+_kp_last_failed_at = 0.0
 _tle = {"text": "", "fetched_at": 0.0, "ok": False, "error": "",
         "bad_lines": 0}
 _sat_memo = {"points": None, "at": 0.0, "total": 0}
@@ -2510,24 +2523,78 @@ def _maritime_layer():
 
 
 # ------------------------------------------------------------------- Kp
+def _kp_unavailable():
+    """Current Kp view when no fresh value exists: ok False, value
+    None — never a stale number presented as current. time_tag /
+    fetched_at still describe the last successful fetch, for
+    diagnostics only; the HUD gates display on ok."""
+    return {"value": None, "time_tag": _kp["time_tag"],
+            "fetched_at": _kp["fetched_at"], "ok": False,
+            "error": _kp["error"]}
+
+
+def _kp_refresh_worker(done):
+    """Background SWPC fetch for get_kp(). Never raises; always
+    signals done and clears the in-flight flag. Success refreshes
+    the 900 s cache; failure marks Kp unavailable (value cleared,
+    ok False) and starts the 300 s negative TTL so status() is not
+    retried on every call."""
+    global _kp_refresh_in_flight, _kp_last_failed_at
+    try:
+        lock = _family_lock("kp")
+        with lock:
+            try:
+                _st, raw = _fetch("services.swpc.noaa.gov",
+                                  "/products/noaa-planetary-k-index.json")
+                value, tag = parse_swpc_kp(raw)
+                _kp.update(value=value, time_tag=tag, fetched_at=_now(),
+                           ok=True, error="")
+            except Exception as e:  # noqa: BLE001
+                _kp.update(value=None, ok=False,
+                           error=f"{type(e).__name__}: {e}"[:200])
+                with _kp_refresh_lock:
+                    _kp_last_failed_at = _now()
+    finally:
+        done.set()
+        with _kp_refresh_lock:
+            _kp_refresh_in_flight = False
+
+
 def get_kp():
-    """Solar Kp for the HUD (NOAA SWPC, TTL 900 s). On failure the HUD
-    shows 'Kp —' — never a stale number presented as current."""
-    if _kp["ok"] and _now() - _kp["fetched_at"] < 900:
+    """Solar Kp for the HUD (NOAA SWPC, TTL 900 s). Non-blocking: a
+    due refresh runs in a daemon thread and the triggering call waits
+    at most _KP_SYNC_GRACE_S for it, so an already-fast answer still
+    lands synchronously while a hung fetch costs ~grace, not the
+    30 s _fetch timeout (up to ~90 s via the daemon helper path).
+    Calls while a refresh is in flight, and calls within
+    _KP_FAIL_TTL_S after a failure, return immediately. On failure
+    the HUD shows 'Kp —' — never a stale number presented as
+    current."""
+    global _kp_refresh_in_flight
+    now = _now()
+    if _kp["ok"] and now - _kp["fetched_at"] < _KP_SUCCESS_TTL_S:
         return dict(_kp)
-    lock = _family_lock("kp")
-    with lock:
-        if _kp["ok"] and _now() - _kp["fetched_at"] < 900:
-            return dict(_kp)
-        try:
-            _st, raw = _fetch("services.swpc.noaa.gov",
-                              "/products/noaa-planetary-k-index.json")
-            value, tag = parse_swpc_kp(raw)
-            _kp.update(value=value, time_tag=tag, fetched_at=_now(),
-                       ok=True, error="")
-        except Exception as e:  # noqa: BLE001
-            _kp["error"] = f"{type(e).__name__}: {e}"[:200]
-    return dict(_kp)
+    with _kp_refresh_lock:
+        if _kp_refresh_in_flight or (
+                _kp_last_failed_at
+                and now - _kp_last_failed_at < _KP_FAIL_TTL_S):
+            return _kp_unavailable()
+        _kp_refresh_in_flight = True
+        done = threading.Event()
+    t = threading.Thread(target=_kp_refresh_worker, args=(done,),
+                         name="globe-kp-refresh", daemon=True)
+    try:
+        t.start()
+    except RuntimeError:
+        # Never leave the in-flight flag stuck: a thread that could
+        # not start must not block every later status() call.
+        with _kp_refresh_lock:
+            _kp_refresh_in_flight = False
+        return _kp_unavailable()
+    done.wait(_KP_SYNC_GRACE_S)
+    if _kp["ok"] and _now() - _kp["fetched_at"] < _KP_SUCCESS_TTL_S:
+        return dict(_kp)
+    return _kp_unavailable()
 
 
 # ---------------------------------------------------------------- status
