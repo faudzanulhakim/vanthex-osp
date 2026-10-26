@@ -31,6 +31,13 @@ every 240 s. If the proxy starts rejecting the held credential
 relaunches it with a fresh session credential. Other probe failures
 are ignored — per-request errors already flow back to the service.
 
+Container direct-egress mode (VANTHEX_FETCH_DAEMON_DIRECT=1, set
+by the container entrypoint when VANTHEX_CONTAINER_FETCH_DAEMON=1):
+the 407-exit is disabled, because there is no proxy credential to
+rotate and no watchdog to relaunch — the daemon stays up, and the
+service falls through to direct fetch if the daemon ever stops
+answering. VM behavior is unchanged when the flag is unset.
+
 Socket path: $VANTHEX_GLOBE_FETCH_SOCK or
 ../pentest-toolkit-service/globe-fetch.sock relative to this file.
 """
@@ -54,6 +61,19 @@ SOCK_PATH = os.environ.get(
 PROBE_URL = ("https://earthquake.usgs.gov/earthquakes/feed/v1.0/"
              "summary/2.5_day.geojson")
 PROBE_EVERY = 240.0
+
+# Container direct-egress mode: exact "1" only. Unset (VM default)
+# keeps the 407-exit below.
+_DIRECT = os.environ.get("VANTHEX_FETCH_DAEMON_DIRECT", "") == "1"
+
+
+def _probe_failure_is_fatal(exc):
+    """VM default: a 407 means the held proxy credential died, so the
+    daemon exits for watchdog relaunch. Container direct-egress mode:
+    never fatal — no proxy to rotate, no watchdog to relaunch."""
+    if _DIRECT:
+        return False
+    return "407" in str(exc)
 
 import globe_fetch_helper as helper  # noqa: E402
 
@@ -106,7 +126,7 @@ def _probe_loop():
             _st, _h, _b, _c = gf._fetch_binary_direct(
                 PROBE_URL, timeout=20.0, cap=64 * 1024)
         except Exception as e:  # noqa: BLE001
-            if "407" in str(e):
+            if _probe_failure_is_fatal(e):
                 _log("credential rejected by proxy (407); exiting "
                      "for watchdog relaunch")
                 os._exit(3)
