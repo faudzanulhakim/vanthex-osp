@@ -171,7 +171,8 @@ def test_deck_apply_only_reorders_never_hides():
 
 def test_version_still_1_2_1_everywhere():
     html = _html()
-    assert "VANTHEX V1.2.1, " in html
+    # Scan-parity 2026-10-25: footer now matches the artifact format (middle dot, not comma).
+    assert 'VANTHEX V1.2.1 · ' in html
     assert "admin · V1.2.1" in html
     assert '<span class="gl-ver">VANTHEX 1.2.1</span>' in html
     assert "V1.5.0" not in html
@@ -199,17 +200,19 @@ def test_untouched_files_byte_identical():
 # ---- 2026-10-25 small visual fix pass (ADE 22:59 WIB screenshot) ----
 # FIX 1: posture label WORDS aligned to the artifact's risk vocabulary.
 # Bands and thresholds are UNCHANGED (score math untouched); only the
-# words changed: <40 "Low risk", 40-69 "Medium risk", >=70 "High risk".
-# The artifact labels score 25 "Low risk"; classic used to say "Good".
+# words changed: <40 "Low risk", 40-69 "Elevated risk", >=70 "Severe risk".
+# Artifact source (inspection 2026-10-25): HeroGauge grade >=70 'Severe risk',
+# >=40 'Elevated risk', else 'Low risk'. Updated 2026-10-25 scan-parity pass
+# (prior 23:03 pass used the approximated High/Medium words).
 
 def test_posture_label_words_match_artifact_risk_vocabulary():
     dash = _dash()
     m = re.search(r"const pLabel = ([^\n]+)", dash)
     assert m, "pLabel line missing from viewDash"
     line = m.group(1)
-    assert "'High risk'" in line and "'Medium risk'" in line and "'Low risk'" in line
+    assert "'Severe risk'" in line and "'Elevated risk'" in line and "'Low risk'" in line
     assert ">= 70" in line and ">= 40" in line
-    assert "'At risk'" not in line
+    assert 'At risk' not in line and 'High risk' not in line and 'Medium risk' not in line
     assert "'Fair'" not in line
     assert "'Good'" not in line
     # Gauge math untouched: same color bands, same circle math.

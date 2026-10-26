@@ -46,7 +46,8 @@ MD5_OSINT = "65ec21c31b4aad76aa304fcb411388ae"
 # removed from the dashboard view only) superseded the visual-pass
 # template; the pin now tracks the post-fix template, verified by the
 # appended tests in test_v1_2_1_visual_parity.py.
-MD5_APP_HTML = "345c0c6c0866c9c47ac2604ae95769d3"
+# Scan-parity 2026-10-25: classic template after the total scan-parity port.
+MD5_APP_HTML = "c927c1a60ac490f859feb6fdea936ee4"
 MD5_WEBUI_BUNDLE = "1751c095c5decc17c80907283fb6635d"
 MD5_WEBUI_INDEX = "d67036f15cbaf4efaac6f2153a910260"
 

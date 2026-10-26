@@ -1984,7 +1984,7 @@ html[data-theme="dark"] .b-active{ color:var(--accent); }
           <div id="urole" class="urole">—</div>
         </div>
       </div>
-      <div class="side-ver" id="sideVer">VANTHEX V1.2.1, <span id="footUname">admin</span></div>
+      <div class="side-ver" id="sideVer">VANTHEX V1.2.1 · <span id="footUname">admin</span> · <span id="footRole">admin</span></div>
     </div>
   </aside>
 
@@ -2017,7 +2017,7 @@ html[data-theme="dark"] .b-active{ color:var(--accent); }
           <button type="button" data-accent="amber" style="background:#F59E0B" aria-label="Amber"></button>
         </div>
         <span class="sess-chip" id="sessChip">admin · V1.2.1</span>
-        <select id="langsel">
+        <select id="langsel" onchange="setLang(this.value)">
           <option value="en">English</option>
           <option value="id">Bahasa Indonesia</option>
           <option value="es">Español</option>
@@ -2232,6 +2232,7 @@ function applyI18n() {
 
 function setLang(l) {
   try { localStorage.setItem('ptk-lang', l); } catch(e) {}
+  try { const _a = document.getElementById('langsel'); if (_a) _a.value = l; const _b = document.getElementById('langsel2'); if (_b) _b.value = l; } catch(e) {}
   applyI18n();
 }
 
@@ -2353,6 +2354,28 @@ function toggleTheme() {
 updateThemeButton();
 
 /* ---------------- dashboard ---------------- */
+function ptQuickScan(tool) {
+  window._ptScanTool = tool;
+  show('scan');
+}
+
+async function ptRecentExpand(id, btn) {
+  const box = document.getElementById('pt-recent-' + id);
+  if (!box) return;
+  if (box.style.display !== 'none') { box.style.display = 'none'; btn.textContent = 'Expand'; return; }
+  if (!box.dataset.loaded) {
+    try {
+      const d = await $('/api/scan/' + id);
+      const top = [...(d.findings || [])].sort((a, b) => (ORDER[a.severity] - ORDER[b.severity]) || ((b.cvss || 0) - (a.cvss || 0))).slice(0, 5);
+      const counts = Object.entries(d.scan.summary || {}).map(([k, v]) => `<span class="badge b-${k}">${k} × ${v}</span>`).join(' ');
+      box.innerHTML = `<div style="font-size:12px;margin:6px 0">${counts}</div>` + (top.map(f => `<div style="font-size:12px;padding:3px 0"><span class="badge b-${f.severity}">${f.severity}</span> ${esc(f.title)}</div>`).join('') || '<div class="empty">No findings</div>');
+      box.dataset.loaded = '1';
+    } catch(e) { box.innerHTML = '<div class="empty">Failed to load details</div>'; }
+  }
+  box.style.display = '';
+  btn.textContent = 'Collapse';
+}
+
 async function viewDash() {
   const st = await $('/api/stats');
   let ins = { overdue_counts: {}, overdue: [], mttr_days: {}, trend_by_target: {}, sla_days: null, owasp_top: {}, top_targets: [] };
@@ -2364,6 +2387,8 @@ async function viewDash() {
   try { const r = await $('/api/findings?limit=1000'); fnd = Array.isArray(r) ? r : (r.findings || []); } catch(e) {}
   let auditRows = [];
   try { auditRows = await $('/api/audit'); } catch(e) {}
+  let scanRows = [];
+  try { scanRows = await $('/api/scans'); } catch(e) {}
   window._ptTrend = st.trend || [];
   window._ptVitals = window._ptVitals || [];
   const sys = st.system || {};
@@ -2377,7 +2402,7 @@ async function viewDash() {
   const confMax = Math.max(1, ...Object.values(st.by_confidence || {}));
   const sevEntries = Object.entries(st.by_severity).sort((a, b) => (ORDER[a[0]] ?? 9) - (ORDER[b[0]] ?? 9));
   const fmtUp = s => { if (s == null) return '—'; s = Math.floor(s); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? d + 'd ' + h + 'h' : (h ? h + 'h ' + m + 'm' : m + 'm'); };
-  const fmtDT = t => { if (t == null) return null; const d = (typeof t === 'number') ? new Date(t * 1000) : new Date(t); return isNaN(d) ? null : d.toLocaleString('en-GB'); };
+  const fmtDT = t => { if (t == null) return null; const d = (typeof t === 'number') ? new Date(t * 1000) : new Date(t); return isNaN(d) ? null : d.toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}); };
   const jobs = (met && met.jobs) || {};
   const nvd = (met && met.nvd) || {};
   const can = (met && met.canary) || {};
@@ -2389,7 +2414,7 @@ async function viewDash() {
     <section class="panel pt-welcome pt-hero pt-deck-sec" data-deck="welcome" draggable="true">
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
       <div class="pt-hero-text"><h3 class="pt-hero-title">Welcome back, <span id="ptWelcomeName">${esc(userName)}</span></h3>
-      <div class="pt-hero-sub">Security posture overview of your assets</div></div>
+      <div class="pt-hero-sub">Offensive Security &amp; Vulnerability Intelligence</div></div>
       <div class="pt-hero-clock"><div class="pt-clock-time" id="ptClock">${new Date().toLocaleTimeString('en-GB')}</div><div class="pt-clock-date" id="ptClockDate">${new Date().toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'}).toUpperCase()} · LOCAL TIME</div></div>
       <button class="btn" style="margin-right:26px" onclick="ptDeckReset()">Reset layout</button>
     </section>`;
@@ -2418,7 +2443,7 @@ async function viewDash() {
     </section>`;
 
   const pScore = st.posture_score;
-  const pLabel = pScore == null ? '—' : (pScore >= 70 ? 'High risk' : pScore >= 40 ? 'Medium risk' : 'Low risk');
+  const pLabel = pScore == null ? '—' : (pScore >= 70 ? 'Severe risk' : pScore >= 40 ? 'Elevated risk' : 'Low risk');
   const pColor = pScore == null ? 'var(--fg-muted)' : (pScore >= 70 ? 'var(--crit)' : pScore >= 40 ? 'var(--med)' : 'var(--ok)');
   const pCirc = 2 * Math.PI * 52;
   const pOff = pScore != null ? (pCirc * (1 - pScore / 100)).toFixed(1) : pCirc.toFixed(1);
@@ -2452,9 +2477,9 @@ async function viewDash() {
   const kpi = `
     <section class="pt-kpi pt-deck-sec" data-deck="kpi" draggable="true">
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
-      <div class="pt-kpi-card"><div class="pt-kpi-ic">🎯</div><div class="pt-kpi-n">${st.total_scans}</div><div class="pt-kpi-l">Total Scans</div>${spark(scansSeries, 'var(--crit)')}</div>
-      <div class="pt-kpi-card"><div class="pt-kpi-ic"><span class="text-crit">●</span></div><div class="pt-kpi-n" style="color:var(--crit)">${critN}</div><div class="pt-kpi-l">Critical Findings</div>${spark(bucket('CRITICAL'), 'var(--crit)')}</div>
-      <div class="pt-kpi-card"><div class="pt-kpi-ic">📋</div><div class="pt-kpi-n">${sevTotal}</div><div class="pt-kpi-l">Total Findings</div>${spark(bucket(null), 'var(--accent)')}</div>
+      <div class="pt-kpi-card" style="cursor:pointer" title="View scan history" onclick="show('hist')"><div class="pt-kpi-ic">🎯</div><div class="pt-kpi-n">${st.total_scans}</div><div class="pt-kpi-l">Total Scans</div>${spark(scansSeries, 'var(--crit)')}</div>
+      <div class="pt-kpi-card" style="cursor:pointer" title="View critical findings" onclick="window._ptFindPreset={severity:'CRITICAL'};show('findings')"><div class="pt-kpi-ic"><span class="text-crit">●</span></div><div class="pt-kpi-n" style="color:var(--crit)">${critN}</div><div class="pt-kpi-l">Critical Findings</div>${spark(bucket('CRITICAL'), 'var(--crit)')}</div>
+      <div class="pt-kpi-card" style="cursor:pointer" title="View all findings" onclick="show('findings')"><div class="pt-kpi-ic">📋</div><div class="pt-kpi-n">${sevTotal}</div><div class="pt-kpi-l">Total Findings</div>${spark(bucket(null), 'var(--accent)')}</div>
     </section>`;
 
   const quick = `
@@ -2462,17 +2487,21 @@ async function viewDash() {
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
       <h3>Quick Actions</h3>
       <div class="pt-quick">
-        <button class="btn primary" onclick="show('scan')">⚡ New Scan</button>
+        <button class="btn primary" onclick="ptQuickScan('vulnscan')">⚡ Web Application Testing</button>
+        <button class="btn" onclick="show('mobile')">📱 Mobile Application Testing</button>
+        <button class="btn" onclick="ptQuickScan('passive')">🔍 Passive Reconnaissance</button>
         <button class="btn" onclick="show('osint')">🔍 OSINT Search</button>
-        <button class="btn" onclick="show('mobile')">📱 Mobile Test</button>
-        <button class="btn" onclick="show('hist')">🕘 Scan History</button>
-        <button class="btn" onclick="show('findings')">🐛 Findings</button>
+        <button class="btn" onclick="show('findings')">🐛 View Findings</button>
+        <button class="btn" onclick="show('assets')">🗂️ Manage Assets</button>
+        <button class="btn" onclick="show('hist')">🕘 View Scan History</button>
+        <button class="btn" onclick="show('hist')">📄 Generate Report</button>
+        <button class="btn" onclick="ptDeckReset()">↺ Reset layout</button>
       </div>
     </section>`;
 
-  const specSegs = sevEntries.map(([s, v]) => v ? `<div style="flex:${v};background:${COLORS[s]}" title="${s} ${v}"></div>` : '').join('');
+  const specSegs = sevEntries.map(([s, v]) => v ? `<div style="flex:${v};background:${COLORS[s]};cursor:pointer" title="${s} ${v}" onclick="window._ptFindPreset={severity:'${s}'};show('findings')"></div>` : '').join('');
   const specRows = sevEntries.map(([s, v]) => `
-    <div class="pt-spec-row"><span class="pt-spec-dot" style="background:${COLORS[s]}"></span><span class="pt-spec-name">${s}</span>
+    <div class="pt-spec-row" style="cursor:pointer" title="View ${s} findings" onclick="window._ptFindPreset={severity:'${s}'};show('findings')"><span class="pt-spec-dot" style="background:${COLORS[s]}"></span><span class="pt-spec-name">${s}</span>
     <div style="flex:1;height:10px;background:var(--bg2);border-radius:999px;overflow:hidden"><div style="width:${sevTotal ? (v / sevTotal * 100) : 0}%;height:100%;background:${COLORS[s]}"></div></div>
     <b class="pt-spec-pct">${sevTotal ? (v / sevTotal * 100).toFixed(1) : '0.0'}%</b><span class="pt-spec-count">${v}</span></div>`).join('');
   const spectrum = `
@@ -2484,7 +2513,7 @@ async function viewDash() {
     </section>`;
 
   const opsText = (Array.isArray(auditRows) ? auditRows : []).slice(0, 15).map(r =>
-    `${r.ts ? new Date(r.ts * 1000).toLocaleString('en-GB') : '—'} ${r.username || '—'} ${r.action || '—'} — ${r.detail || ''}`).join('\n') || 'No recent activity';
+    `${r.ts ? new Date(r.ts * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}) : '—'} ${r.username || '—'} ${r.action || '—'} — ${r.detail || ''}`).join('\n') || 'No recent activity';
   const liveops = `
     <section class="panel pt-deck-sec" data-deck="liveops" draggable="true">
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
@@ -2506,11 +2535,11 @@ async function viewDash() {
     </section>`;
 
   const topV = [...(st.recent_findings || [])].sort((a, b) => (ORDER[a.severity] ?? 9) - (ORDER[b.severity] ?? 9) || (b.started_at || 0) - (a.started_at || 0)).slice(0, 6).map(f => `
-      <div class="feed-item">
+      <div class="feed-item" style="cursor:pointer" title="View ${f.severity} findings" onclick="window._ptFindPreset={severity:'${f.severity}'};show('findings')">
         <span class="feed-ic">${icons[f.severity] || '🔵'}</span>
         <div>
-          <div><span class="badge b-${f.severity}">${f.severity}</span> <b>${esc(f.title)}</b>${f.cvss != null ? ' <span style="color:var(--fg-muted);font-size:var(--fs-12)">CVSS ' + f.cvss + '</span>' : ''}</div>
-          <div class="feed-meta">${esc(f.target)} · ${f.started_at ? new Date(f.started_at * 1000).toLocaleString('en-GB') : '—'}</div>
+          <div><span class="badge b-${f.severity}">${f.severity}</span> <b>${esc(f.title)}</b>${f.cvss != null ? ' <span style="color:var(--fg-muted);font-size:var(--fs-12)">CVSS ' + f.cvss + '</span>' : ''} <span class="badge b-${f.confidence || 'probable'}">${(f.confidence || 'probable').toUpperCase()}</span></div>
+          <div class="feed-meta">${esc(f.target)} · ${f.started_at ? new Date(f.started_at * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}) : '—'}</div>
         </div>
       </div>`).join('') || '<div class="empty">No findings yet</div>';
   const topvuln = `
@@ -2518,30 +2547,37 @@ async function viewDash() {
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
       <h3>Top Vulnerabilities</h3>
       ${topV}
+      <div style="margin-top:8px"><button class="btn" onclick="show('findings')">View All</button></div>
     </section>`;
 
   const brand = `
     <section class="panel pt-brand pt-deck-sec" data-deck="brand" draggable="true">
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
       <h3>VANTHEX</h3>
-      <div>Enterprise Offensive Security Platform</div>
-      <div>Discover. Validate. Remediate.</div>
+      <div>Comprehensive security assessment for a stronger tomorrow.</div>
+      <div>Engine v1.2.1 · VANTHEX V1.2.1</div>
     </section>`;
 
-  const recent = (st.recent || []).map(s => `
-      <tr class="clickable-row" onclick="show('hist')">
-        <td><span class="text-strong">${esc(s.target)}</span><div class="sub-note">${esc(s.scan_type)} · ${esc(s.profile)}</div></td>
-        <td><span class="badge b-${s.status}">${s.status}</span></td>
-        <td>${s.started_at ? new Date(s.started_at * 1000).toLocaleString('en-GB') : '—'}</td>
-      </tr>`).join('') || '<tr><td colspan=3 class="empty">No scans yet</td></tr>';
+  const recent = (scanRows || []).slice(0, 10).map(s => {
+    const fc = s.summary ? Object.values(s.summary).reduce((a, b) => a + b, 0) : '—';
+    return `
+      <div style="padding:8px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-compact" onclick="ptRecentExpand('${s.id}', this)">Expand</button>
+          <a onclick="viewScanDetail('${s.id}')" class="link-action">${esc(s.target)}</a>
+          <span class="text-muted" style="font-size:12px">${esc(s.scan_type || '')}</span>
+          <span class="badge b-${s.status}">${s.status}</span>
+          <span style="font-size:12px">${fc} findings</span>
+          <span class="text-muted" style="font-size:12px">${s.started_at ? new Date(s.started_at * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}) : '—'}</span>
+        </div>
+        <div id="pt-recent-${s.id}" style="display:none"></div>
+      </div>`;
+  }).join('') || '<div class="empty">No scans yet</div>';
   const recentSec = `
     <section class="panel pt-deck-sec" data-deck="recent" draggable="true">
       <span class="pt-deck-handle" title="Drag to reorder">⠿</span>
       <h3>Recent Scans</h3>
-      <div class="table-scroll flush"><table>
-        <tr><th>Target</th><th>Status</th><th>Started</th></tr>
-        ${recent}
-      </table></div>
+      ${recent}
     </section>`;
 
   const bars = sevEntries.map(([s, v]) => `
@@ -2608,6 +2644,17 @@ async function viewDash() {
       </select>
       <div id="trendChart"></div>
       <div class="section-note">Risk scores of the selected asset's latest scans (lower is better).</div>
+      <div class="section-note" style="margin-top:10px">Risk Score per Scan</div>
+      <div style="margin-top:4px">
+        ${(st.posture_trend || []).slice(-10).reverse().map(p => `
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
+            <span class="text-strong">${esc(p.target)}</span>
+            <span class="badge b-${p.overall_risk}">${p.overall_risk}</span>
+            <span>Score ${p.score}/100</span>
+            <span class="text-muted">${p.started_at ? new Date(p.started_at * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}) : '—'}</span>
+            <a class="btn btn-compact" onclick="viewScanDetail('${p.scan_id}')">Detail</a>
+          </div>`).join('') || '<div class="empty">No scan scores yet</div>'}
+      </div>
       <h3 class="mt-20">Cross-Check Matrix</h3>
       ${matrix}
       <h3 class="mt-20">Findings by Severity</h3>
@@ -2661,7 +2708,7 @@ function renderTargetTrend() {
     <svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}">
       <polyline points="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"/>
       ${pts.map((p, i) => `<circle cx="${xs(i)}" cy="${ys(p.score)}" r="4" fill="${(p.score ?? 0) >= 70 ? 'var(--crit)' : (p.score ?? 0) >= 40 ? 'var(--med)' : 'var(--ok)'}">
-        <title>${new Date(p.t * 1000).toLocaleString('en-GB')} — score ${p.score ?? '-'} (${esc(p.risk || '')})</title>
+        <title>${new Date(p.t * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'})} — score ${p.score ?? '-'} (${esc(p.risk || '')})</title>
       </circle>`).join('')}
       ${pts.map((p, i) => `<text x="${xs(i)}" y="${H - 2}" text-anchor="middle" font-size="8" fill="var(--fg-muted)">${p.score ?? '-'}</text>`).join('')}
     </svg>`;
@@ -2669,129 +2716,226 @@ function renderTargetTrend() {
 
 /* ---------------- new scan ---------------- */
 let STYPE = 'vulnscan';
+/* Scan-parity 2026-10-25: New Scan 5-step wizard (artifact ScanView shape).
+   Steps: 1 Scan Type · 2 Target · 3 Profile · 4 Advanced · 5 Review & Launch.
+   Only visited steps are clickable (furthest-step gating); Back/Continue
+   footer; Review rebuilds on entry; Run Scan + all submit logic unchanged
+   (same element IDs, same runScan/runBulk code paths). */
+function ptGoStep(n) {
+  if (!Number.isFinite(n)) return;
+  if (n < 1 || n > 5) return;
+  if (n > (window._ptFurthest || 1)) return;
+  window._ptStep = n;
+  for (let i = 1; i <= 5; i++) {
+    const el = document.getElementById('ptStep' + i);
+    if (el) el.style.display = i === n ? 'block' : 'none';
+    const pill = document.getElementById('ptPill' + i);
+    if (pill) { pill.classList.toggle('on', i === n); pill.disabled = i > (window._ptFurthest || 1); }
+  }
+  const back = document.getElementById('ptBack');
+  if (back) back.disabled = n === 1;
+  const cont = document.getElementById('ptCont');
+  if (cont) cont.style.display = n === 5 ? 'none' : '';
+  if (n === 5) ptBuildReview();
+}
+function ptNextStep() {
+  const cur = window._ptStep || 1;
+  if (cur < 5) {
+    window._ptFurthest = Math.max(window._ptFurthest || 1, cur + 1);
+    ptGoStep(cur + 1);
+  }
+}
+function ptBuildReview() {
+  const box = document.getElementById('ptReview'); if (!box) return;
+  const t = (document.getElementById('target')?.value || '').trim();
+  const bulk = STYPE === 'vulnscan' && !!document.getElementById('bulkToggle')?.checked;
+  const bulkN = bulk ? (document.getElementById('bulkTargets')?.value || '').split('\n').map(x => x.trim()).filter(Boolean).length : 0;
+  const method = STYPE === 'vulnscan' ? (document.querySelector('input[name=method]:checked')?.value || 'passive') : '';
+  const profSel = document.getElementById('profile');
+  const profKey = profSel ? profSel.value : '';
+  const profTxt = profSel && profSel.selectedIndex >= 0 ? profSel.options[profSel.selectedIndex].text : profKey;
+  const cred = document.getElementById('secretSel');
+  const credTxt = cred && cred.selectedIndex > 0 ? cred.options[cred.selectedIndex].text : '— none —';
+  const cred2 = document.getElementById('secretSel2');
+  const cred2Txt = cred2 && cred2.selectedIndex > 0 ? cred2.options[cred2.selectedIndex].text : '';
+  const headless = document.getElementById('opt-headless')?.checked ? 'Yes' : 'No';
+  let rows = `<div><b>Scan type:</b> ${esc(STYPE)}</div>`;
+  if (STYPE === 'vulnscan') rows += `<div><b>Method:</b> ${esc(method)}</div>`;
+  rows += `<div><b>Target:</b> ${bulk ? esc(bulkN + ' targets (bulk)') : (esc(t) || '—')}</div>`;
+  if (STYPE === 'vulnscan') rows += `<div><b>Profile:</b> ${esc(profTxt)} <span style="font-family:monospace">(${esc(profKey)})</span></div>`;
+  if (STYPE === 'hybrid') rows += `<div><b>Profile:</b> passive then active-deep (fixed)</div>`;
+  rows += `<div><b>Credential:</b> ${esc(credTxt)}</div>`;
+  if ((STYPE === 'vulnscan' || STYPE === 'hybrid') && cred2Txt) rows += `<div><b>BOLA account:</b> ${esc(cred2Txt)}</div>`;
+  if (STYPE === 'vulnscan' || STYPE === 'hybrid') rows += `<div><b>Headless:</b> ${headless}</div>`;
+  box.innerHTML = rows;
+  const isAct = (STYPE !== 'vulnscan' && STYPE !== 'passive') || (STYPE === 'vulnscan' && method === 'active');
+  const ab = document.getElementById('authbox');
+  if (ab) ab.style.display = isAct ? 'flex' : 'none';
+  const nn = document.getElementById('ptNoAuthNote');
+  if (nn) nn.style.display = isAct ? 'none' : 'block';
+}
+function ptScanErr(msg) {
+  const el = document.getElementById('scanFormErr');
+  if (el) el.textContent = msg;
+  showToast(msg, 'error');
+}
 function viewScan() {
   document.getElementById('main').innerHTML = head('New Scan', 'Choose the tool & method according to your authorization and target conditions') + `
     <div class="panel">
-      <label class="fl">Security Tool</label>
-      <div class="toolseg" id="toolseg">
-        <button data-t="vulnscan" class="on">🛡️ Vuln Scan</button>
-        <button data-t="ports">🔌 Port Scan</button>
-        <button data-t="subdomains">🌐 Subdomain Enum</button>
-        <button data-t="dirs">📁 Dir Discovery</button>
-        <button data-t="ssl">🔒 SSL Audit</button>
-        <button data-t="headers">📋 Header Audit</button>
-        <button data-t="passive">👁️ Passive Recon</button>
-        <button data-t="udp">📡 UDP Scan</button>
-        <button data-t="vhost">🏢 VHost Enum</button>
-        <button data-t="hybrid">⚡ Hybrid</button>
-        <button data-t="syn">🚀 SYN Scan</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+        <button class="btn" id="ptPill1" onclick="ptGoStep(1)">1 · Scan Type</button>
+        <button class="btn" id="ptPill2" onclick="ptGoStep(2)">2 · Target</button>
+        <button class="btn" id="ptPill3" onclick="ptGoStep(3)">3 · Profile</button>
+        <button class="btn" id="ptPill4" onclick="ptGoStep(4)">4 · Advanced</button>
+        <button class="btn" id="ptPill5" onclick="ptGoStep(5)">5 · Review & Launch</button>
       </div>
 
-      <label class="fl">Target Host / URL</label>
-      <input type="text" id="target" placeholder="https://target.company.co.id or 10.0.0.5" autofocus>
+      <div id="ptStep1">
+        <label class="fl">Security Tool</label>
+        <div class="toolseg" id="toolseg">
+          <button data-t="vulnscan" class="on">🛡️ Vuln Scan</button>
+          <button data-t="passive">👁️ Passive Recon</button>
+          <button data-t="ports">🔌 Port Scan</button>
+          <button data-t="subdomains">🌐 Subdomain Enum</button>
+          <button data-t="dirs">📁 Dir Discovery</button>
+          <button data-t="ssl">🔒 SSL Audit</button>
+          <button data-t="headers">📋 Header Audit</button>
+          <button data-t="udp">📡 UDP Scan</button>
+          <button data-t="vhost">🏢 VHost Enum</button>
+          <button data-t="hybrid">⚡ Hybrid</button>
+          <button data-t="syn">🚀 SYN Scan</button>
+        </div>
+        <div id="ptInfoPassive" class="section-note" style="display:none;margin-top:10px">Passive Reconnaissance uses non-intrusive public lookups only — no authorization required (the allowlist still applies).</div>
+        <div id="ptInfoHybrid" class="section-note" style="display:none;margin-top:10px">Hybrid runs a passive phase, then active-deep. Results are merged and deduped, with passive/active origin labels kept. Authorization applies.</div>
+      </div>
 
-      <div class="grid2">
-        <div>
+      <div id="ptStep2" style="display:none">
+        <label class="fl">Target Host / URL</label>
+        <input type="text" id="target" placeholder="https://target.company.co.id or 10.0.0.5" autofocus>
+        <div id="ptBulkRow">
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--fg-muted);margin:14px 0 10px;cursor:pointer">
+            <input type="checkbox" id="bulkToggle" style="width:auto;margin:0" onchange="toggleBulk()">
+            <b>Bulk scan</b> — multiple targets, queued automatically (max 20)
+          </label>
+          <textarea id="bulkTargets" rows="4" placeholder="https://app1.company.com&#10;https://app2.company.com" class="hidden"></textarea>
+        </div>
+        <div style="margin-top:12px">
           <label class="fl">Target credential (from vault, optional)</label>
           <select id="secretSel" class="w-full"><option value="">— none —</option></select>
         </div>
-        <div>
+      </div>
+
+      <div id="ptStep3" style="display:none">
+        <div id="vuln-opts">
+          <label class="fl">Scan Method</label>
+          <div class="seg">
+            <label>
+              <input type="radio" name="method" value="passive" checked>
+              <div class="t">Passive <span class="badge b-passive" style="margin-left:6px">SAFE</span></div>
+              <div class="d">Non-intrusive observation: headers, TLS verification, cookies, tech fingerprinting. Zero intrusive payloads.</div>
+            </label>
+            <label>
+              <input type="radio" name="method" value="active">
+              <div class="t">Active <span class="badge b-active" style="margin-left:6px">INTRUSIVE</span></div>
+              <div class="d">Full crawler + active probing: SQLi, XSS, SSTI, LFI, CMDi, CRLF, SSRF, JWT, exposed files, service APIs.</div>
+            </label>
+          </div>
+          <label class="fl">Profile</label>
+          <select id="profile" style="width:100%;margin-bottom:14px">
+            <option value="passive-quick">Passive · Quick — TLS & headers (~10 sec)</option>
+            <option value="passive-full" selected>Passive · Full — all passive checks + fingerprinting (~30 sec)</option>
+          </select>
+        </div>
+        <div id="ptProfNone" class="section-note" style="display:none">This tool has no profile selection</div>
+        <div id="ptProfHybrid" class="section-note" style="display:none">Hybrid runs a passive phase, then active-deep. No profile choice.</div>
+      </div>
+
+      <div id="ptStep4" style="display:none">
+        <div id="ptAdvSecond" style="margin-bottom:12px">
           <label class="fl">Second account credential (BOLA matrix, optional)</label>
           <select id="secretSel2" class="w-full"><option value="">— none —</option></select>
         </div>
-      </div>
-
-      <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--fg-muted);margin:14px 0 10px;cursor:pointer">
-        <input type="checkbox" id="bulkToggle" style="width:auto;margin:0" onchange="toggleBulk()">
-        <b>Bulk scan</b> — multiple targets, queued automatically (max 20)
-      </label>
-      <textarea id="bulkTargets" rows="4" placeholder="https://app1.company.com&#10;https://app2.company.com" class="hidden"></textarea>
-
-      <div id="vuln-opts">
-        <label class="fl">Scan Method</label>
-        <div class="seg">
-          <label>
-            <input type="radio" name="method" value="passive" checked>
-            <div class="t">Passive <span class="badge b-passive" style="margin-left:6px">SAFE</span></div>
-            <div class="d">Non-intrusive observation: headers, TLS verification, cookies, tech fingerprinting. Zero intrusive payloads.</div>
-          </label>
-          <label>
-            <input type="radio" name="method" value="active">
-            <div class="t">Active <span class="badge b-active" style="margin-left:6px">INTRUSIVE</span></div>
-            <div class="d">Full crawler + active probing: SQLi, XSS, SSTI, LFI, CMDi, CRLF, SSRF, JWT, exposed files, service APIs.</div>
-          </label>
-        </div>
-
-        <label class="fl">Profile</label>
-        <select id="profile" style="width:100%;margin-bottom:14px">
-          <option value="passive-quick">Passive · Quick — TLS & headers (~10 sec)</option>
-          <option value="passive-full" selected>Passive · Full — all passive checks + fingerprinting (~30 sec)</option>
-        </select>
-
-        <details style="margin-bottom:14px">
-          <summary style="cursor:pointer;font-size:13px;color:var(--accent);font-weight:600">⚙️ Advanced options — authenticated scan & crawl limits</summary>
-          <div class="grid2 mt-14">
-            <div><label class="fl">Session cookie (not stored)</label><input type="text" id="opt-cookie" placeholder="session=abc; token=xyz"></div>
-            <div>
-              <label style="display:flex;gap:8px;align-items:center;font-size:var(--fs-13);color:var(--fg-muted);margin:8px 0;cursor:pointer">
-                <input type="checkbox" id="opt-headless" style="width:auto;margin:0"> Headless rendering for SPA discovery (requires Playwright)
-              </label>
-              <label class="fl">Extra headers (JSON, not stored)</label>
-              <input type="text" id="opt-headers" placeholder='{"Authorization":"Bearer ..."}'>
+        <div id="ptAdvVuln">
+          <details style="margin-bottom:14px">
+            <summary style="cursor:pointer;font-size:13px;color:var(--accent);font-weight:600">⚙️ Advanced options — authenticated scan & crawl limits</summary>
+            <div class="grid2 mt-14">
+              <div><label class="fl">Session cookie (not stored)</label><input type="text" id="opt-cookie" placeholder="session=abc; token=xyz"></div>
+              <div>
+                <label class="fl">Extra headers (JSON, not stored)</label>
+                <input type="text" id="opt-headers" placeholder='{"Authorization":"Bearer ..."}'>
+              </div>
+              <div><label class="fl">Timeout per request (sec)</label><input type="text" id="opt-timeout" placeholder="6"></div>
+              <div><label class="fl">Max crawl pages</label><input type="text" id="opt-pages" placeholder="30"></div>
+              <div style="grid-column:1/-1"><label class="fl">Proxy URL (optional)</label><input type="text" id="opt-proxy" placeholder="http://user:pass@proxy:8080"></div>
             </div>
-            <div><label class="fl">Timeout per request (sec)</label><input type="text" id="opt-timeout" placeholder="6"></div>
-            <div><label class="fl">Max crawl pages</label><input type="text" id="opt-pages" placeholder="30"></div>
-            <div style="grid-column:1/-1"><label class="fl">Proxy URL (optional)</label><input type="text" id="opt-proxy" placeholder="http://user:pass@proxy:8080"></div>
+          </details>
+        </div>
+        <div id="ptAdvHeadless" style="margin-bottom:12px">
+          <label style="display:flex;gap:8px;align-items:center;font-size:var(--fs-13);color:var(--fg-muted);margin:8px 0;cursor:pointer">
+            <input type="checkbox" id="opt-headless" style="width:auto;margin:0"> Headless rendering for SPA discovery (requires Playwright)
+          </label>
+        </div>
+        <div id="tool-opts">
+          <div id="tool-ports" style="display:none">
+            <label class="fl">Ports (optional, e.g. 22,80,443,8000-8100 — empty = common ports)</label>
+            <input type="text" id="ports" placeholder="empty = common ports">
           </div>
-        </details>
+          <div id="tool-subs" style="display:none">
+            <label class="fl">Subdomain wordlist (one per line, optional)</label>
+            <textarea id="subs" rows="4" placeholder="empty = built-in wordlist"></textarea>
+          </div>
+          <div id="tool-dirs" style="display:none">
+            <label class="fl">Path wordlist (one per line, optional)</label>
+            <textarea id="words" rows="4" placeholder="empty = built-in wordlist"></textarea>
+          </div>
+        </div>
+        <div id="ptAdvNone" class="section-note" style="display:none">No advanced options for this tool.</div>
       </div>
 
-      <div id="tool-opts" class="hidden">
-        <div id="tool-ports">
-          <label class="fl">Ports (optional, e.g. 22,80,443,8000-8100 — empty = common ports)</label>
-          <input type="text" id="ports" placeholder="empty = common ports">
+      <div id="ptStep5" style="display:none">
+        <h3 style="margin:0 0 10px">Review & Launch</h3>
+        <div id="ptReview" style="font-size:13px;line-height:2"></div>
+        <div class="authbox hidden" id="authbox">
+          <input type="checkbox" id="authorized" style="margin-top:3px;cursor:pointer">
+          <div>
+            <b>Authorization Declaration Required:</b> I declare that I have explicit written authorization to perform active/intrusive security tests against this target. Intrusive scans without this confirmation will be rejected by the server.
+          </div>
         </div>
-        <div id="tool-subs" class="hidden">
-          <label class="fl">Subdomain wordlist (one per line, optional)</label>
-          <textarea id="subs" rows="4" placeholder="empty = built-in wordlist"></textarea>
-        </div>
-        <div id="tool-dirs" class="hidden">
-          <label class="fl">Path wordlist (one per line, optional)</label>
-          <textarea id="words" rows="4" placeholder="empty = built-in wordlist"></textarea>
-        </div>
+        <div id="ptNoAuthNote" class="section-note" style="display:none">non-intrusive — no authorization statement is required.</div>
+        <div id="scanFormErr" style="color:var(--crit);font-size:13px;margin:10px 0;min-height:18px"></div>
+        <button class="btn primary" id="run" style="padding:11px 28px;font-size:14px">🚀 Run Scan</button>
+        <div id="progress"></div>
       </div>
 
-      <div class="authbox hidden" id="authbox">
-        <input type="checkbox" id="authorized" style="margin-top:3px;cursor:pointer">
-        <div>
-          <b>Authorization Declaration Required:</b> I declare that I have explicit written authorization to perform active/intrusive security tests against this target. Intrusive scans without this confirmation will be rejected by the server.
-        </div>
+      <div style="display:flex;gap:10px;margin-top:16px">
+        <button class="btn" id="ptBack" onclick="ptGoStep(window._ptStep - 1)" disabled>← Back</button>
+        <button class="btn primary" id="ptCont" onclick="ptNextStep()">Continue →</button>
       </div>
-
-      <button class="btn primary" id="run" style="padding:11px 28px;font-size:14px">
-        🚀 Run Scan
-      </button>
-      <div id="progress"></div>
     </div>
     <div id="reswrap"></div>`;
 
   STYPE = 'vulnscan';
-  const syncAuth = () => {
-    const isAct = (STYPE !== 'vulnscan' && STYPE !== 'passive') || (STYPE === 'vulnscan' && document.querySelector('input[name=method]:checked')?.value === 'active');
-    document.getElementById('authbox').style.display = isAct ? 'flex' : 'none';
-  };
-
   fillSecrets();
   document.querySelectorAll('#toolseg button').forEach(b => b.onclick = () => {
     document.querySelectorAll('#toolseg button').forEach(x => x.classList.remove('on'));
     b.classList.add('on');
     STYPE = b.dataset.t;
-    document.getElementById('vuln-opts').style.display = STYPE === 'vulnscan' ? 'block' : 'none';
-    document.getElementById('tool-opts').style.display = STYPE === 'vulnscan' ? 'none' : 'block';
-    document.getElementById('tool-ports').style.display = STYPE === 'ports' ? 'block' : 'none';
-    document.getElementById('tool-subs').style.display = STYPE === 'subdomains' ? 'block' : 'none';
-    document.getElementById('tool-dirs').style.display = STYPE === 'dirs' ? 'block' : 'none';
-    syncAuth();
+    const isVuln = STYPE === 'vulnscan';
+    const isHybrid = STYPE === 'hybrid';
+    const disp = v => v ? 'block' : 'none';
+    document.getElementById('ptBulkRow').style.display = disp(isVuln);
+    document.getElementById('ptInfoPassive').style.display = disp(STYPE === 'passive');
+    document.getElementById('ptInfoHybrid').style.display = disp(isHybrid);
+    document.getElementById('vuln-opts').style.display = disp(isVuln);
+    document.getElementById('ptProfNone').style.display = disp(!isVuln && !isHybrid);
+    document.getElementById('ptProfHybrid').style.display = disp(isHybrid);
+    document.getElementById('ptAdvSecond').style.display = disp(isVuln || isHybrid);
+    document.getElementById('ptAdvVuln').style.display = disp(isVuln);
+    document.getElementById('ptAdvHeadless').style.display = disp(isVuln || isHybrid);
+    document.getElementById('tool-ports').style.display = disp(STYPE === 'ports' || STYPE === 'udp' || STYPE === 'syn');
+    document.getElementById('tool-subs').style.display = disp(STYPE === 'subdomains');
+    document.getElementById('tool-dirs').style.display = disp(STYPE === 'dirs');
+    document.getElementById('ptAdvNone').style.display = disp(STYPE === 'ssl' || STYPE === 'headers' || STYPE === 'vhost');
   });
 
   document.querySelectorAll('input[name=method]').forEach(r => r.onchange = () => {
@@ -2806,10 +2950,18 @@ function viewScan() {
         <option value="active-deep" selected>Active · Deep — + injection suite, SSRF, IDOR, NoSQL, ports (~3-5 min)</option>
         <option value="enterprise-full">Enterprise · Full — all checks + default credentials, rate-limit, takeover (~5-8 min)</option>`;
     }
-    syncAuth();
   });
 
   document.getElementById('run').onclick = runScan;
+  window._ptStep = 1;
+  window._ptFurthest = 1;
+  ptGoStep(1);
+  if (window._ptScanTool) {
+    const tool = window._ptScanTool;
+    window._ptScanTool = null;
+    const btn = document.querySelector('#toolseg button[data-t="' + tool + '"]');
+    if (btn) btn.onclick();
+  }
 }
 
 async function runScan() {
@@ -2818,7 +2970,7 @@ async function runScan() {
   const target = document.getElementById('target').value.trim();
   const prog = document.getElementById('progress');
 
-  if (!target) { showToast('Enter a target first', 'warning'); return; }
+  if (!target) { ptScanErr('Enter a target first.'); return; }
 
   const body = { type: STYPE, target };
   if (STYPE === 'vulnscan') {
@@ -2827,7 +2979,7 @@ async function runScan() {
     const hd = document.getElementById('opt-headers').value.trim();
     if (hd) {
       try { body.headers = JSON.parse(hd); }
-      catch(e) { showToast('Extra headers are not valid JSON', 'error'); return; }
+      catch(e) { ptScanErr('Extra headers are not valid JSON.'); return; }
     }
     const to = document.getElementById('opt-timeout').value.trim(); if (to) body.timeout = parseFloat(to);
     const pg = document.getElementById('opt-pages').value.trim(); if (pg) body.max_pages = parseInt(pg);
@@ -2838,7 +2990,7 @@ async function runScan() {
     const sid = document.getElementById('secretSel').value; if (sid) body.secret_id = parseInt(sid);
     const sid2 = document.getElementById('secretSel2').value; if (sid2) body.secret_id2 = parseInt(sid2);
     if (document.getElementById('opt-headless')?.checked) body.headless = true;
-  } else if (STYPE === 'ports') {
+  } else if (STYPE === 'ports' || STYPE === 'udp' || STYPE === 'syn') {
     body.ports = document.getElementById('ports').value.trim();
   } else if (STYPE === 'subdomains') {
     const s = document.getElementById('subs').value.trim(); if (s) body.subs = s.split(/\s+/);
@@ -2849,7 +3001,7 @@ async function runScan() {
   const needAuth = (STYPE !== 'vulnscan') || (STYPE === 'vulnscan' && !(body.profile || '').startsWith('passive'));
   if (needAuth) {
     if (!document.getElementById('authorized')?.checked) {
-      showToast('Check the authorization statement first for an active scan.', 'error');
+      ptScanErr('Tick the authorization statement first…');
       return;
     }
     body.authorized = true;
@@ -2935,9 +3087,13 @@ async function runScan() {
     };
 
     let seen = 0, delay = 700;
+    const _t0 = Date.now();
     while (true) {
       await new Promise(r => setTimeout(r, delay));
       const j = await $('/api/job/' + job_id);
+      if (Date.now() - _t0 >= 120000 && !document.getElementById('ptLongNote')) {
+        prog.insertAdjacentHTML('beforeend', '<div id="ptLongNote" style="font-size:12px;color:var(--fg-muted);margin-top:6px">This scan is taking longer than usual — it is still running.</div>');
+      }
       delay = (j.log.length > seen) ? 700 : Math.min(4000, Math.round(delay * 1.4));
       const logEl = document.getElementById('scanlog');
       if (logEl && j.log.length > seen) {
@@ -2998,7 +3154,7 @@ async function runBulk() {
   const prog = document.getElementById('progress');
   const list = document.getElementById('bulkTargets').value.split(/\n+/).map(s => s.trim()).filter(Boolean).slice(0, 20);
 
-  if (!list.length) { showToast('Fill in the bulk target list first', 'warning'); return; }
+  if (!list.length) { ptScanErr('Fill in the bulk target list first'); return; }
 
   const profile = document.getElementById('profile').value;
   const body0 = { type: 'vulnscan', profile };
@@ -3006,7 +3162,7 @@ async function runBulk() {
 
   if (!profile.startsWith('passive')) {
     if (!document.getElementById('authorized')?.checked) {
-      showToast('Check the authorization statement first for an active scan.', 'error');
+      ptScanErr('Tick the authorization statement first…');
       return;
     }
     body0.authorized = true;
@@ -3020,11 +3176,11 @@ async function runBulk() {
   for (const tg of list) {
     const row = document.createElement('div');
     row.style.cssText = 'padding:9px 0;border-bottom:1px solid var(--border);font-size:13px;display:flex;align-items:center;gap:8px';
-    row.innerHTML = '⏳ <b>' + esc(tg) + '</b> — queued…';
+    row.innerHTML = '⏳ <b>' + esc(tg) + '</b> — QUEUED';
     rows.appendChild(row);
 
     try {
-      row.innerHTML = '⚡ <b>' + esc(tg) + '</b> — scanning…';
+      row.innerHTML = '⚡ <b>' + esc(tg) + '</b> — RUNNING';
       const { job_id } = await $('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3039,12 +3195,12 @@ async function runBulk() {
           break;
         }
         if (j.status !== 'running') {
-          row.innerHTML = '⏹ <b>' + esc(tg) + '</b> — ' + j.status;
+          row.innerHTML = '⏹ <b>' + esc(tg) + '</b> — ' + (j.status === 'cancelled' ? 'STOPPED' : j.status === 'error' ? 'FAILED' : String(j.status).toUpperCase());
           break;
         }
       }
     } catch(e) {
-      row.innerHTML = '⚠️ <b>' + esc(tg) + '</b> — ' + esc(String(e));
+      row.innerHTML = '⚠️ <b>' + esc(tg) + '</b> — FAILED: ' + esc(String(e));
     }
   }
 
@@ -3083,6 +3239,13 @@ async function rescan(id, ev) {
   }
 }
 
+async function rescanFromDetail(id, ev) {
+  let s = HIST_CACHE.find(x => String(x.id) === String(id));
+  if (!s) { try { HIST_CACHE = await $('/api/scans'); s = HIST_CACHE.find(x => String(x.id) === String(id)); } catch(e) {} }
+  if (!s) { showToast('Scan not found in history', 'error'); return; }
+  rescan(s.id, ev);
+}
+
 function colorizeLog(lines) {
   const sev = { CRITICAL: '#F87171', HIGH: '#FB923C', MEDIUM: '#FBBF24', LOW: '#38BDF8', INFO: '#94A3B8' };
   return lines.map(l => {
@@ -3111,7 +3274,8 @@ function applyFFilter() {
   const q = (ff ? ff.value : '').toLowerCase();
   document.querySelectorAll('#fcards .finding').forEach(el => {
     const okSev = !window._fsev || el.dataset.sev === window._fsev;
-    el.style.display = (okSev && el.textContent.toLowerCase().includes(q)) ? '' : 'none';
+    const hay = (el.dataset.search || el.textContent.toLowerCase());
+    el.style.display = (okSev && hay.includes(q)) ? '' : 'none';
   });
 }
 
@@ -3123,6 +3287,91 @@ function renderToolResult(j, title) {
     </div>`;
 }
 
+/* Shared finding card (scan-parity 2026-10-25): artifact FindingCard shape.
+   Origin badge + meta Origin from f.origin (already in API data); T-tier /
+   OWNER badges parsed from the engine evidence prefix "[T<0-3> · owner=<app|
+   library|unknown>] " (prefix stripped from the displayed evidence); OPERATOR
+   BASELINE MATCH when status=suppressed; triage editor (assignee + due date,
+   dirty-gated Save) via /api/finding/update. */
+function ptTierBadges(f) {
+  const m = /^\[T([0-3]) · owner=(app|library|unknown)\] /.exec(f.evidence || '');
+  if (!m) return { badges: '', body: f.evidence || '' };
+  const tier = 'T' + m[1];
+  const tlabel = { T0: 'T0 · STRING', T1: 'T1 · CONFIG', T2: 'T2 · CODE', T3: 'T3 · DATAFLOW' }[tier];
+  const tcls = tier === 'T2' ? 'b-confirmed' : 'b-INFO';
+  const ocls = m[2] === 'library' ? 'b-MEDIUM' : 'b-INFO';
+  return {
+    badges: `<span class="badge ${tcls}">${tlabel}</span> <span class="badge ${ocls}">OWNER: ${m[2].toUpperCase()}</span> `,
+    body: (f.evidence || '').slice(m[0].length)
+  };
+}
+function ptOriginBadge(f) {
+  const o = (f.origin || '').toLowerCase();
+  if (o === 'passive') return `<span class="badge b-passive">ORIGIN: PASSIVE</span> `;
+  if (o === 'active') return `<span class="badge b-active">ORIGIN: ACTIVE</span> `;
+  if (o) return `<span class="badge b-candidate">ORIGIN: ${esc(o.toUpperCase())}</span> `;
+  return '';
+}
+function ptOriginText(f) {
+  const o = (f.origin || '').toLowerCase();
+  if (o === 'passive') return 'Passive';
+  if (o === 'active') return 'Active';
+  return f.origin || '—';
+}
+function ptTriageDirty(id, input) {
+  const tri = input.closest('.tri'); if (!tri) return;
+  const btn = tri.querySelector('button'); if (!btn) return;
+  btn.disabled = ![...tri.querySelectorAll('input[data-f]')].some(i => i.value !== (i.dataset.orig || ''));
+}
+async function ptTriageSave(id, btn) {
+  const tri = btn.closest('.tri'); if (!tri) return;
+  const changed = [...tri.querySelectorAll('input[data-f]')].filter(i => i.value !== (i.dataset.orig || ''));
+  for (const i of changed) {
+    await $('/api/finding/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ finding_id: id, field: i.dataset.f, value: i.value }) });
+    i.dataset.orig = i.value;
+  }
+  btn.disabled = true;
+  showToast('Triage saved.', 'ok');
+}
+function findingCardHtml(f, opts = {}) {
+  const tb = ptTierBadges(f);
+  const due = f.due_date || '';
+  let overdue = '';
+  if (due && f.status !== 'fixed' && f.status !== 'false_positive') {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const dd = new Date(due + 'T00:00:00');
+    if (!isNaN(dd) && dd < today) overdue = `<span style="color:var(--crit);font-size:12px">Overdue since ${new Date(due + 'T00:00:00').toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric'})}</span>`;
+  }
+  const search = [f.title, f.cwe, f.location].filter(Boolean).join(' ').toLowerCase();
+  return `
+    <div class="finding" data-sev="${f.severity}" data-search="${esc(search)}" style="border-left-color:${COLORS[f.severity]}">
+      <div class="row1">
+        <span class="badge b-${f.severity}">${f.severity}</span>
+        <span class="badge b-${f.confidence || 'probable'}">${(f.confidence || 'probable').toUpperCase()}</span>
+        ${ptOriginBadge(f)}
+        ${tb.badges}
+        ${f.status === 'suppressed' ? `<span class="badge b-candidate">OPERATOR BASELINE MATCH</span> ` : ''}
+        <b style="font-size:14px">${esc(f.title)}</b>
+        ${f.id ? `
+          <select class="sevsel" title="Status triage" onchange="setFStatus(${f.id}, this.value)">
+            ${['open', 'confirmed', 'false_positive', 'fixed', 'suppressed'].map(x => `<option value="${x}" ${x === (f.status || 'open') ? 'selected' : ''}>${x.replace('_', ' ')}</option>`).join('')}
+          </select>` : ''}
+        <span class="cvss" style="color:${f.cvss >= 9 ? 'var(--crit)' : f.cvss >= 7 ? 'var(--high)' : f.cvss >= 4 ? 'var(--med)' : 'var(--fg-muted)'}">
+          CVSS ${f.cvss}
+        </span>
+      </div>
+      <div class="d">${esc(f.description)}</div>
+      ${tb.body ? `<div class="ev"><span style="color:var(--accent)">Evidence: </span>${esc(tb.body)}</div>` : ''}
+      <div class="meta">${esc(f.cwe)} · ${esc(f.owasp)} · Origin: ${ptOriginText(f)}${f.location ? ` · Location: <b>${esc(f.location)}${f.param ? ' · param: ' + esc(f.param) : ''}</b>` : ''}${opts.showTarget && f.target ? ` · ${esc(f.target)}` : ''}</div>
+      <div class="fix"><b>Remediation:</b> ${esc(f.remediation)}</div>
+      ${f.id ? `<div class="tri" style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" class="m-0" data-f="assignee" value="${esc(f.assignee || '')}" data-orig="${esc(f.assignee || '')}" placeholder="Assignee (name/team…)" oninput="ptTriageDirty(${f.id}, this)" style="max-width:200px">
+        <input type="date" class="m-0" data-f="due_date" value="${esc(due)}" data-orig="${esc(due)}" oninput="ptTriageDirty(${f.id}, this)">
+        <button class="btn btn-compact" disabled onclick="ptTriageSave(${f.id}, this)">Save triage</button>
+        ${overdue}
+      </div>` : ''}
+    </div>`;
+}
 function renderFindings(j, title, btns = '') {
   const findings = j.findings || [];
   const sum = Object.entries(j.summary || {}).map(([k, v]) => `<span class="badge b-${k}">${k} · ${v}</span>`).join(' ');
@@ -3149,26 +3398,7 @@ function renderFindings(j, title, btns = '') {
       </table></div>
     </section>` : '';
 
-  const cards = [...findings].sort((a, b) => ORDER[a.severity] - ORDER[b.severity]).map(f => `
-    <div class="finding" data-sev="${f.severity}" style="border-left-color:${COLORS[f.severity]}">
-      <div class="row1">
-        <span class="badge b-${f.severity}">${f.severity}</span>
-        <span class="badge b-${f.confidence || 'probable'}">${(f.confidence || 'probable').toUpperCase()}</span>
-        <b style="font-size:14px">${esc(f.title)}</b>
-        ${f.id ? `
-          <select class="sevsel" title="Status triage" onchange="setFStatus(${f.id}, this.value)">
-            ${['open', 'confirmed', 'false_positive', 'fixed', 'suppressed'].map(x => `<option value="${x}" ${x === (f.status || 'open') ? 'selected' : ''}>${x.replace('_', ' ')}</option>`).join('')}
-          </select>` : ''}
-        <span class="cvss" style="color:${f.cvss >= 9 ? 'var(--crit)' : f.cvss >= 7 ? 'var(--high)' : f.cvss >= 4 ? 'var(--med)' : 'var(--fg-muted)'}">
-          CVSS ${f.cvss}
-        </span>
-      </div>
-      <div class="d">${esc(f.description)}</div>
-      ${f.evidence ? `<div class="ev">▸ ${esc(f.evidence)}</div>` : ''}
-      <div class="meta">${esc(f.cwe)} · ${esc(f.owasp)}${f.location ? ` · <b>${esc(f.location)}${f.param ? ' · param: ' + esc(f.param) : ''}</b>` : ''}</div>
-      <div class="fix"><b>Remediation:</b> ${esc(f.remediation)}</div>
-    </div>
-  `).join('');
+  const cards = [...findings].sort((a, b) => (ORDER[a.severity] - ORDER[b.severity]) || ((b.cvss || 0) - (a.cvss || 0))).map(f => findingCardHtml(f)).join('');
 
   const methodTag = j.method ? `<span class="badge b-${j.method}">${j.method.toUpperCase()}</span> ` : '';
   const hs = j.http_stats || {};
@@ -3274,7 +3504,7 @@ function renderFindings(j, title, btns = '') {
       <section class="detail-section">
         <h4>Findings</h4>
         <div style="margin:0 0 8px">
-          <input type="text" id="ffilter" placeholder="🔍 Quick filter findings (title / CWE / location)…" class="m-0">
+          <input type="text" id="ffilter" placeholder="Filter findings (title/CWE/location)…" class="m-0">
         </div>
         <div id="fchips">
           ${['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].filter(sx => (j.summary || {})[sx]).map(sx => `
@@ -9077,12 +9307,11 @@ function viewOsint() {
 }
 
 async function viewMobile() {
-  document.getElementById('main').innerHTML = head('Mobile Application Testing', 'Android & iOS app pentest — static APK/IPA analysis (OWASP MASVS)') + `
+  document.getElementById('main').innerHTML = head('Mobile Application Testing', 'Mobile app pentest — static APK & IPA analysis with full package unpacking (OWASP MASVS)') + `
     <div class="panel">
-      <h3>Mobile Application Package Analysis</h3>
+      <h3>APK / IPA Analysis — Package Unpacking</h3>
       <p style="font-size:13px;color:var(--fg-muted);margin:0 0 14px;line-height:1.6">
-        Upload an <b class="text-fg">.apk</b> (Android) or <b class="text-fg">.ipa</b> (iOS) file (max 60 MB) for comprehensive static analysis with full package contents inventory:
-        APK manifest & dangerous permissions, exported components, network security config, embedded secrets, API endpoints, signing audit.
+        Upload an <b class="text-fg">.apk</b> (Android) or <b class="text-fg">.ipa</b> (iOS) file (max 60 MB). The engine fully unpacks the package and inventories every file: DEX bytecode and class counts, library/SDK histogram, native libraries per ABI, iOS frameworks, assets, and largest files. Results include a Decompiled Code &amp; Resources view with per-class DEX smali-style disassembly, decoded AndroidManifest.xml, res/*.xml samples, and string resources for APK, plus decoded plists including Info.plist, provisioning, and Firebase for IPA (Mach-O disassembly is not included). Audits cover the manifest/Info.plist, dangerous permissions, exported components, debuggable flags, cleartext/ATS settings, provisioning/entitlements, Mach-O hardening including FairPlay, embedded secrets, API endpoints, and certificates. FairPlay-encrypted IPAs are honestly limited to plist and asset strings. The uploaded file is deleted after analysis — only its SHA-256 and results are stored. Analysis is static only: no Frida or runtime claims. Confirmed means verified facts; probable/candidate findings need manual verification.
       </p>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <input type="file" id="apkfile" accept=".apk,.ipa" style="flex:1;min-width:240px;margin:0">
@@ -9111,10 +9340,12 @@ async function loadMobileHist() {
           <tr>
             <td><a onclick="viewScanDetail('${s.id}')" class="link-action">${esc(s.target)}</a></td>
             <td>${badge(s.overall_risk)}</td>
-            <td class="text-muted">${new Date(s.started_at * 1000).toLocaleString('en-GB')}</td>
+            <td class="text-muted">${new Date(s.started_at * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'})}</td>
             <td>
               <a class="btn btn-compact"  href="/report/${s.id}?fmt=docx&lang=${curLang()}">DOCX</a>
               <a class="btn btn-compact"  href="/report/${s.id}?lang=${curLang()}" target="_blank">HTML</a>
+              <a class="btn btn-compact"  href="/api/scan/${s.id}/export?fmt=json">JSON</a>
+              <a class="btn btn-compact"  href="/api/scan/${s.id}/export?fmt=csv">CSV</a>
               <a class="btn danger btn-compact"  onclick="delScanMobile('${s.id}')">Delete</a>
             </td>
           </tr>
@@ -9131,6 +9362,16 @@ async function delScanMobile(id) {
   await $('/api/scan/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scan_id: id }) });
   showToast('Analysis deleted', 'info');
   loadMobileHist();
+}
+
+function ptMobileCancel() {
+  if (window._mobJobId) {
+    $('/api/job/' + window._mobJobId + '/cancel', { method: 'POST' }).catch(() => {});
+    const p = document.getElementById('mprogress');
+    if (p) p.insertAdjacentHTML('beforeend', '<div style="font-size:13px;color:var(--fg-muted)">Stopping…</div>');
+  } else if (window._mobAbort) {
+    window._mobAbort.abort();
+  }
 }
 
 async function runMobileAnalyze() {
@@ -9154,6 +9395,9 @@ async function runMobileAnalyze() {
       </div>
       <pre id="mlog" class="term" style="max-height:260px">uploading…</pre>
     </div>`;
+  window._mobJobId = null;
+  window._mobAbort = new AbortController();
+  prog.insertAdjacentHTML('beforeend', `<div style="margin-top:8px"><button class="btn danger btn-compact" id="mobCancelBtn" onclick="ptMobileCancel()">Cancel upload</button></div>`);
 
   try {
     const b64 = await new Promise((res, rej) => {
@@ -9166,8 +9410,12 @@ async function runMobileAnalyze() {
     const { job_id } = await $('/api/mobile/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: file.name, data_base64: b64 })
+      body: JSON.stringify({ filename: file.name, data_base64: b64 }),
+      signal: window._mobAbort.signal
     });
+    window._mobJobId = job_id;
+    const _mcb = document.getElementById('mobCancelBtn');
+    if (_mcb) _mcb.textContent = 'Stop analysis';
 
     let seen = 0;
     while (true) {
@@ -9180,19 +9428,32 @@ async function runMobileAnalyze() {
         seen = j.log.length;
       }
       if (j.status === 'done') {
+        window._mobJobId = null;
         prog.innerHTML = `<div style="font-size:13px;color:var(--ok)">✓ Analysis completed in ${j.elapsed} sec</div>`;
         renderMobileResult(j.result);
         loadMobileHist();
         break;
       }
       if (j.status === 'error') {
+        window._mobJobId = null;
         prog.innerHTML = `<div class="empty text-crit">Analysis failed: ${esc(j.result?.error || 'unknown')}</div>`;
+        break;
+      }
+      if (j.status === 'cancelled') {
+        window._mobJobId = null;
+        prog.innerHTML = `<div class="empty">Analysis cancelled — partial results are kept in history.</div>`;
+        loadMobileHist();
         break;
       }
     }
   } catch(e) {
-    prog.innerHTML = `<div class="empty text-crit">Error: ${esc(String(e))}</div>`;
+    if (window._mobAbort && window._mobAbort.signal.aborted) {
+      prog.innerHTML = `<div class="empty">Upload cancelled</div>`;
+    } else {
+      prog.innerHTML = `<div class="empty text-crit">Error: ${esc(String(e))}</div>`;
+    }
   }
+  window._mobJobId = null;
   btn.disabled = false;
 }
 
@@ -9349,7 +9610,8 @@ function renderMobileResult(j) {
   renderFindings(j, 'Analysis Results — ' + esc(j.target), `
     <a class="btn" href="/report/${j.scan_id}?fmt=docx&lang=${curLang()}">📄 DOCX</a>
     <a class="btn" href="/report/${j.scan_id}?lang=${curLang()}" target="_blank">🌐 HTML</a>
-    <a class="btn" href="/api/scan/${j.scan_id}/export?fmt=json">💾 JSON</a>`);
+    <a class="btn" href="/api/scan/${j.scan_id}/export?fmt=json">💾 JSON</a>
+    <a class="btn" href="/api/scan/${j.scan_id}/export?fmt=csv">📊 CSV</a>`);
 }
 
 /* ---------------- findings view ---------------- */
@@ -9367,11 +9629,11 @@ async function setFStatus(id, status) {
 }
 
 async function viewFindings() {
-  const sev = document.getElementById('fSev')?.value || '';
+  const preset = window._ptFindPreset || null;
+  window._ptFindPreset = null;
+  const sev = preset && preset.severity !== undefined ? preset.severity : (document.getElementById('fSev')?.value || '');
   const st = document.getElementById('fStatus')?.value || '';
-  const q = document.getElementById('fQ')?.value || '';
-  const rows = await $('/api/findings?limit=200&severity=' + encodeURIComponent(sev) + '&status=' + encodeURIComponent(st) + '&q=' + encodeURIComponent(q));
-
+  const q = preset && preset.q !== undefined ? preset.q : (document.getElementById('fQ')?.value || '');
   document.getElementById('main').innerHTML = head('Vulnerability Findings', 'Vulnerability management — triage, status, and remediation priority') + `
     <div class="panel">
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
@@ -9383,36 +9645,21 @@ async function viewFindings() {
           <option value="">All statuses</option>
           ${['open', 'confirmed', 'false_positive', 'fixed', 'suppressed'].map(s => `<option value="${s}" ${s === st ? 'selected' : ''}>${s.replace('_', ' ')}</option>`).join('')}
         </select>
-        <input id="fQ" placeholder="🔍 Search title / target / CWE…" value="${esc(q)}" style="flex:1;min-width:200px;margin:0" onkeydown="if(event.key==='Enter')viewFindings()">
+        <input id="fQ" placeholder="title / target / CWE…" value="${esc(q)}" style="flex:1;min-width:200px;margin:0" onkeydown="if(event.key==='Enter')viewFindings()">
+        <button class="btn primary" onclick="viewFindings()">Search</button>
       </div>
-      <div class="table-scroll flush"><table>
-        <tr><th>Severity</th><th>Finding</th><th>Target</th><th>Confidence</th><th>CVSS</th><th>Status</th><th>Assignee</th><th>Due Date</th></tr>
-        ${rows.map(f => {
-          const slaD = SLA_DAYS[f.severity] || 180;
-          const ageD = (Date.now() / 1000 - (f.started_at || Date.now() / 1000)) / 86400;
-          const od = (f.status || 'open') !== 'fixed' && (f.status || 'open') !== 'false_positive' && (ageD > slaD || (f.due_date && f.due_date < new Date().toISOString().slice(0, 10)));
-          return `
-            <tr>
-              <td>${badge(f.severity)}</td>
-              <td class="text-strong">
-                ${esc(f.title)}
-                <div class="small-note">${esc(f.cwe || '')} · ${esc(f.location || '')}</div>
-                ${od ? `<div style="font-size:11px;color:var(--crit);font-weight:700">⚠️ past SLA (${Math.floor(ageD)}d, SLA ${slaD}d)</div>` : ''}
-              </td>
-              <td class="text-muted">${esc(f.target)}</td>
-              <td><span class="badge b-${f.confidence || 'probable'}">${(f.confidence || 'probable').toUpperCase()}</span></td>
-              <td><b>${f.cvss}</b></td>
-              <td>
-                <select class="sevsel" onchange="setFStatus(${f.id}, this.value)">
-                  ${['open', 'confirmed', 'false_positive', 'fixed', 'suppressed'].map(x => `<option value="${x}" ${x === (f.status || 'open') ? 'selected' : ''}>${x.replace('_', ' ')}</option>`).join('')}
-                </select>
-              </td>
-              <td><input value="${esc(f.assignee || '')}" placeholder="—" style="width:110px;margin:0;padding:4px 8px;font-size:12px" onchange="setFMeta(${f.id}, 'assignee', this.value)"></td>
-              <td><input type="date" value="${esc(f.due_date || '')}" style="width:130px;margin:0;padding:4px 8px;font-size:12px" onchange="setFMeta(${f.id}, 'due_date', this.value)"></td>
-            </tr>`;
-        }).join('') || '<tr><td colspan=8 class="empty">No matching findings</td></tr>'}
-      </table></div>
+      <div id="fCardsWrap"><div class="empty">Loading findings…</div></div>
     </div>`;
+  try {
+    const rows = await $('/api/findings?limit=200&severity=' + encodeURIComponent(sev) + '&status=' + encodeURIComponent(st) + '&q=' + encodeURIComponent(q));
+    const wrap = document.getElementById('fCardsWrap');
+    if (wrap) wrap.innerHTML = rows.length
+      ? [...rows].sort((a, b) => (ORDER[a.severity] - ORDER[b.severity]) || ((b.cvss || 0) - (a.cvss || 0))).map(f => findingCardHtml(f, { showTarget: true })).join('')
+      : '<div class="empty">No matching findings</div>';
+  } catch(e) {
+    const wrap = document.getElementById('fCardsWrap');
+    if (wrap) wrap.innerHTML = '<div class="empty">Failed to load findings</div>';
+  }
 }
 
 const SLA_DAYS = { CRITICAL: 7, HIGH: 30, MEDIUM: 90, LOW: 180, INFO: 365 };
@@ -9429,30 +9676,53 @@ async function setFMeta(id, field, value) {
 
 /* ---------------- assets ---------------- */
 async function viewAssets() {
-  const rows = await $('/api/assets');
-  document.getElementById('main').innerHTML = head('Assets Management', 'Target inventory & risk posture per asset') + `
+  document.getElementById('main').innerHTML = head('Assets Management', 'Target inventory, criticality, owner & risk posture trend per asset') + '<div class="panel"><div class="empty">Loading assets…</div></div>';
+  let rows = [];
+  try { rows = await $('/api/assets'); } catch(e) {
+    document.getElementById('main').innerHTML = head('Assets Management', 'Target inventory, criticality, owner & risk posture trend per asset') + '<div class="panel"><div class="empty">Service unavailable <button class="btn btn-compact" onclick="viewAssets()">Retry</button></div></div>';
+    return;
+  }
+  let trend = {};
+  try { const ins = await $('/api/insights'); trend = ins.trend_by_target || {}; } catch(e) {}
+  document.getElementById('main').innerHTML = head('Assets Management', 'Target inventory, criticality, owner & risk posture trend per asset') + `
     <div class="panel">
-      <div class="table-scroll flush"><table>
-        <tr><th>Target</th><th>Latest Risk</th><th>Risk Score</th><th>Open Findings</th><th>Scans</th><th>Last Scan</th><th>Criticality</th><th>Owner</th><th></th></tr>
-        ${rows.map(a => `
-          <tr>
-            <td class="text-strong">${esc(a.target)}</td>
-            <td>${badge(a.latest_risk)}</td>
-            <td><span class="badge" style="background:${a.latest_score >= 70 ? 'var(--crit)' : a.latest_score >= 40 ? 'var(--med)' : 'var(--ok)'}">${a.latest_score ?? '-'}</span></td>
-            <td><b>${a.open_findings}</b></td>
-            <td>${a.scans}</td>
-            <td class="text-muted">${new Date(a.last_scan * 1000).toLocaleString('en-GB')}</td>
-            <td>
-              <select class="sevsel" onchange="saveAssetMeta('${esc(a.target)}', this)">
-                ${['critical', 'high', 'medium', 'low'].map(c => `<option value="${c}" ${c === (a.criticality || 'medium') ? 'selected' : ''}>${c}</option>`).join('')}
-              </select>
-            </td>
-            <td><input value="${esc(a.owner || '')}" placeholder="team/owner" style="width:110px;margin:0;padding:4px 8px;font-size:12px" onchange="saveAssetMeta('${esc(a.target)}', this)"></td>
-            <td><a class="btn btn-compact-lg"  onclick="viewScanDetail('${a.latest_scan_id}')">Detail →</a></td>
-          </tr>
-        `).join('') || '<tr><td colspan=9 class="empty">No assets yet</td></tr>'}
-      </table></div>
+      ${rows.map(a => {
+        const pts = (trend[a.target] || []).filter(p => p.score != null);
+        let spark = '';
+        if (pts.length >= 2) {
+          const xy = pts.map((p, i) => `${(i / (pts.length - 1) * 120).toFixed(1)},${(30 - (p.score / 100) * 30).toFixed(1)}`).join(' ');
+          spark = `<svg width="120" height="30" viewBox="0 0 120 30" style="flex:none"><polyline points="${xy}" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+        }
+        return `
+        <div class="asset-row" style="padding:12px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <span class="text-strong">${esc(a.target)}</span>
+            <span class="badge b-${(a.criticality || 'medium').toUpperCase()}">${(a.criticality || 'medium').toUpperCase()}</span>
+            ${badge(a.latest_risk)}
+            <span class="badge" style="background:${a.latest_score >= 70 ? 'var(--crit)' : a.latest_score >= 40 ? 'var(--med)' : 'var(--ok)'}">${a.latest_score ?? '-'}</span>
+            <span class="text-muted" style="font-size:12px">${a.open_findings} open · ${a.scans} scans · ${new Date(a.last_scan * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'})}</span>
+            ${spark}
+            <a class="btn btn-compact-lg" onclick="viewScanDetail('${a.latest_scan_id}')">Detail</a>
+            <a class="btn danger btn-compact" onclick="deleteAsset('${esc(a.target).replace(/'/g, "\\'")}', ${a.scans})">Delete</a>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+            <select class="sevsel" data-f="crit" data-orig="${esc(a.criticality || 'medium')}" oninput="ptAssetDirty(this)">
+              ${['critical', 'high', 'medium', 'low'].map(c => `<option value="${c}" ${c === (a.criticality || 'medium') ? 'selected' : ''}>${c}</option>`).join('')}
+            </select>
+            <input data-f="owner" value="${esc(a.owner || '')}" data-orig="${esc(a.owner || '')}" placeholder="Owner/responsible team" oninput="ptAssetDirty(this)" style="max-width:220px;margin:0">
+            <button class="btn btn-compact" disabled onclick="saveAssetMeta('${esc(a.target).replace(/'/g, "\\'")}', this)">Save</button>
+          </div>
+        </div>`;
+      }).join('') || '<div class="empty">No assets yet</div>'}
     </div>`;
+}
+
+function ptAssetDirty(el) {
+  const row = el.closest('.asset-row'); if (!row) return;
+  const btn = row.querySelector('button'); if (!btn) return;
+  const crit = row.querySelector('select[data-f=crit]');
+  const owner = row.querySelector('input[data-f=owner]');
+  btn.disabled = !((crit && crit.value !== (crit.dataset.orig || '')) || (owner && owner.value !== (owner.dataset.orig || '')));
 }
 
 async function deleteAsset(host, scans) {
@@ -9464,24 +9734,27 @@ async function deleteAsset(host, scans) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ host })
     });
-    showToast(tr('Asset deleted') + ' (' + r.scans + ' ' + tr('scans') + ', ' + r.findings + ' ' + tr('findings') + ')', 'success');
+    showToast(host + ' deleted: ' + r.scans + ' scans, ' + r.findings + ' findings and ' + (r.suppressions ?? 0) + ' suppressions removed.', 'success');
     viewAssets();
   } catch(e) {
     showToast(tr('Failed to delete asset:') + ' ' + e, 'error');
   }
 }
 
-async function saveAssetMeta(host, el) {
-  const tr = el.closest('tr');
-  const crit = tr.querySelector('select').value;
-  const owner = tr.querySelector('input').value;
+async function saveAssetMeta(host, btn) {
+  const row = btn.closest('.asset-row');
+  const crit = row.querySelector('select[data-f=crit]').value;
+  const owner = row.querySelector('input[data-f=owner]').value;
   try {
     await $('/api/assets/meta', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ host, criticality: crit, owner })
     });
-    showToast('Asset updated', 'success');
+    const sel = row.querySelector('select[data-f=crit]'); sel.dataset.orig = sel.value;
+    const inp = row.querySelector('input[data-f=owner]'); inp.dataset.orig = inp.value;
+    btn.disabled = true;
+    showToast('Saved.', 'success');
   } catch(e) {
     showToast(tr('Failed to save asset:') + ' ' + e, 'error');
   }
@@ -9489,11 +9762,17 @@ async function saveAssetMeta(host, el) {
 
 /* ---------------- schedules ---------------- */
 async function viewSchedules() {
-  const rows = await $('/api/schedules');
-  document.getElementById('main').innerHTML = head('Scan Schedules', 'Automatic periodic scans — run by the server on an interval') + `
+  document.getElementById('main').innerHTML = head('Scan Schedules', 'Automatic recurring scans — run by the server on the configured interval') + '<div class="panel"><div class="empty">Loading schedules…</div></div>';
+  let rows = [];
+  try { rows = await $('/api/schedules'); } catch(e) {
+    document.getElementById('main').innerHTML = head('Scan Schedules', 'Automatic recurring scans — run by the server on the configured interval') + '<div class="panel"><div class="empty">Schedule unavailable while the service is unreachable. <button class="btn btn-compact" onclick="viewSchedules()">Retry</button></div></div>';
+    return;
+  }
+  document.getElementById('main').innerHTML = head('Scan Schedules', 'Automatic recurring scans — run by the server on the configured interval') + `
     <div class="panel">
+      <h3>Create Schedule</h3>
       <div class="grid2">
-        <div><label class="fl">Target</label><input id="schTarget" placeholder="https://target.example.com"></div>
+        <div><label class="fl">Target</label><input id="schTarget" placeholder="https://target.example.com" oninput="ptSchBtn()"></div>
         <div>
           <label class="fl">Profile</label>
           <select id="schProfile" style="width:100%;margin-top:6px">
@@ -9506,31 +9785,38 @@ async function viewSchedules() {
         <div><label class="fl">Interval (hours)</label><input id="schInterval" type="number" value="24" min="1" max="720"></div>
         <div style="display:flex;align-items:flex-end">
           <label style="display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer">
-            <input type="checkbox" id="schAuth" style="width:auto;margin:0"> I am authorized to test this target periodically
+            <input type="checkbox" id="schAuth" style="width:auto;margin:0" onchange="ptSchBtn()"> I am authorized to test this target on a recurring basis
           </label>
         </div>
       </div>
-      <button class="btn primary mt-14" onclick="createSchedule()">
+      <button class="btn primary mt-14" id="schCreateBtn" onclick="createSchedule()" disabled>
         + Create Schedule
       </button>
     </div>
 
     <div class="panel">
-      <h3>Active Schedules</h3>
-      <div class="table-scroll flush"><table>
-        <tr><th>Target</th><th>Profile</th><th>Interval</th><th>Next Run</th><th>Active</th><th></th></tr>
-        ${rows.map(s => `
-          <tr>
-            <td class="text-strong">${esc(s.target)}</td>
-            <td>${esc(s.profile)}</td>
-            <td>${s.interval_h} h</td>
-            <td class="text-muted">${new Date(s.next_run * 1000).toLocaleString('en-GB')}</td>
-            <td><input type="checkbox" ${s.enabled ? 'checked' : ''} onchange="togSchedule('${s.id}', this.checked)" style="width:auto;cursor:pointer"></td>
-            <td><a class="btn danger btn-compact"  onclick="delSchedule('${s.id}')">Delete</a></td>
-          </tr>
-        `).join('') || '<tr><td colspan=6 class="empty">No schedules yet</td></tr>'}
-      </table></div>
+      <h3>Saved Schedules</h3>
+      ${rows.map(s => `
+        <div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between">
+          <span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <span class="text-strong">${esc(s.target)}</span>
+            <span class="badge b-${s.profile && s.profile.startsWith('passive') ? 'passive' : 'active'}">${esc(s.profile)}</span>
+            <span class="text-muted" style="font-size:12px">every ${s.interval_h} h · next ${new Date(s.next_run * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'})}</span>
+          </span>
+          <span style="display:flex;gap:8px;align-items:center">
+            <label style="font-size:12px;display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" ${s.enabled ? 'checked' : ''} onchange="togSchedule('${s.id}', this.checked)" style="width:auto;cursor:pointer"> active</label>
+            <a class="btn danger btn-compact" onclick="delSchedule('${s.id}')">Delete</a>
+          </span>
+        </div>
+      `).join('') || '<div class="empty">No schedules yet</div>'}
     </div>`;
+}
+
+function ptSchBtn() {
+  const btn = document.getElementById('schCreateBtn'); if (!btn) return;
+  const t = document.getElementById('schTarget');
+  const a = document.getElementById('schAuth');
+  btn.disabled = window._schPending || !(t && t.value.trim()) || !(a && a.checked);
 }
 
 async function createSchedule() {
@@ -9541,17 +9827,22 @@ async function createSchedule() {
     authorized: document.getElementById('schAuth').checked
   };
   if (!body.target) { showToast('Enter a target first', 'warning'); return; }
+  window._schPending = true; ptSchBtn();
   try {
     await $('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     showToast('Schedule created', 'success');
+    document.getElementById('schTarget').value = '';
+    document.getElementById('schAuth').checked = false;
     viewSchedules();
   } catch(e) {
     showToast(tr('Failed to create schedule:') + ' ' + e, 'error');
+  } finally {
+    window._schPending = false; ptSchBtn();
   }
 }
 
 async function delSchedule(id) {
-  const ok = await confirmDialog('Delete Schedule', 'Delete this automated schedule?');
+  const ok = await confirmDialog('Delete Schedule', 'Delete this recurring scan schedule? Previously saved scans will not be deleted.');
   if (!ok) return;
   await $('/api/schedules/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ schedule_id: id }) });
   showToast('Schedule deleted', 'info');
@@ -9565,20 +9856,17 @@ async function togSchedule(id, on) {
 
 /* ---------------- audit log ---------------- */
 async function viewAudit() {
-  let rows = []; try { rows = await $('/api/audit'); } catch(e) {}
+  document.getElementById('main').innerHTML = head('Audit Logs', 'User activity trail (login, scans, triage, schedules)') + '<div class="panel"><div class="empty">Loading audit log…</div></div>';
+  let rows = []; let failed = false;
+  try { rows = await $('/api/audit'); } catch(e) { failed = true; }
   document.getElementById('main').innerHTML = head('Audit Logs', 'User activity trail (login, scans, triage, schedules)') + `
     <div class="panel">
-      <div class="table-scroll flush"><table>
-        <tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr>
-        ${rows.map(r => `
-          <tr>
-            <td class="text-muted">${new Date(r.ts * 1000).toLocaleString('en-GB')}</td>
-            <td class="text-strong">${esc(r.username)}</td>
-            <td><span class="badge b-candidate">${esc(r.action)}</span></td>
-            <td class="text-muted">${esc(r.detail || '')}</td>
-          </tr>
-        `).join('') || '<tr><td colspan=4 class="empty">Empty / admin only</td></tr>'}
-      </table></div>
+      ${failed ? '<div class="empty">Service unavailable <button class="btn btn-compact" onclick="viewAudit()">Retry</button></div>'
+        : rows.map(r => `
+          <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">
+            <span class="text-muted">${new Date(r.ts * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'})}</span> <b>${esc(r.username)}</b> <span class="badge b-candidate">${esc(r.action)}</span> <span class="text-muted">${esc(r.detail || '')}</span>
+          </div>
+        `).join('') || '<div class="empty">Empty</div>'}
     </div>`;
 }
 
@@ -9713,8 +10001,8 @@ async function viewUsers() {
           <tr>
             <td class="text-strong">${esc(t.name)}</td>
             <td>${esc(t.created_by || '')}</td>
-            <td class="text-muted">${new Date(t.created_at * 1000).toLocaleString('en-GB')}</td>
-            <td class="text-muted">${t.last_used ? new Date(t.last_used * 1000).toLocaleString('en-GB') : '—'}</td>
+            <td class="text-muted">${new Date(t.created_at * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'})}</td>
+            <td class="text-muted">${t.last_used ? new Date(t.last_used * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}) : '—'}</td>
             <td><a class="btn danger btn-mini"  onclick="revokeToken(${t.id})">Revoke</a></td>
           </tr>
         `).join('') || '<tr><td colspan=5 class="empty">No tokens yet</td></tr>'}
@@ -9736,7 +10024,7 @@ async function viewUsers() {
       </div>
       <div style="font-size:12px;color:var(--fg-muted);margin-top:10px">
         ${(settings.nvd_sync && settings.nvd_sync.last_sync_msg)
-          ? `Last sync: ${esc(settings.nvd_sync.last_sync_msg)}${settings.nvd_sync.last_sync_ts ? ' · ' + new Date(settings.nvd_sync.last_sync_ts * 1000).toLocaleString('en-GB') : ''}`
+          ? `Last sync: ${esc(settings.nvd_sync.last_sync_msg)}${settings.nvd_sync.last_sync_ts ? ' · ' + new Date(settings.nvd_sync.last_sync_ts * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}) : ''}`
           : 'No sync has been recorded yet.'}
         ${(settings.nvd_sync && settings.nvd_sync.state) ? ` · State: ${esc(settings.nvd_sync.state)}` : ''}
       </div>
@@ -9746,10 +10034,23 @@ async function viewUsers() {
     <div class="panel">
       <h3>Preferences</h3>
       <p class="section-note" style="line-height:1.7;margin:0 0 12px">
-        <b class="text-fg">Interface language</b> is controlled from the language selector in the top bar — it is intentionally not duplicated here.
-        Applies to the whole dashboard; findings and engine data stay in English.
+        <b class="text-fg">Interface language</b> — applies to the whole dashboard; findings and engine data stay in English.
       </p>
-      <button class="btn" onclick="document.getElementById('langsel').focus()">Go to language selector</button>
+      <label class="fl">Interface language</label>
+      <select id="langsel2" onchange="setLang(this.value)" style="width:100%;max-width:320px">
+        <option value="en">English</option>
+        <option value="id">Bahasa Indonesia</option>
+        <option value="es">Español</option>
+        <option value="fr">Français</option>
+        <option value="de">Deutsch</option>
+        <option value="pt">Português</option>
+        <option value="ru">Русский</option>
+        <option value="ja">日本語</option>
+        <option value="ko">한국어</option>
+        <option value="zh">中文</option>
+        <option value="ar">العربية</option>
+        <option value="hi">हिन्दी</option>
+      </select>
     </div>
 
     <div class="settings-group">Engine</div>
@@ -9784,6 +10085,8 @@ async function viewUsers() {
   }
   const _ls = document.getElementById('langsel');
   if (_ls) _ls.value = curLang();
+  const _ls2 = document.getElementById('langsel2');
+  if (_ls2) _ls2.value = curLang();
 }
 
 async function saveWebhook() {
@@ -9983,14 +10286,26 @@ async function delScan(id, target, ev) {
 
 let HIST_CACHE = [];
 async function viewHist() {
-  HIST_CACHE = await $('/api/scans');
+  document.getElementById('main').innerHTML = head('Scan History', '') + '<div class="panel"><div class="empty">Loading scan history…</div></div>';
+  try { HIST_CACHE = await $('/api/scans'); } catch(e) {
+    document.getElementById('main').innerHTML = head('Scan History', '') + '<div class="panel"><div class="empty">Service unavailable <button class="btn btn-compact" onclick="viewHist()">Retry</button></div></div>';
+    return;
+  }
   document.getElementById('main').innerHTML = head('Scan History', HIST_CACHE.length + ' ' + tr('scans stored in the database')) + `
     <div class="panel">
-      <div class="grid2" style="margin-bottom:12px">
-        <input type="text" id="hsearch" placeholder="🔍 Search target…" class="m-0">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <input type="text" id="hsearch" placeholder="Search targets…" class="m-0" style="flex:1;min-width:180px">
         <select id="hrisk" class="m-0">
-          <option value="">All risks</option>
+          <option value="">All risk levels</option>
           <option>CRITICAL</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option><option>CLEAN</option>
+        </select>
+        <select id="htype" class="m-0">
+          <option value="">All types</option>
+          ${['vulnscan', 'passive', 'osint', 'mobile', 'ports', 'subdomains', 'dirs', 'ssl', 'headers', 'udp', 'vhost', 'hybrid', 'syn'].map(t => `<option>${t}</option>`).join('')}
+        </select>
+        <select id="hprof" class="m-0">
+          <option value="">All profiles</option>
+          ${['passive-quick', 'passive-full', 'passive-recon', 'osint-deep', 'active-standard', 'active-deep', 'enterprise-full', 'apk-static', 'ipa-static'].map(p => `<option>${p}</option>`).join('')}
         </select>
       </div>
       <div id="htable"></div>
@@ -9999,39 +10314,70 @@ async function viewHist() {
   const draw = () => {
     const q = document.getElementById('hsearch').value.toLowerCase();
     const rk = document.getElementById('hrisk').value;
-    const rows = HIST_CACHE.filter(s => (!q || s.target.toLowerCase().includes(q)) && (!rk || s.overall_risk === rk)).map(s => `
-      <tr>
-        <td>
+    const ty = document.getElementById('htype').value;
+    const pf = document.getElementById('hprof').value;
+    const rows = HIST_CACHE.filter(s => (!q || s.target.toLowerCase().includes(q)) && (!rk || s.overall_risk === rk) && (!ty || s.scan_type === ty) && (!pf || s.profile === pf)).map(s => `
+      <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <a onclick="viewScanDetail('${s.id}')" class="link-action">${esc(s.target)}</a>
-          <div class="small-note">${esc(s.scan_type || 'vulnscan')}</div>
-        </td>
-        <td>${badge(s.overall_risk)}</td>
-        <td><span class="badge b-${s.profile && s.profile.startsWith('passive') ? 'passive' : 'active'}">${s.profile || 'deep'}</span></td>
-        <td class="text-muted">${new Date(s.started_at * 1000).toLocaleString('en-GB')}</td>
-        <td>
-          <a class="btn btn-compact"  href="/report/${s.id}?fmt=docx&lang=${curLang()}" title="Export DOCX">DOCX</a>
-          <a class="btn btn-compact"  href="/report/${s.id}?lang=${curLang()}" target="_blank" title="HTML">HTML</a>
-          ${s.scan_type === 'mobile' ? '' : `<a class="btn btn-compact"  onclick="rescan('${s.id}', event)">⚡ Rescan</a>`}
-          <a class="btn danger btn-compact"  onclick="delScan('${s.id}', '${esc(s.target).replace(/'/g, "\\'")}', event)">Delete</a>
-        </td>
-      </tr>
+          ${badge(s.overall_risk)}
+          <span class="badge b-${s.profile && s.profile.startsWith('passive') ? 'passive' : 'active'}">${s.profile || 'deep'}</span>
+          <span class="text-muted" style="font-size:12px">${new Date(s.started_at * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'})}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:4px">
+          <span class="text-muted" style="font-size:12px">${esc(s.scan_type || 'vulnscan')}</span>
+          <span style="display:flex;gap:6px;flex-wrap:wrap">
+            <a class="btn btn-compact"  href="/report/${s.id}?fmt=docx&lang=${curLang()}" title="Export DOCX">DOCX</a>
+            <a class="btn btn-compact"  href="/report/${s.id}?lang=${curLang()}" target="_blank" title="HTML">HTML</a>
+            <a class="btn btn-compact"  href="/api/scan/${s.id}/export?fmt=json" title="Export JSON">JSON</a>
+            <a class="btn btn-compact"  href="/api/scan/${s.id}/export?fmt=csv" title="Export CSV">CSV</a>
+            ${s.scan_type === 'mobile' ? '' : `<a class="btn btn-compact"  onclick="rescanFromDetail('${s.id}', event)">⚡ Rescan</a>`}
+            <a class="btn danger btn-compact"  onclick="delScan('${s.id}', '${esc(s.target).replace(/'/g, "\\'")}', event)">Delete</a>
+          </span>
+        </div>
+      </div>
     `).join('');
 
-    document.getElementById('htable').innerHTML = `
-      <div class="table-scroll flush"><table>
-        <tr><th>Target</th><th>Risk</th><th>Profile</th><th>Time</th><th>Actions</th></tr>
-        ${rows || '<tr><td colspan=5 class="empty">No matching scans</td></tr>'}
-      </table></div>`;
+    document.getElementById('htable').innerHTML = rows || '<div class="empty">No matching scans</div>';
   };
 
   document.getElementById('hsearch').oninput = draw;
   document.getElementById('hrisk').onchange = draw;
+  document.getElementById('htype').onchange = draw;
+  document.getElementById('hprof').onchange = draw;
   draw();
 }
 
 async function viewScanDetail(id) {
   const d = await $('/api/scan/' + id);
   document.getElementById('main').innerHTML = head('Scan Detail', esc(d.scan.target)) + '<div id="mmeta"></div><div id="reswrap"></div><div id="diffwrap"></div>';
+
+  /* Scan-parity 2026-10-25: artifact-style header panel (was an empty mmeta
+     div). Target 22px, risk/profile/type badges, started · duration · risk
+     score, severity + confidence counts, and the single action row (DOCX /
+     HTML / JSON / CSV / Rescan non-mobile / Diff / Delete). */
+  const _s = d.scan;
+  const _profBadge = `<span class="badge ${(_s.profile || '').startsWith('passive') ? 'b-passive' : 'b-active'}">${esc(_s.profile || 'deep')}</span>`;
+  const _sevCounts = Object.entries(_s.summary || {}).map(([k, v]) => `<span class="badge b-${k}">${k} × ${v}</span>`).join(' ');
+  const _confCounts = Object.entries(d.summary_by_confidence || {}).map(([k, v]) => `<span class="badge b-${String(k).toLowerCase()}">${String(k).toUpperCase()} × ${v}</span>`).join(' ');
+  document.getElementById('mmeta').innerHTML = `
+    <div class="panel">
+      <h3 style="font-size:22px;margin:0 0 8px">${esc(_s.target)}</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        ${_s.overall_risk ? badge(_s.overall_risk) : ''} ${_profBadge} <span class="badge b-active">${esc(_s.scan_type || '')}</span>
+        <span class="text-muted" style="font-size:13px">${_s.started_at ? new Date(_s.started_at * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}) : '—'} · ${d.duration_s != null ? d.duration_s + 's' : '—'} · risk score ${d.risk_score ?? '—'}/100</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${_sevCounts} ${_confCounts}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <a class="btn" href="/report/${id}?fmt=docx&lang=${curLang()}">📄 DOCX</a>
+        <a class="btn" href="/report/${id}?lang=${curLang()}" target="_blank">🌐 HTML</a>
+        <a class="btn" href="/api/scan/${id}/export?fmt=json">💾 JSON</a>
+        <a class="btn" href="/api/scan/${id}/export?fmt=csv">📊 CSV</a>
+        ${_s.scan_type !== 'mobile' ? `<a class="btn" onclick="rescanFromDetail('${id}', event)">↻ Rescan</a>` : ''}
+        <a class="btn" onclick="loadDiff('${id}')">🔍 Diff vs previous</a>
+        <a class="btn danger" onclick="delScan('${id}','${esc(_s.target).replace(/'/g, "\\'")}', event)">Delete</a>
+      </div>
+    </div>`;
 
   if (d.scan.scan_type === 'mobile') {
     if (d.tool_result) renderMobileMeta(d.tool_result);
@@ -10044,11 +10390,7 @@ async function viewScanDetail(id) {
       errors: [],
       duration_s: d.duration_s,
       profile: d.scan.profile
-    }, 'Detail — ' + esc(d.scan.target), `
-      <a class="btn" href="/report/${id}?fmt=docx&lang=${curLang()}">📄 DOCX</a>
-      <a class="btn" href="/report/${id}?lang=${curLang()}" target="_blank">🌐 HTML</a>
-      <a class="btn" href="/api/scan/${id}/export?fmt=json">💾 JSON</a>
-      <a class="btn danger" onclick="delScan('${id}','${esc(d.scan.target).replace(/'/g, "\\'")}', event)">Delete</a>`);
+    }, 'Detail — ' + esc(d.scan.target));
     return;
   }
 
@@ -10079,13 +10421,7 @@ async function viewScanDetail(id) {
     checks_detail: (d.engine || {}).checks_detail || [],
     http_stats: (d.engine || {}).http_stats || {},
     errors: (d.engine || {}).errors || []
-  }, `Detail — ${esc(d.scan.target)}`, `
-    <a class="btn" href="/report/${id}?fmt=docx&lang=${curLang()}">📄 DOCX</a>
-    <a class="btn" href="/report/${id}?lang=${curLang()}" target="_blank">🌐 HTML</a>
-    <a class="btn" href="/api/scan/${id}/export?fmt=json">💾 JSON</a>
-    <a class="btn" href="/api/scan/${id}/export?fmt=csv">📊 CSV</a>
-    <a class="btn" onclick="loadDiff('${id}')">🔍 Diff vs previous</a>
-    <a class="btn danger" onclick="delScan('${id}','${esc(d.scan.target).replace(/'/g, "\\'")}', event)">Delete</a>`);
+  }, `Detail — ${esc(d.scan.target)}`);
 }
 
 async function loadDiff(id) {
@@ -10136,12 +10472,11 @@ document.getElementById('nav-assets').onclick = () => show('assets');
 document.getElementById('nav-sched').onclick = () => show('sched');
 document.getElementById('nav-audit').onclick = () => show('audit');
 document.getElementById('nav-users').onclick = () => show('users');
-document.getElementById('nav-logout').onclick = async () => {
-  await fetch('/api/logout', { method: 'POST' });
-  location.href = '/login';
-};
+document.getElementById('nav-logout').onclick = () => ptLogout();
 
 async function ptLogout() {
+  const ok = await confirmDialog('Log Out', 'Sign out and invalidate this session on the server?');
+  if (!ok) return;
   await fetch('/api/logout', { method: 'POST' });
   location.href = '/login';
 }
@@ -10152,6 +10487,8 @@ async function ptLogout() {
     document.getElementById('uname').textContent = me.user;
     document.getElementById('urole').textContent = me.role.toUpperCase();
     document.getElementById('uav').textContent = me.user[0].toUpperCase();
+    const _fr = document.getElementById('footUname'); if (_fr) _fr.textContent = me.user;
+    const _fro = document.getElementById('footRole'); if (_fro) _fro.textContent = String(me.role || 'admin').toLowerCase();
   } catch(e) {}
   show('dash');
 })();
@@ -10237,7 +10574,7 @@ if (ptBellEl && ptBellDropEl) {
     try {
       const rows = await $('/api/audit');
       const items = (Array.isArray(rows) ? rows : []).slice(0, 10).map(r =>
-        `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><b>${esc(r.username || '—')}</b> <span style="color:var(--fg-muted)">${r.ts ? new Date(r.ts * 1000).toLocaleString('en-GB') : ''}</span><br>${esc(r.action || '')} <span style="color:var(--fg-muted)">${esc(r.detail || '')}</span></div>`).join('') || '<div class="empty">No recent activity</div>';
+        `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><b>${esc(r.username || '—')}</b> <span style="color:var(--fg-muted)">${r.ts ? new Date(r.ts * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'}) : ''}</span><br>${esc(r.action || '')} <span style="color:var(--fg-muted)">${esc(r.detail || '')}</span></div>`).join('') || '<div class="empty">No recent activity</div>';
       ptBellDropEl.innerHTML = '<div style="font-weight:700;margin-bottom:6px">Recent Activity</div>' + items + `<div style="margin-top:8px"><button class="btn" onclick="document.getElementById('ptBellDrop').style.display='none';show('audit')">View Audit Logs</button></div>`;
     } catch(e) { ptBellDropEl.innerHTML = '<div class="empty">Activity unavailable</div>'; }
   };
@@ -10431,18 +10768,18 @@ $('/api/me').then(me => {
 .pt-health-wave-label{font-size:var(--fs-11);color:var(--fg-muted);letter-spacing:.08em;margin-bottom:6px}
 .pt-gauge{position:relative;width:132px;height:132px;margin:6px 0 10px}
 .pt-gauge-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
-.pt-gauge-n{font-size:40px;font-weight:800;letter-spacing:-.02em;line-height:1}
+.pt-gauge-n{font-size:52px;font-weight:800;letter-spacing:-.02em;line-height:1}
 .pt-gauge-sub{font-size:var(--fs-11);color:var(--fg-muted);letter-spacing:.06em;margin-top:2px}
 .pt-posture-method{font-size:var(--fs-12);color:var(--fg-muted);line-height:1.55}
 .pt-kpi-card{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:20px;position:relative;overflow:hidden;box-shadow:var(--shadow-sm)}
 .pt-kpi-ic{position:absolute;right:16px;top:16px;font-size:var(--fs-16);opacity:.85}
-.pt-kpi-n{font-size:36px;font-weight:800;letter-spacing:-.03em;line-height:1.1}
+.pt-kpi-n{font-size:26px;font-weight:800;letter-spacing:-.03em;line-height:1.1}
 .pt-kpi-l{font-size:var(--fs-11);color:var(--fg-muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600;margin-top:6px}
 .pt-spark{display:block;margin-top:12px}
 .pt-spark-empty{margin-top:12px;color:var(--fg-muted)}
 .pt-spec-dot{width:10px;height:10px;border-radius:50%;flex:none}
 .pt-spec-name{width:75px;font-weight:600;color:var(--fg-muted);flex:none}
-.pt-spec-pct{font-size:20px;font-weight:800;letter-spacing:-.01em;width:64px;text-align:right}
+.pt-spec-pct{font-size:22px;font-weight:800;letter-spacing:-.01em;width:64px;text-align:right}
 .pt-spec-count{width:32px;text-align:right;color:var(--fg-muted)}
 @media (max-width:900px){
   #dashDeck{grid-template-columns:1fr}

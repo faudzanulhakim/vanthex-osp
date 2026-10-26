@@ -180,8 +180,11 @@ def test_severity_spectrum_has_percentages_and_trend_toggle():
 def test_version_display_sidebar_footer_and_session_chip():
     html = _html()
     assert 'id="sideVer"' in html
-    assert "VANTHEX V1.2.1, " in html
+    # Scan-parity 2026-10-25: footer now matches the artifact format
+    # "VANTHEX V1.2.1 · admin · admin" (was "VANTHEX V1.2.1, admin").
+    assert 'VANTHEX V1.2.1 · ' in html
     assert 'id="footUname"' in html
+    assert 'id="footRole"' in html
     assert 'id="sessChip"' in html
     assert "admin · V1.2.1" in html
     # Globe badge unchanged.
