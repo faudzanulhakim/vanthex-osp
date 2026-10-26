@@ -9,7 +9,11 @@ feature, CSP, database content, or engine code changes here.
 
 Scope (user-visible version strings ONLY):
 - app2.py API "version" field, Server header, startup print
-- templates/app.html globe badge (gl-ver)
+- templates/app.html globe badge (gl-ver) — RETIRED 2026-10-26:
+  classic removed per ADE's artifact-UI port order, app.html deleted;
+  the 1.2.1 label now lives in the artifact bundle (K16), verified at
+  integration, not by this suite. This suite no longer reads app.html
+  and never asserts classic content still exists.
 - report.py / docx_report.py VERSION (report footers)
 - globe_feeds.py User-Agent (product version identity)
 - DOCKER.md / INSTALL.md "**Version ...**" headers (they state the
@@ -43,7 +47,6 @@ def _read(rel):
 
 
 APP2 = _read("app2.py")
-HTML = _read(os.path.join("templates", "app.html"))
 LOGIN = _read(os.path.join("templates", "login.html"))
 REPORT = _read("report.py")
 DOCX = _read("docx_report.py")
@@ -72,7 +75,6 @@ def test_version_pins_1_2_1():
     assert '"version": "1.2.1"' in APP2
     assert 'server_version = "VANTHEX/1.2.1"' in APP2
     assert "VANTHEX Offensive Security Platform v1.2.1" in APP2
-    assert '<span class="gl-ver">VANTHEX 1.2.1</span>' in HTML
     assert 'VERSION = "1.2.1"' in REPORT
     assert 'VERSION = "1.2.1"' in DOCX
     assert "VANTHEX/1.2.1 (OSINT globe;" in FEEDS
@@ -84,9 +86,6 @@ def test_no_stale_user_visible_version():
     for line in APP2.split("\n"):
         if '"version":' in line or "server_version" in line \
                 or "Offensive Security Platform v1" in line:
-            assert "1.25.0" not in line, line.strip()[:120]
-    for line in HTML.split("\n"):
-        if "gl-ver" in line:
             assert "1.25.0" not in line, line.strip()[:120]
     for src in (REPORT, DOCX):
         for line in src.split("\n"):
@@ -128,5 +127,6 @@ def test_login_has_no_version_badge():
 
 
 def test_edited_python_parses():
-    for rel in ("app2.py", "report.py", "docx_report.py", "globe_feeds.py"):
+    for rel in ("app2.py", "actions.py", "report.py", "docx_report.py",
+                "globe_feeds.py"):
         py_compile.compile(os.path.join(ROOT, rel), doraise=True)

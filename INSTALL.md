@@ -85,8 +85,8 @@ Then open <http://localhost:5000> and sign in:
   first run, a strong random password is generated and printed once at
   startup — there is no default password)
 
-**Dashboard URLs** (after sign-in): `/` serves the classic dashboard,
-at parity with the chat artifact; `/classic` is an alias for it;
+**Dashboard URLs** (after sign-in): `/` serves the artifact UI
+(2026-10-26 artifact-UI port); `/classic` was removed and now 404s;
 `/webui` serves the legacy webui SPA.
 
 Notes on state created at first run, in the application directory:

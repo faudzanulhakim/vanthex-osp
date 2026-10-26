@@ -90,10 +90,10 @@ and its evidence is inspectable.
   exported components, cleartext, secrets patterns, network security
   config) and IPA analyzer
 - **One interface everywhere** — the dashboard served by the service
-  itself (native and Docker alike) is the classic dashboard, at parity
-  with the chat artifact: glass Command Deck, posture gauge, live
-  operations, command palette; `/classic` is an alias for it, and the
-  legacy webui SPA remains available at `/webui`
+  itself (native and Docker alike) is the artifact UI (2026-10-26
+  artifact-UI port, ADE order: `/` serves the artifact UI bundle;
+  `/classic` was removed and now 404s); the legacy webui SPA remains
+  available at `/webui`
 - **Platform** — hash-chained (SHA-256) audit log, encrypted secrets
   vault (Fernet) for scan credentials, scan scheduling, webhooks,
   role-based users, 12-language UI with full RTL support, dark/light

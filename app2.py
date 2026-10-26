@@ -20,6 +20,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -134,6 +135,56 @@ def webui_file(rel):
                               "application/octet-stream")
     _WEBUI_CACHE[rel] = (mt, data, ctype)
     return data, ctype
+
+
+ARTIFACT_DIR = os.path.join(HERE, "artifact-ui")
+_ARTIFACT_CACHE = {}
+
+
+def artifact_file(rel):
+    """(bytes, ctype) for a file inside artifact-ui/, or None.
+
+    Same shape as webui_file: only "name.ext" and
+    "assets/name.ext" — no deeper paths, no traversal. The served
+    index is the bundle entry; assets are the bundle's hashed files.
+    2026-10-26 artifact-UI port (ADE: / serves the artifact UI).
+    """
+    parts = rel.split("/")
+    if (not rel or ".." in rel or len(parts) > 2
+            or (len(parts) == 2 and parts[0] != "assets")):
+        return None
+    path = os.path.join(ARTIFACT_DIR, rel)
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return None
+    hit = _ARTIFACT_CACHE.get(rel)
+    if hit and hit[0] == mt:
+        return hit[1], hit[2]
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    ctype = _WEBUI_CTYPES.get(os.path.splitext(rel)[1].lower(),
+                              "application/octet-stream")
+    _ARTIFACT_CACHE[rel] = (mt, data, ctype)
+    return data, ctype
+
+
+def _artifact_cache_header(rel):
+    """Hashed bundle assets are content-addressed (immutable, 1 y);
+    any unhashed asset gets the existing 86400 pattern (K11). A
+    hashed name ends in a >=8-char segment (dot- or dash-separated)
+    containing at least one digit — the Vite/webpack hash shape
+    (e.g. index-a1b2c3d4.js, main.9f2c1a7b.css). Plain dash words
+    like logo-official.png (no digit) stay on the 86400 pattern."""
+    name = rel.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    m = re.search(r"[-.]([0-9A-Za-z_-]{8,})$", stem)
+    if m and any(ch.isdigit() for ch in m.group(1)):
+        return "public, max-age=31536000, immutable"
+    return "public, max-age=86400"
 
 
 _VENDOR_FILES = {"maplibre-gl.js", "maplibre-gl.css", "LICENSE.txt"}
@@ -431,16 +482,42 @@ class Handler(BaseHTTPRequestHandler):
             self._send(302, "", extra=[("Location", "/login")])
             return
         if path == "/":
-            self._send(200, load_template("app.html"))
-        elif path == "/classic":
-            self._send(200, load_template("app.html"))
+            # 2026-10-26 artifact-UI port (ADE 09:50 WIB): / serves
+            # the artifact UI bundle index. /classic is REMOVED
+            # (no branch below) and therefore 404s. The index is the
+            # version pointer, so it is always no-store (K11).
+            ui = artifact_file("index.html")
+            if not ui:
+                self._send(404, "not found", "text/plain")
+                return
+            self._send(200, ui[0], ui[1], [("Cache-Control", "no-store")])
         elif path == "/webui":
             if sess.get("role") == "admin" and ACTIONS_OK:
                 ui = webui_file("index.html")
                 if ui:
                     self._send(200, ui[0], ui[1], [("Cache-Control", "no-store")])
                     return
-            self._send(200, load_template("app.html"))
+            # Fallback when the webui gate fails or the file is
+            # missing: the default UI, which since 2026-10-26 is the
+            # artifact UI (classic was removed, so it can no longer
+            # be the fallback without crashing on a missing file).
+            ui = artifact_file("index.html")
+            if not ui:
+                self._send(404, "not found", "text/plain")
+                return
+            self._send(200, ui[0], ui[1], [("Cache-Control", "no-store")])
+        elif path.startswith("/artifact-assets/"):
+            # 2026-10-26 artifact-UI port: bundle assets, session-
+            # gated like /assets/, same no-'..' / max-2-segment
+            # shape as webui_file. CSP is the byte-identical _send
+            # value (no new hosts).
+            rel = path[len("/artifact-assets/"):]
+            asset = artifact_file(rel)
+            if not asset:
+                self._send(404, "not found", "text/plain")
+                return
+            self._send(200, asset[0], asset[1],
+                       [("Cache-Control", _artifact_cache_header(rel))])
         elif path.startswith("/assets/"):
             asset = webui_file("assets/" + path[len("/assets/"):])
             if not asset:

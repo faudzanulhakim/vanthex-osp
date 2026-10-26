@@ -2037,6 +2037,248 @@ def _a_delete_secret(args: dict, port: int) -> dict:
     return _service_error_result(res)
 
 
+# --- Globe / baseline / NVD-schedule actions (2026-10-26 artifact-UI port) --
+# Thin handlers over existing app2.py routes, same call_service pattern
+# as the 47 handlers above. No new service endpoint is created here.
+# getglobefingerprint deliberately has NO handler: it is a direct
+# NDJSON route (GET /api/osint/globe/fingerprint) that an /actions
+# JSON envelope cannot stream. getglobeticker is DERIVED (see below):
+# it has no dedicated service route, so it is computed from the
+# /api/osint/globe/markets payload (design hypothesis #1) and flagged
+# as derived/assumed in every response — the bundle call-site check at
+# integration time decides whether this derivation matches the client.
+
+
+def _globe_passthrough(res: dict) -> dict:
+    """Return a globe route's JSON payload verbatim, plus the honest
+    serviceDown/error flags the client uses for its empty states."""
+    if res["down"] or not is_record(res["json"]):
+        return {
+            "serviceDown": res["down"],
+            "error": res["error"] or "Service unreachable.",
+        }
+    out = dict(res["json"])
+    out["serviceDown"] = False
+    out["error"] = ""
+    return out
+
+
+def _globe_qs(params: dict) -> str:
+    return urllib.parse.urlencode(
+        {k: v for k, v in params.items() if v not in (None, "")})
+
+
+def _a_get_globe_status(args: dict, port: int) -> dict:
+    res = call_service(port, "GET", "/api/osint/globe/status")
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_cam(args: dict, port: int) -> dict:
+    # Cam media must reach the client base64-encoded (the platform
+    # client's base64 expectation); binary=True does exactly that.
+    qs = _globe_qs({"cid": _arg_str(args, "cid") or _arg_str(args, "id"),
+                    "kind": _arg_str(args, "kind", "img")})
+    res = call_service(
+        port, "GET", "/api/osint/globe/cam" + ("?" + qs if qs else ""),
+        binary=True)
+    if res["down"] or res["status"] >= 400:
+        return {"base64": "", "contentType": "",
+                "serviceDown": res["down"],
+                "error": res["error"] or "Cam preview unavailable."}
+    return {"base64": res["base64"], "contentType": res["contentType"],
+            "serviceDown": False, "error": ""}
+
+
+def _a_get_globe_layer(args: dict, port: int) -> dict:
+    layer_id = _arg_str(args, "layerId") or _arg_str(args, "id")
+    res = call_service(port, "GET",
+                       f"/api/osint/globe/layer/{_enc(layer_id)}")
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_entities(args: dict, port: int) -> dict:
+    qs = _globe_qs({"scan": _arg_str(args, "scanId") or _arg_str(args, "scan")})
+    res = call_service(
+        port, "GET", "/api/osint/globe/entities" + ("?" + qs if qs else ""))
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_search(args: dict, port: int) -> dict:
+    qs = _globe_qs({"q": _arg_str(args, "q") or _arg_str(args, "query")})
+    res = call_service(
+        port, "GET", "/api/osint/globe/search" + ("?" + qs if qs else ""))
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_route(args: dict, port: int) -> dict:
+    wps = args.get("wp") or args.get("waypoints") or ""
+    if isinstance(wps, list):
+        wps = ";".join(
+            f"{p[0]},{p[1]}" if isinstance(p, (list, tuple)) and len(p) >= 2
+            else str(p) for p in wps)
+    qs = _globe_qs({"profile": _arg_str(args, "profile", "driving"),
+                    "wp": str(wps)})
+    res = call_service(
+        port, "GET", "/api/osint/globe/route" + ("?" + qs if qs else ""))
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_github(args: dict, port: int) -> dict:
+    qs = _globe_qs({"u": _arg_str(args, "u") or _arg_str(args, "username")})
+    res = call_service(
+        port, "GET", "/api/osint/globe/github" + ("?" + qs if qs else ""))
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_launches(args: dict, port: int) -> dict:
+    res = call_service(port, "GET", "/api/osint/globe/launches")
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_news(args: dict, port: int) -> dict:
+    res = call_service(port, "GET", "/api/osint/globe/news")
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_markets(args: dict, port: int) -> dict:
+    res = call_service(port, "GET", "/api/osint/globe/markets")
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_cloudmeta(args: dict, port: int) -> dict:
+    res = call_service(port, "GET", "/api/osint/globe/cloudmeta")
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_windgrid(args: dict, port: int) -> dict:
+    qs = _globe_qs({"cycle": _arg_str(args, "cycle"),
+                    "fhour": str(args.get("fhour", ""))})
+    res = call_service(
+        port, "GET", "/api/osint/globe/windgrid" + ("?" + qs if qs else ""))
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_iss_telemetry(args: dict, port: int) -> dict:
+    res = call_service(port, "GET", "/api/osint/globe/iss_telemetry")
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_recon(args: dict, port: int) -> dict:
+    bbox = args.get("bbox") or ""
+    if isinstance(bbox, list):
+        bbox = ",".join(str(v) for v in bbox)
+    qs = _globe_qs({
+        "tool": _arg_str(args, "tool"),
+        "target": _arg_str(args, "target"),
+        "optin": "1" if args.get("optin") else "",
+        "keyword": _arg_str(args, "keyword"),
+        "bbox": str(bbox),
+    })
+    res = call_service(
+        port, "GET", "/api/osint/globe/recon" + ("?" + qs if qs else ""))
+    return _globe_passthrough(res)
+
+
+def _a_get_globe_ticker(args: dict, port: int) -> dict:
+    # DERIVED / ASSUMED (K6, design hypothesis #1): there is no
+    # /api/osint/globe/ticker route, and Stooq was dropped as a market
+    # source in v1.20.0, so no new route is invented. This handler
+    # derives the ticker from the /api/osint/globe/markets basket
+    # payload instead. Every response carries derived=True so the
+    # coordinator can verify it against the real bundle call site at
+    # integration time and replace it if the client expects more.
+    symbol = (_arg_str(args, "symbol") or _arg_str(args, "ticker")
+              or _arg_str(args, "id"))
+    res = call_service(port, "GET", "/api/osint/globe/markets")
+    if res["down"] or not is_record(res["json"]):
+        return {"symbol": symbol, "derived": True,
+                "derivedFrom": "/api/osint/globe/markets",
+                "derivedAssumed": True, "found": False,
+                "serviceDown": res["down"],
+                "error": res["error"] or "Service unreachable."}
+    rows = res["json"].get("rows")
+    if not isinstance(rows, list):
+        rows = []
+    match = None
+    if symbol:
+        want = symbol.strip().lower()
+        for row in rows:
+            rec = row if is_record(row) else {}
+            if str(rec.get("symbol", "")).lower() == want \
+                    or str(rec.get("id", "")).lower() == want:
+                match = rec
+                break
+    if match is None:
+        return {"symbol": symbol, "derived": True,
+                "derivedFrom": "/api/osint/globe/markets",
+                "derivedAssumed": True, "found": False,
+                "serviceDown": False, "error": ""}
+    return {"symbol": match.get("symbol", symbol),
+            "name": match.get("name", ""),
+            "value": match.get("value"),
+            "changePct": match.get("change_pct"),
+            "spark": match.get("spark", []),
+            "asOf": match.get("as_of", ""),
+            "source": match.get("source", ""),
+            "derived": True,
+            "derivedFrom": "/api/osint/globe/markets",
+            "derivedAssumed": True, "found": True,
+            "serviceDown": False, "error": ""}
+
+
+def _a_add_secret_baseline(args: dict, port: int) -> dict:
+    res = call_service(port, "POST", "/api/settings/baseline", {
+        "value": args.get("value"),
+        "kind": args.get("kind"),
+        "label": args.get("label"),
+        "reason": args.get("reason"),
+    })
+    if res["down"] or res["status"] >= 400 or not is_record(res["json"]):
+        return _service_error_result(res)
+    out = dict(res["json"])
+    out["serviceDown"] = False
+    out["error"] = ""
+    return out
+
+
+def _a_remove_secret_baseline(args: dict, port: int) -> dict:
+    res = call_service(port, "POST", "/api/settings/baseline/remove", {
+        "hash": args.get("hash"),
+    })
+    if res["down"] or res["status"] >= 400 or not is_record(res["json"]):
+        return _service_error_result(res)
+    out = dict(res["json"])
+    out["serviceDown"] = False
+    out["error"] = ""
+    return out
+
+
+def _a_save_nvd_schedule(args: dict, port: int) -> dict:
+    # K7 confirmed from the app2.py settings handler: it is a partial
+    # save keyed on nvd_sync_enabled + nvd_sync_interval_h (clamped
+    # 1..168 server-side). No new endpoint. Accepts both camelCase
+    # and snake_case arg spellings.
+    enabled = args.get("enabled")
+    if enabled is None:
+        enabled = args.get("nvdSyncEnabled")
+    if enabled is None:
+        enabled = args.get("nvd_sync_enabled")
+    interval = args.get("intervalH")
+    if interval is None:
+        interval = args.get("interval_h")
+    if interval is None:
+        interval = args.get("nvdSyncIntervalH")
+    if interval is None:
+        interval = args.get("nvd_sync_interval_h")
+    body: dict = {}
+    if enabled is not None:
+        body["nvd_sync_enabled"] = bool(enabled)
+    if interval is not None:
+        body["nvd_sync_interval_h"] = interval
+    res = call_service(port, "POST", "/api/settings", body)
+    return _service_error_result(res)
+
+
 # --- Dispatch -------------------------------------------------------------------
 
 _ACTIONS = {
@@ -2087,6 +2329,27 @@ _ACTIONS = {
     "getSecrets": _a_get_secrets,
     "createSecret": _a_create_secret,
     "deleteSecret": _a_delete_secret,
+    # 2026-10-26 artifact-UI port: 14 globe + ticker (derived) +
+    # 2 baseline + 1 NVD schedule. getglobefingerprint intentionally
+    # absent (direct NDJSON route, not an /actions handler).
+    "getGlobeStatus": _a_get_globe_status,
+    "getGlobeCam": _a_get_globe_cam,
+    "getGlobeLayer": _a_get_globe_layer,
+    "getGlobeEntities": _a_get_globe_entities,
+    "getGlobeSearch": _a_get_globe_search,
+    "getGlobeRoute": _a_get_globe_route,
+    "getGlobeGithub": _a_get_globe_github,
+    "getGlobeLaunches": _a_get_globe_launches,
+    "getGlobeNews": _a_get_globe_news,
+    "getGlobeMarkets": _a_get_globe_markets,
+    "getGlobeCloudmeta": _a_get_globe_cloudmeta,
+    "getGlobeWindgrid": _a_get_globe_windgrid,
+    "getGlobeIssTelemetry": _a_get_globe_iss_telemetry,
+    "getGlobeRecon": _a_get_globe_recon,
+    "getGlobeTicker": _a_get_globe_ticker,
+    "addSecretBaseline": _a_add_secret_baseline,
+    "removeSecretBaseline": _a_remove_secret_baseline,
+    "saveNvdSchedule": _a_save_nvd_schedule,
 }
 
 
@@ -2094,6 +2357,14 @@ def handle_action(name: str, args: dict, port: int) -> tuple[int, dict]:
     """Entry point for the client wire contract:
     POST {"action": name, "args": {...}} -> (status, envelope)."""
     handler = _ACTIONS.get(name)
+    if handler is None and isinstance(name, str):
+        # 2026-10-26 artifact-UI port: the platform normalizes action
+        # names to lowercase in list_actions, while actions.py keys are
+        # camelCase. The bundle's exact spelling is verified at
+        # integration time; accepting either casing here means a
+        # casing-only difference can never 404 a real action.
+        lowered = {k.lower(): v for k, v in _ACTIONS.items()}
+        handler = lowered.get(name.lower())
     if handler is None:
         return (404, {"error": "unknown action"})
     try:

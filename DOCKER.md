@@ -4,8 +4,8 @@
 [INSTALL.md](INSTALL.md). Engine, features, and scan behavior are
 identical in both installation methods; only the runtime differs.
 
-**Dashboard URLs** (after sign-in): `/` serves the classic dashboard,
-at parity with the chat artifact; `/classic` is an alias for it;
+**Dashboard URLs** (after sign-in): `/` serves the artifact UI
+(2026-10-26 artifact-UI port); `/classic` was removed and now 404s;
 `/webui` serves the legacy webui SPA.
 
 ---
