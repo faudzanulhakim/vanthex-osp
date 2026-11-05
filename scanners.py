@@ -275,7 +275,7 @@ def tcp_scan_detailed(host, ports=None, timeout=1.5, workers=100):
                         with ctx.wrap_socket(s, server_hostname=host):
                             return {"port": port, "state": "open",
                                     "service": _guess(port), "verified": True,
-                                    "banner": "TLS handshake sukses"}
+                                    "banner": "TLS handshake ok"}
                     except Exception:
                         return {"port": port, "state": "open",
                                 "service": _guess(port), "verified": False,
