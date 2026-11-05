@@ -97,7 +97,13 @@ EXPECT = {
     "GraphQL alias v1.8": "GraphQL alias amplification accepted",
     "OAuth ROPC v1.8": "OAuth password grant (ROPC) enabled",
     "upload bypass v1.8": "Upload validation bypass",
-}
+    # --- tambahan battery v1.3.x (ExploitKit confirm check NoSQL & XPath) ---
+    "NoSQL confirm v1.3": "NoSQL Injection",
+    "XPath confirm v1.3": "XPath Injection",
+    "JWT forgery v1.3": "JWT can be forged",
+    "Deser RCE v1.3": "Insecure Deserialization (RCE, confirmed)",
+    "SMTP header inject v1.3": "SMTP Header Injection (email field)",
+    }
 
 INJECTION_CLASSES = ("XSS", "SQL", "SSRF", "CRLF", "redirect", "LFI", "CMDi",
                      "SSTI", "XXE", "NoSQL", "Command Injection", "Traversal",
@@ -138,15 +144,16 @@ def test_battery_matrix():
         missing = [k for k, frag in EXPECT.items() if frag not in blob]
         assert not missing, f"KATEGORI LOLOS (MISS): {missing}"
         # Transparansi cakupan (v3.6): status per check harus tercatat lengkap.
-        # 59 = 54 sampai v1.7.0 + 4 check v1.8.0 (c_bfla_matrix,
-        # c_oauth_sso, c_dns_axfr, c_cloud_buckets; LDAP differential di
-        # dalam c_web_injection, GraphQL authz/depth di dalam
-        # c_graphql_deep, upload bypass di dalam c_upload_surface)
-        # + 1 check v1.10.0 (c_dependency_versions, WS2).
         # Angka eksplisit disengaja: check yang hilang diam-diam dari
-        # registry harus menggagalkan battery ini.
+        # registry harus menggagalkan battery ini. Dihitung dari
+        # PROFILES['enterprise-full'] yang semuanya resolve ke fungsi nyata
+        #  (95 = 66 baseline + c_nosql_confirm + c_xpath_confirm + c_jwt_forge
+        #  + c_deser_confirm + c_smtp_confirm + 5 v1.3.4 + 13 v1.4.0
+        #  + 6 v1.5.0 (oob-sweep, bundle-miner, entropy, authz-matrix,
+        #  openapi-stateful, custom-templates)). Selalu sinkron dgn
+        #  len(PROFILES['enterprise-full']).
         det = res.get("checks_detail") or []
-        assert len(det) == res["checks_total"] == 59, \
+        assert len(det) == res["checks_total"] == 115, \
             f"checks_detail {len(det)} != total {res['checks_total']}"
         # Kontrol v1.3 (Secrets Engine v2): pasangan kredensial AWS dari
         # riwayat .git terkonfirmasi paparannya; secret source-map dan
