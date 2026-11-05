@@ -293,8 +293,8 @@ def test_ws4_curated_ranges(name, ver, hit, miss):
 
 
 def test_profile_check_counts_after_ws2():
-    assert len(V.PROFILES["enterprise-full"]) == 59
-    assert len(V.PROFILES["active-deep"]) == 56
+    assert len(V.PROFILES["enterprise-full"]) == 115
+    assert len(V.PROFILES["active-deep"]) == 60
     assert "c_dependency_versions" in V.PROFILES["active-standard"]
 
 
