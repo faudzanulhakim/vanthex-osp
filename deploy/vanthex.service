@@ -1,21 +1,21 @@
 [Unit]
-Description=VANTHEX (self-built assessment engine)
+Description=VANTHEX - Offensive Security Platform (port 5000)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/hatch/workspace/pentest-toolkit-upgraded
+WorkingDirectory=/home/hatch/workspace/vanthex
 EnvironmentFile=/home/hatch/workspace/pentest-toolkit-service/env
-ExecStart=/home/hatch/workspace/pentest-toolkit-upgraded/.venv/bin/python app2.py 5000
+ExecStart=/home/hatch/workspace/vanthex/.venv/bin/python app2.py 5000
 Restart=always
 RestartSec=3
 # Hardening (kept compatible with the app's own sandbox subprocesses):
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/home/hatch/workspace/pentest-toolkit-upgraded /home/hatch/workspace/pentest-toolkit-service
+ReadWritePaths=/home/hatch/workspace/vanthex /home/hatch/workspace/pentest-toolkit-service
 StandardOutput=append:/home/hatch/workspace/pentest-toolkit-service/logs/service.log
 StandardError=append:/home/hatch/workspace/pentest-toolkit-service/logs/service.log
 
