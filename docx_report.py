@@ -19,7 +19,7 @@ import report_common as RC
 import report_i18n as RI
 
 COMPANY = os.environ.get("PTK_COMPANY", "PTK Security Assessment")
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 NAVY = "16365C"
 ZEBRA = "F4F6F9"
 SEV_COLOR = {"CRITICAL": "9B2226", "HIGH": "C05621", "MEDIUM": "975A16",
