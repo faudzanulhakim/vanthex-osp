@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.2.1-crimson">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.2.2-crimson">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-blue">
   <img alt="Engine" src="https://img.shields.io/badge/engine-self--built-success">
   <img alt="Tests" src="https://img.shields.io/badge/tests-143%20passing-brightgreen">
@@ -49,15 +49,7 @@ and its evidence is inspectable.
   prototype pollution, JWT attacks (incl. `kid` injection), GraphQL deep
   checks, SSRF with an out-of-band canary, BOLA/IDOR dual-account matrix,
   auth & session, TLS, CORS, sensitive files, and more
-- **New in 1.3.0 (Deep OSINT + Secrets Engine v2)** — a new `osint` scan
-  type (infrastructure intelligence via RDAP/DoH, Certificate
-  Transparency deep parsing with shadow-subdomain candidates, Wayback
-  Machine history, control-gated username OSINT across 45 platforms —
-  every platform must first pass a junk-handle probe, catch-alls are
-  downgraded to unverified candidates — GitHub/GitLab code-exposure
-  search whose fetched files are actually scanned, and a breach-exposure
-  module that is **off by default**); the secrets engine grows to **72
-  provider detectors** with *local structural validation* (GitHub token
+- **Secrets Engine v2** — **72 provider detectors** with local structural validation for tokens and keys across cloud/SCM/LLM providers.
   CRC checksums, real private-key parsing, JWT structure decoding, AWS
   credential pairing) instead of provider logins — findings are never
   validated against providers; layered decoders (base64 / hex / URL /
@@ -90,10 +82,9 @@ and its evidence is inspectable.
   exported components, cleartext, secrets patterns, network security
   config) and IPA analyzer
 - **One interface everywhere** — the dashboard served by the service
-  itself (native and Docker alike) is the artifact UI (2026-10-26
-  artifact-UI port, ADE order: `/` serves the artifact UI bundle;
-  `/classic` was removed and now 404s); the legacy webui SPA remains
-  available at `/webui`
+  itself (native and Docker alike) is the prebuilt bundle in `web/`,
+  served from `/` (the legacy webui SPA was removed; `/webui` remains
+  as an alias to the same UI)
 - **Platform** — hash-chained (SHA-256) audit log, encrypted secrets
   vault (Fernet) for scan credentials, scan scheduling, webhooks,
   role-based users, 12-language UI with full RTL support, dark/light
@@ -204,7 +195,7 @@ No source tree needed — the image is published by GitHub Actions
 ```bash
 mkdir vanthex && cd vanthex
 # place docker-compose.deploy.yml and .env.example here
-cp .env.example .env        # set PTK_ADMIN_PW, GHCR_OWNER, GHCR_REPO, VANTHEX_TAG=1.1
+cp .env.example .env        # set PTK_ADMIN_PW, GHCR_OWNER, GHCR_REPO, VANTHEX_TAG=1.2.2
 docker compose -f docker-compose.deploy.yml pull
 docker compose -f docker-compose.deploy.yml up -d
 ```
@@ -234,7 +225,7 @@ created).
 
 ```bash
 sudo bash deploy/install-systemd.sh
-systemctl status pentest-toolkit
+systemctl status vanthex
 ```
 
 Full native guide — state files, configuration, upgrades,
@@ -253,8 +244,6 @@ All configuration is via environment variables:
 | `PTK_CANARY_PORT` | Canary listener port | `8977` |
 | `PTK_COOKIE_SECURE` | Set `1` to mark session cookies `Secure` (HTTPS deployments) | — |
 | `GHCR_OWNER` / `VANTHEX_TAG` | Image owner/tag for `docker-compose.deploy.yml` | — / `latest` |
-| `VANTHEX_FIRMS_MAP_KEY` | NASA FIRMS MAP_KEY for live fire hotspots on the globe | — (unset = EONET fallback) |
-| `VANTHEX_ABUSECH_AUTH_KEY` | abuse.ch auth key for keyed threat-intel families | — (unset = those families stay offline) |
 
 ## CI/CD — GitHub Actions → GHCR
 
@@ -265,7 +254,7 @@ Registry on every push to `main` and every version tag:
 | Git event | Image tags |
 |---|---|
 | Push to `main` | `latest`, `sha-<short>` |
-| Tag `v1.2.1` | `1.2.1`, `1.2`, `sha-<short>` |
+| Tag `v1.2.2` | `1.2.2`, `1.2`, `sha-<short>` |
 | Pull request | build only (never published) |
 
 Authentication uses the workflow's built-in `GITHUB_TOKEN`
@@ -303,8 +292,8 @@ safe control endpoints and false-positive traps.
 
 - [DOCKER.md](DOCKER.md) — Docker Compose deployment, persistence, upgrades
 - [INSTALL.md](INSTALL.md) — native installation
-- [ENTERPRISE_NOTES.md](ENTERPRISE_NOTES.md) — coverage matrix & release history
-- [UPGRADE_NOTES.md](UPGRADE_NOTES.md) · [AUDIT.md](AUDIT.md)
+- [ENTERPRISE_NOTES.md](docs/ENTERPRISE_NOTES.md) — coverage matrix & release history
+- [UPGRADE_NOTES.md](docs/UPGRADE_NOTES.md) · [AUDIT.md](docs/AUDIT.md)
 
 ## Legal
 
