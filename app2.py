@@ -33,9 +33,6 @@ import urllib.request
 import base64
 
 import mobile
-import osint as osint_mod
-import globe_feeds
-import globe_recon
 import passive as passive_mod
 import scanners
 import store
@@ -92,7 +89,7 @@ def _canary_opts():
     return None
 LOGIN_FAILS = {}  # ip -> [timestamps]
 SESSION_TTL = 8 * 3600
-SCAN_TYPES = ("vulnscan", "ports", "subdomains", "dirs", "ssl", "headers", "passive", "udp", "vhost", "hybrid", "syn", "osint")
+SCAN_TYPES = ("vulnscan", "ports", "subdomains", "dirs", "ssl", "headers", "passive", "udp", "vhost", "hybrid", "syn")
 
 
 def load_template(name):
@@ -100,8 +97,8 @@ def load_template(name):
         return f.read()
 
 
-WEBUI_DIR = os.path.join(HERE, "webui")
-_WEBUI_CACHE = {}
+ARTIFACT_DIR = os.path.join(HERE, "web")
+_ARTIFACT_CACHE = {}
 _WEBUI_CTYPES = {
     ".js": "text/javascript", ".css": "text/css", ".png": "image/png",
     ".svg": "image/svg+xml", ".webp": "image/webp", ".json": "application/json",
@@ -109,43 +106,11 @@ _WEBUI_CTYPES = {
 }
 
 
-def webui_file(rel):
-    """(bytes, ctype) for a file inside webui/, or None.
-
-    Only "name.ext" and "assets/name.ext" shapes are served — no
-    deeper paths, no traversal."""
-    parts = rel.split("/")
-    if (not rel or ".." in rel or len(parts) > 2
-            or (len(parts) == 2 and parts[0] != "assets")):
-        return None
-    path = os.path.join(WEBUI_DIR, rel)
-    try:
-        mt = os.path.getmtime(path)
-    except OSError:
-        return None
-    hit = _WEBUI_CACHE.get(rel)
-    if hit and hit[0] == mt:
-        return hit[1], hit[2]
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except OSError:
-        return None
-    ctype = _WEBUI_CTYPES.get(os.path.splitext(rel)[1].lower(),
-                              "application/octet-stream")
-    _WEBUI_CACHE[rel] = (mt, data, ctype)
-    return data, ctype
-
-
-ARTIFACT_DIR = os.path.join(HERE, "artifact-ui")
-_ARTIFACT_CACHE = {}
-
-
 def artifact_file(rel):
     """(bytes, ctype) for a file inside artifact-ui/, or None.
 
-    Same shape as webui_file: only "name.ext" and
-    "assets/name.ext" — no deeper paths, no traversal. The served
+    Only "name.ext" and "assets/name.ext" — no deeper paths, no
+    traversal. The served
     index is the bundle entry; assets are the bundle's hashed files.
     2026-10-26 artifact-UI port (ADE: / serves the artifact UI).
     """
@@ -187,36 +152,6 @@ def _artifact_cache_header(rel):
     return "public, max-age=86400"
 
 
-_VENDOR_FILES = {"maplibre-gl.js", "maplibre-gl.css", "LICENSE.txt"}
-
-
-def vendor_file(rel):
-    """(bytes, ctype) for a vendored MapLibre file, or None.
-
-    Only the exact v1.22.0 vendor shape is served:
-    vendor/maplibre/<version>/<allowlisted file> — no deeper paths,
-    no traversal, no other filenames, no directory escapes."""
-    parts = rel.split("/")
-    if len(parts) != 4 or parts[0] != "vendor" or parts[1] != "maplibre":
-        return None
-    if parts[2] in ("", ".", "..") or parts[3] not in _VENDOR_FILES:
-        return None
-    if ".." in rel or "\\" in rel:
-        return None
-    path = os.path.join(WEBUI_DIR, rel)
-    if os.path.realpath(path) != os.path.join(os.path.realpath(WEBUI_DIR), rel):
-        return None
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except OSError:
-        return None
-    if parts[3] == "LICENSE.txt":
-        return data, "text/plain"
-    ext = os.path.splitext(parts[3])[1]
-    return data, _WEBUI_CTYPES.get(ext, "application/octet-stream")
-
-
 def allowed_target(host):
     """Allowlist opsional. Kosong = semua host boleh (tetap wajib authorization gate utk aktif)."""
     raw = os.environ.get("PTK_ALLOWED_TARGETS", "").strip()
@@ -256,7 +191,7 @@ def engine_info():
     except Exception:
         profiles = {}
     return {
-        "version": "1.2.1",
+        "version": "1.2.2",
         "engine": 'self-built (no ready-made scanner tools: nmap/nuclei/etc. are never invoked)',
         "libraries": libs,
         "html_parser": "beautifulsoup4" if libs.get("beautifulsoup4") else "regex-fallback",
@@ -368,7 +303,7 @@ def login_delay(ip, now=None):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "VANTHEX/1.2.1"
+    server_version = "VANTHEX/1.2.2"
 
     def log_message(self, fmt, *args):
         pass
@@ -416,7 +351,7 @@ class Handler(BaseHTTPRequestHandler):
         # The CSP literal below is byte-identical to _send's (the
         # v1.25.0 CSP gate asserts every occurrence); _send itself
         # is untouched. Client disconnect ends the generator via
-        # GeneratorExit inside globe_recon (single-flight released).
+        # GeneratorExit inside the streaming generator (single-flight released).
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-store")
@@ -492,210 +427,28 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, ui[0], ui[1], [("Cache-Control", "no-store")])
         elif path == "/webui":
-            if sess.get("role") == "admin" and ACTIONS_OK:
-                ui = webui_file("index.html")
-                if ui:
-                    self._send(200, ui[0], ui[1], [("Cache-Control", "no-store")])
-                    return
-            # Fallback when the webui gate fails or the file is
-            # missing: the default UI, which since 2026-10-26 is the
-            # artifact UI (classic was removed, so it can no longer
-            # be the fallback without crashing on a missing file).
+            # 2026-11-04: the legacy webui SPA was REMOVED; the path
+            # stays as an alias so stale bookmarks land on the live
+            # artifact UI instead of 404ing.
             ui = artifact_file("index.html")
             if not ui:
                 self._send(404, "not found", "text/plain")
                 return
             self._send(200, ui[0], ui[1], [("Cache-Control", "no-store")])
-        elif path.startswith("/artifact-assets/"):
+        elif path.startswith("/assets/"):
             # 2026-10-26 artifact-UI port: bundle assets, session-
             # gated like /assets/, same no-'..' / max-2-segment
-            # shape as webui_file. CSP is the byte-identical _send
+            # shape as artifact_file. CSP is the byte-identical _send
             # value (no new hosts).
-            rel = path[len("/artifact-assets/"):]
-            asset = artifact_file(rel)
+            rel = path[len("/assets/"):]
+            asset = artifact_file("assets/" + rel)
             if not asset:
                 self._send(404, "not found", "text/plain")
                 return
             self._send(200, asset[0], asset[1],
                        [("Cache-Control", _artifact_cache_header(rel))])
-        elif path.startswith("/assets/"):
-            asset = webui_file("assets/" + path[len("/assets/"):])
-            if not asset:
-                self._send(404, "not found", "text/plain")
-                return
-            self._send(200, asset[0], asset[1],
-                       [("Cache-Control", "public, max-age=86400")])
-        elif path.startswith("/vendor/"):
-            vend = vendor_file(path[len("/"):])
-            if not vend:
-                self._send(404, "not found", "text/plain")
-                return
-            self._send(200, vend[0], vend[1],
-                       [("Cache-Control", "public, max-age=86400")])
         elif path == "/api/me":
             self._json(200, sess)
-        elif path == "/api/osint/globe/status":
-            self._json(200, globe_feeds.status())
-        elif path == "/api/osint/globe/cam":
-            # v1.13.0 CCTV preview proxy (design section 1): cid is
-            # resolved against the server's own CCTV index only; the
-            # media itself is served from 'self', CSP unchanged.
-            _qs = parse_qs(urlparse(self.path).query)
-            _cid = (_qs.get("cid") or [""])[0]
-            _kind = (_qs.get("kind") or ["img"])[0]
-            _res = globe_feeds.get_cam_preview(
-                _cid, _kind, self.headers.get("Range"))
-            if not _res.get("ok"):
-                self._json(_res.get("status", 502),
-                           {"ok": False,
-                            "reason": _res.get("reason", "")})
-            else:
-                _extra = [("Cache-Control", "private, max-age=60")]
-                for _k, _v in (_res.get("headers") or {}).items():
-                    _extra.append((_k, _v))
-                if _res.get("auth"):
-                    _extra.append(("X-VANTHEX-Cam-Authority",
-                                   str(_res["auth"])))
-                if _res.get("fetched_at"):
-                    _extra.append(("X-VANTHEX-Cam-Fetched",
-                                   str(int(_res["fetched_at"]))))
-                self._send(_res["status"], _res["body"],
-                           _res["content_type"], _extra)
-        elif path.startswith("/api/osint/globe/layer/"):
-            _lname = path.rsplit("/", 1)[-1]
-            if _lname in globe_feeds.LAYERS:
-                self._json(200, globe_feeds.get_layer(_lname))
-            else:
-                self._json(404, {"error": "unknown globe layer"})
-        elif path == "/api/osint/globe/entities":
-            _qs = parse_qs(urlparse(self.path).query)
-            _sid = (_qs.get("scan") or [""])[0]
-            _scan = store.get_scan(_sid) if _sid else None
-            if not _scan:
-                for _s in store.list_scans(100):
-                    if _s.get("scan_type") == "osint":
-                        _scan = store.get_scan(_s["id"])
-                        break
-            if not _scan:
-                self._json(200, {"layer": "entities", "points": [],
-                                 "located": 0, "total": 0,
-                                 "note": "NO INVESTIGATION LOADED"})
-            else:
-                _res = json.loads(_scan["result"] or "{}")
-                self._json(200, globe_feeds.get_entities(
-                    _res, scan_id=_scan["id"]))
-        elif path == "/api/osint/globe/search":
-            # v1.18.0 Search places (design §4 item 3): thin read over
-            # the daemon-side Nominatim cache; the query is a fixed
-            # template parameter, never a free-form URL.
-            _qs = parse_qs(urlparse(self.path).query)
-            _q = (_qs.get("q") or [""])[0]
-            self._json(200, globe_feeds.search_places(_q))
-        elif path == "/api/osint/globe/route":
-            # v1.18.0 Directions (design §4 item 5): thin read over the
-            # daemon-side OSRM cache; profile is allowlisted inside
-            # get_route, waypoints are validated numbers only.
-            _qs = parse_qs(urlparse(self.path).query)
-            _prof = (_qs.get("profile") or ["driving"])[0]
-            _wp = (_qs.get("wp") or [""])[0]
-            _wps = []
-            _bad = False
-            for _pair in _wp.split(";"):
-                _pair = _pair.strip()
-                if not _pair:
-                    continue
-                try:
-                    _la, _lo = _pair.split(",", 1)
-                    _wps.append((float(_la), float(_lo)))
-                except (ValueError, TypeError):
-                    _bad = True
-                    break
-            if _bad or len(_wps) < 2:
-                self._json(200, {"ok": False,
-                                 "reason": "waypoints must be lat,lon pairs (min 2)"})
-            else:
-                self._json(200, globe_feeds.get_route(_prof, _wps))
-        elif path == "/api/osint/globe/github":
-            # v1.19.0 GitHub Recon (design §5 item 9): thin read over
-            # the daemon-side GitHub cache; the username is validated
-            # inside github_recon, never a free-form URL.
-            _qs = parse_qs(urlparse(self.path).query)
-            _u = (_qs.get("u") or [""])[0]
-            self._json(200, globe_feeds.github_recon(_u))
-        elif path == "/api/osint/globe/launches":
-            # v1.19.0 ROCKET counter (design §5 item 8): thin read
-            # over the launches family cache (demand-driven refresh).
-            self._json(200, globe_feeds.get_launches())
-        elif path == "/api/osint/globe/news":
-            # v1.19.0 NEWS via RSS (design §5 item 11): thin read over
-            # the daemon-side RSS cache; items only from live outlets.
-            self._json(200, globe_feeds.get_news())
-        elif path == "/api/osint/globe/markets":
-            # v1.20.0 MARKETS (design §6 + §14.4): thin read over the
-            # daemon-side FRED/Coinbase/Stooq caches; optional
-            # ?ticker=SYM is a direct-symbol Stooq lookup (no
-            # autocomplete). No breadth row ever (K25); dollar is the
-            # Fed Broad Index, never DXY.
-            _qs = parse_qs(urlparse(self.path).query)
-            _t = (_qs.get("ticker") or [""])[0]
-            if _t:
-                self._json(200, globe_feeds.get_ticker(_t))
-            else:
-                self._json(200, globe_feeds.get_markets())
-        elif path == "/api/osint/globe/cloudmeta":
-            # v1.21.0 NowCOAST clouds (OSIRIS-aligned): computed
-            # server-side meta (hourly TIME steps); tiles themselves
-            # are browser-direct from nowcoast.noaa.gov.
-            self._json(200, globe_feeds.get_cloudmeta())
-        elif path == "/api/osint/globe/windgrid":
-            # v1.21.0 GFS wind grid (design §7 item 2b): cycle is
-            # YYYYMMDDHH (00/06/12/18), fhour validated inside
-            # get_windgrid (0-120 hourly, then 3-hourly to 384).
-            # A failed step returns ok:false — the client keeps the
-            # previous grid and the Open-Meteo point layer runs on.
-            _qs = parse_qs(urlparse(self.path).query)
-            _cy = (_qs.get("cycle") or [""])[0]
-            try:
-                _fh = int((_qs.get("fhour") or ["0"])[0])
-            except (TypeError, ValueError):
-                _fh = -1
-            self._json(200, globe_feeds.get_windgrid(_cy, _fh))
-        elif path == "/api/osint/globe/iss_telemetry":
-            # v1.21.0 LIVE FROM SPACE telemetry (design §14.2):
-            # ISS ALT/ORBIT from its own TLE via SGP4, no new host.
-            self._json(200, globe_feeds.get_iss_telemetry())
-        elif path == "/api/osint/globe/recon":
-            # v1.23.0 TOOLS panel (design §14.1 + §16.4 + §16.5):
-            # thin read over globe_recon.run_tool. Tool name is
-            # allowlisted and the target locally validated inside
-            # run_tool — user input never becomes a host or URL.
-            # ?tool= &target= ; dataleaks needs &optin=1 ;
-            # arcgis needs &keyword= &bbox=xmin,ymin,xmax,ymax.
-            _qs = parse_qs(urlparse(self.path).query)
-            _tool = (_qs.get("tool") or [""])[0]
-            _target = (_qs.get("target") or [""])[0]
-            _bbox = (_qs.get("bbox") or [""])[0]
-            _extra = {
-                "optin": (_qs.get("optin") or [""])[0] == "1",
-                "keyword": (_qs.get("keyword") or [""])[0],
-                "bbox": [v for v in _bbox.split(",")] if _bbox else [],
-            }
-            self._json(200, globe_recon.run_tool(_tool, _target,
-                                                 _extra))
-        elif path == "/api/osint/globe/fingerprint":
-            # v1.23.0 FINGERPRINT (design §16.3): streaming NDJSON,
-            # one line per site as it answers, then calibration
-            # lines, then a summary line. Single-flight inside
-            # globe_recon; a second concurrent run gets one busy
-            # line. NOT a _json call: the response streams.
-            _qs = parse_qs(urlparse(self.path).query)
-            _u = (_qs.get("u") or [""])[0]
-            if not globe_recon._RE_USER.match(_u or ""):
-                self._json(200, {"ok": False, "tool": "fingerprint",
-                                 "reason": "invalid username"})
-            else:
-                self._stream_ndjson(
-                    globe_recon.fingerprint_stream(_u))
         elif path == "/api/scans":
             self._json(200, store.list_scans())
         elif path == "/api/stats":
@@ -998,26 +751,14 @@ class Handler(BaseHTTPRequestHandler):
             target = str(payload.get("target", "")).strip()[:300]
             stype = payload.get("type", "vulnscan")
             profile = payload.get("profile", "active-deep")
-            if stype == "osint" and not target and payload.get("query"):
-                # Universal OSINT: the free-text query IS the subject
-                # (person name, institution, domain, email, handle, IP).
-                # It is stored as the scan target so history, reports
-                # and suppression keep working unchanged.
-                target = str(payload["query"]).strip()[:300]
             if stype not in SCAN_TYPES or not target:
                 self._json(400, {"error": f"type must be one of {SCAN_TYPES} + target is required"})
                 return
             host = host_of(target)
-            if stype == "osint":
-                # The domain allowlist only applies when the query
-                # itself carries a host (domain / IP / email domain).
-                # Name and handle queries are not domain targets and
-                # must never be blocked by it.
-                host = osint_mod.query_subject_host(target)
             if not allowed_target(host):
                 self._json(403, {"error": f"host {host} outside PTK_ALLOWED_TARGETS"})
                 return
-            is_active = ((stype != "vulnscan") or not profile.startswith("passive")) and stype not in ("passive", "osint")
+            is_active = ((stype != "vulnscan") or not profile.startswith("passive")) and stype != "passive"
             if is_active and payload.get("authorized") is not True:
                 self._json(400, {"error": 'active scans require authorization confirmation (authorized=true) — tick the authorization statement in the UI'})
                 return
@@ -1567,29 +1308,6 @@ def run_tool_scan(payload, target, stype, profile, job):
     if stype == "passive":
         log.append(f"[passive] passive recon for {target}")
         return passive_mod.run_passive_recon(target, log)
-    if stype == "osint":
-        oopts = {}
-        if payload.get("query"):
-            oopts["query"] = str(payload["query"])[:300]
-            log.append(f"[osint] universal OSINT query: {oopts['query']}")
-        else:
-            log.append(f"[osint] deep OSINT for {target}")
-        if payload.get("handle"):
-            oopts["handle"] = str(payload["handle"])[:80]
-        if payload.get("breach") is True:
-            oopts["breach"] = True
-            if payload.get("breach_secret_id"):
-                # API key comes from the vault only; the value lives in
-                # the worker's memory and is never logged or stored.
-                try:
-                    row = store.secret_get(int(payload["breach_secret_id"]))
-                    if row:
-                        oopts["breach_api_key"] = secretsmgr.decrypt(
-                            row["secret_enc"])
-                except Exception:
-                    log.append("[osint] breach API key could not be loaded from the vault")
-        return osint_mod.run_osint_recon(target, log, oopts,
-                                         cancelled=cancelled)
     if stype == "subdomains":
         subs = payload.get("subs") or scanners.DEFAULT_SUBS
         subs = [str(s)[:60] for s in subs][:300]
@@ -1985,13 +1703,8 @@ def main():
     store.init_v32()
     _start_canary()
     threading.Thread(target=scheduler_loop, daemon=True).start()
-    try:
-        import globe_warmer
-        globe_warmer.start_warmer()
-    except Exception as e:  # noqa: BLE001 — warmer is best-effort
-        print(f"[globe] warmer failed to start: {e!r}", flush=True)
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"[i] VANTHEX Offensive Security Platform v1.2.1 -> http://0.0.0.0:{port}")
+    print(f"[i] VANTHEX Offensive Security Platform v1.2.2 -> http://0.0.0.0:{port}")
     if getattr(store, "GENERATED_ADMIN_PW", None):
         print(f"[!] PTK_ADMIN_PW not set: generated one-time admin password: {store.GENERATED_ADMIN_PW}")
         print("[!] Record it now (shown only at this first startup); set PTK_ADMIN_PW to use your own.")
