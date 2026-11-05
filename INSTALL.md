@@ -1,6 +1,6 @@
 # VANTHEX — Native Installation Guide
 
-**Version 1.2.1** · For Docker deployment, see [DOCKER.md](DOCKER.md).
+**Version 1.2.2** · For Docker deployment, see [DOCKER.md](DOCKER.md).
 
 > ⚠️ **AUTHORIZED TESTING ONLY.** VANTHEX is an offensive security tool.
 > Run it only against systems you own or are explicitly authorized to test.
@@ -86,8 +86,8 @@ Then open <http://localhost:5000> and sign in:
   startup — there is no default password)
 
 **Dashboard URLs** (after sign-in): `/` serves the artifact UI
-(2026-10-26 artifact-UI port); `/classic` was removed and now 404s;
-`/webui` serves the legacy webui SPA.
+The UI bundle ships prebuilt in `web/`; `/webui` is an alias that
+serves the same UI (the legacy webui SPA was removed).
 
 Notes on state created at first run, in the application directory:
 
@@ -123,8 +123,6 @@ python -m pytest tests/ -q                 # full verification suite (143 tests)
 | `PTK_COOKIE_SECURE` | `1` marks session cookies `Secure` (use behind HTTPS) | — |
 | `PTK_COMPANY` | Company name printed on reports | — |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (or `PTK_PROXY`) | Egress proxy for the web layer | — |
-| `VANTHEX_FIRMS_MAP_KEY` | NASA FIRMS MAP_KEY for live fire hotspots on the globe | — (unset = EONET fallback) |
-| `VANTHEX_ABUSECH_AUTH_KEY` | abuse.ch auth key for keyed threat-intel families | — (unset = those families stay offline) |
 
 ---
 
@@ -132,10 +130,10 @@ python -m pytest tests/ -q                 # full verification suite (143 tests)
 
 ```bash
 sudo bash deploy/install-systemd.sh
-systemctl status pentest-toolkit
+systemctl status vanthex
 ```
 
-The installer registers the unit in `deploy/pentest-toolkit.service`
+The installer registers the unit in `deploy/vanthex.service`
 (adjust `WorkingDirectory` and the Python path inside it if you install
 outside the default location). The service binds `0.0.0.0:5000`.
 
@@ -154,8 +152,8 @@ reverse proxy with TLS (and set `PTK_COOKIE_SECURE=1`).
 3. Replace the code with the new release (keep your `.venv` or rebuild
    it with `pip install -r requirements.txt`).
 4. Start the service. Database schema migrations are automatic and
-   backward-compatible; the UI bundle under `webui/` is part of the
-   release and needs no build step.
+   backward-compatible; the UI bundle under `web/` is part of
+   the release and needs no build step.
 
 ---
 
@@ -176,5 +174,5 @@ reverse proxy with TLS (and set `PTK_COOKIE_SECURE=1`).
 
 Stop the service and remove the application directory. To erase all
 state, also remove `toolkit.db`, `secrets.key`, and `uploads_apk/`.
-For systemd installs: `systemctl disable --now pentest-toolkit` and
+For systemd installs: `systemctl disable --now vanthex` and
 remove the unit file.
