@@ -278,14 +278,14 @@ def c_version_disclosure(ctx, add):
     server = r.hdr("server")
     if server and any(c.isdigit() for c in server):
         add(F("LOW", f"Server version disclosure: {server}",
-              "Versi software terpapar — memudahkan pencarian exploit spesifik.",
+              "Software version exposed — makes targeted exploit searches easier.",
               evidence=server, cwe="CWE-200", owasp="A05:2021 Security Misconfiguration",
               cvss=3.1, remed='Hide the version in headers (server_tokens off, etc.).',
               confidence="confirmed", location="/"))
     pb = r.hdr("x-powered-by")
     if pb:
         add(F("LOW", f"X-Powered-By disclosure: {pb}",
-              "Teknologi backend terpapar.", evidence=pb, cwe="CWE-200",
+              "Backend technology exposed.", evidence=pb, cwe="CWE-200",
               owasp="A05:2021", cvss=3.1, remed='Remove the X-Powered-By header.',
               confidence="confirmed", location="/"))
 
@@ -651,7 +651,7 @@ def c_cors(ctx, add):
                      if acac == "true" else "."),
                   evidence=f"ACAO={acao}, ACAC={acac or 'absen'}", cwe="CWE-942",
                   owasp="A05:2021", cvss=8.1 if acac == "true" else 5.4,
-                  remed="Whitelist origin secara eksplisit; jangan echo Origin.",
+                  remed="Whitelist origins explicitly; do not echo the Origin.",
                   confidence="confirmed", location=path))
             return
         if acao == "*" and acac == "true":
@@ -746,9 +746,9 @@ SENSITIVE_FILES = {
                      [r"\[core\]", r"\[remote\s"]),
     "/.git/HEAD": ("HIGH", "CWE-538", 7.5, 'Block /.git access at the web server.',
                    [r"ref:\s*refs/"]),
-    "/.gitignore": ("LOW", "CWE-200", 3.7, "Informasi struktur repo; blok akses dotfiles.",
+    "/.gitignore": ("LOW", "CWE-200", 3.7, "Repository structure information; block dotfile access.",
                     [r"(?m)^\S+"]),
-    "/.svn/entries": ("HIGH", "CWE-538", 7.5, "Blok akses /.svn.", [r"svn", r"dir"]),
+    "/.svn/entries": ("HIGH", "CWE-538", 7.5, "Block /.svn access.", [r"svn", r"dir"]),
     "/backup.sql": ("CRITICAL", "CWE-538", 9.1, 'Public database dump. Remove immediately and rotate credentials.',
                     [r"CREATE TABLE", r"INSERT INTO", r"mysqldump|pg_dump"]),
     "/dump.sql": ("CRITICAL", "CWE-538", 9.1, 'Remove the dump from the webroot.',
@@ -790,7 +790,7 @@ SENSITIVE_FILES = {
                       [r"propertySources|activeProfiles|systemEnvironment"]),
     "/actuator/heapdump": ("CRITICAL", "CWE-200", 9.8, 'A heapdump can contain live credentials. Disable the endpoint.',
                            []),  # tanpa signature: dinilai dari status+ukuran+baseline
-    "/actuator/configprops": ("HIGH", "CWE-200", 7.5, "Matikan/secure actuator configprops.",
+    "/actuator/configprops": ("HIGH", "CWE-200", 7.5, "Disable/secure actuator configprops.",
                               [r"configurationProperties|beans|contexts"]),
     "/adminer.php": ("HIGH", "CWE-425", 8.8, 'Remove Adminer from production.',
                      [r"Adminer", r"Login\s*-"]),
@@ -1963,7 +1963,7 @@ def c_web_injection(ctx, add):
                       f"Ekspresi shell $(({ca}*{cb})) evaluated by the server to {prod} — this computed result is not in the request, so it is not a reflection.",
                       evidence=f"payload={payload!r} -> output {prod}", cwe="CWE-78",
                       owasp="A03:2021 Injection", cvss=9.8,
-                      remed="Hindari shell; pakai API library & whitelist argumen.",
+                      remed="Avoid shells; use an API library & argument whitelisting.",
                       confidence="confirmed", location=loc, param=pname))
                 cmd_found = True
                 break
@@ -1979,7 +1979,7 @@ def c_web_injection(ctx, add):
                           'Command marker reflected in the response — input is executed by the shell.',
                           evidence=f"payload={payload!r} -> marker reflected", cwe="CWE-78",
                           owasp="A03:2021 Injection", cvss=9.8,
-                          remed="Hindari shell; pakai API library & whitelist argumen.",
+                          remed="Avoid shells; use an API library & argument whitelisting.",
                           confidence="confirmed", location=loc, param=pname))
                     cmd_found = True
                     break
@@ -2010,7 +2010,7 @@ def c_web_injection(ctx, add):
                           'The sleep command delay was confirmed by the statistical timing oracle (null model from baseline samples; triple sleep / sleep-0 / sleep sequence fired).',
                           evidence=f"payload='1; sleep 3'; {_cmodel.describe()}",
                           cwe="CWE-78", owasp="A03:2021 Injection", cvss=9.8,
-                          remed="Hindari shell; pakai API library & whitelist argumen.",
+                          remed="Avoid shells; use an API library & argument whitelisting.",
                           confidence="confirmed", location=loc, param=pname))
         # ---------- XXE (POST XML ke endpoint parameter; entitas harus TER-EXPAND)
         xxe_body = (f'<?xml version="1.0"?><!DOCTYPE r [<!ENTITY ptk SYSTEM '
@@ -2448,7 +2448,7 @@ def c_host_header(ctx, add):
 # ------------------------------------------------------------ active: services & CVE
 
 RISKY_PORTS = {
-    23: ("CRITICAL", "CWE-319", 9.8, 'Telnet open', "Matikan telnet; pakai SSH."),
+    23: ("CRITICAL", "CWE-319", 9.8, 'Telnet open', "Disable telnet; use SSH."),
     21: ("HIGH", "CWE-319", 7.5, 'FTP open', 'Use SFTP/FTPS; close port 21.'),
     3389: ("HIGH", "CWE-284", 8.6, 'RDP exposed', 'Restrict via VPN/firewall; enable NLA + MFA.'),
     445: ("HIGH", "CWE-284", 8.6, 'SMB exposed to the public', 'Block 445 from the internet.'),
@@ -2458,11 +2458,11 @@ RISKY_PORTS = {
     11211: ("HIGH", "CWE-306", 8.6, 'Memcached open', 'Bind internally; block from the public.'),
     3306: ("MEDIUM", "CWE-284", 5.9, 'MySQL exposed', 'Bind internally; use an SSH tunnel.'),
     5432: ("MEDIUM", "CWE-284", 5.9, 'PostgreSQL exposed', 'Bind internally.'),
-    5900: ("HIGH", "CWE-284", 8.6, 'VNC open', "Tunnel via VPN; pakai auth kuat."),
-    161: ("MEDIUM", "CWE-200", 5.3, 'SNMP open', "Ganti community string default; pakai SNMPv3."),
+    5900: ("HIGH", "CWE-284", 8.6, 'VNC open', "Tunnel via VPN; use strong authentication."),
+    161: ("MEDIUM", "CWE-200", 5.3, 'SNMP open', "Change the default community string; use SNMPv3."),
     1723: ("MEDIUM", "CWE-319", 6.5, 'PPTP VPN open', "Migrate to WireGuard/OpenVPN."),
     9200: ("HIGH", "CWE-306", 8.6, 'Elasticsearch exposed', 'Enable security; bind internally.'),
-    2375: ("CRITICAL", "CWE-306", 9.8, 'Docker API (without TLS) exposed', "Jangan expose 2375; pakai socket lokal/SSH."),
+    2375: ("CRITICAL", "CWE-306", 9.8, 'Docker API (without TLS) exposed', "Do not expose 2375; use a local socket/SSH."),
     2379: ("HIGH", "CWE-306", 8.6, 'etcd exposed', 'Enable auth + TLS; bind internally.'),
     6443: ("MEDIUM", "CWE-284", 5.9, 'Kubernetes API exposed', 'Restrict API server access sources.'),
     10250: ("HIGH", "CWE-306", 8.6, 'kubelet API exposed', 'Enable kubelet auth; bind internally.'),
@@ -3028,13 +3028,13 @@ def c_dom_xss(ctx, add):
 
 
 WP_PLUGINS = {
-    "wp-file-manager": ("6.9", "CVE-2020-25213 RCE via upload (versi <6.9)"),
+    "wp-file-manager": ("6.9", "CVE-2020-25213 RCE via upload (versions <6.9)"),
     "elementor": ("3.18.2", 'several XSS/upload CVEs in old versions'),
     "revslider": ("4.2", 'CVE-2014-9734 classic LFI/upload'),
-    "contact-form-7": ("5.1.8", "CVE-2020-12800 unrestricted upload (versi <5.1.9)"),
+    "contact-form-7": ("5.1.8", "CVE-2020-12800 unrestricted upload (versions <5.1.9)"),
     "woocommerce": ("5.0.0", 'old version range with privilege/XSS CVEs'),
-    "duplicator": ("1.3.28", "CVE-2020-11738 LFI (versi <1.3.28)"),
-    "wp-statistics": ("13.0.8", "CVE-2021-24340 SQLi (versi <13.0.8)"),
+    "duplicator": ("1.3.28", "CVE-2020-11738 LFI (versions <1.3.28)"),
+    "wp-statistics": ("13.0.8", "CVE-2021-24340 SQLi (versions <13.0.8)"),
 }
 
 
@@ -3066,7 +3066,7 @@ def c_wp_plugins(ctx, add):
         add(F("HIGH" if old else "INFO",
               f"WordPress plugin detected: {slug} {ver}",
               f"The plugin readme.txt is publicly readable. " +
-              (f"Versi {ver} below {vuln_below}: {note}." if old else
+              (f"Version {ver} below {vuln_below}: {note}." if old else
                'This version is not below the known CVE threshold in the built-in database.'),
               evidence=f"Stable tag: {ver}", cwe="CWE-1035",
               owasp="A06:2021 Vulnerable & Outdated Components",
@@ -3603,7 +3603,7 @@ def c_api_sensitive_data(ctx, add):
     surf = ctx.surface(full=True)
     endpoints = list(dict.fromkeys(
         [e for e in surf.js_endpoints] +
-        [p.split("?")[0] for p in surf.param_urls if p.startswith("/api")]))[:6]
+        [p.split("?")[0] for p in surf.param_urls if p.startswith("/api")]))[:10]
     email_re = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
     for ep in endpoints:
         r = ctx.client.get(ep)
@@ -6038,6 +6038,117 @@ def _chain_candidates(findings):
 
 # ------------------------------------------------------------ runner
 
+# ---- v1.2.2: ExploitKit — verifikasi eksploit non-destruktif (exploitkit.py).
+# Alias dipasang di globals modul ini karena runner me-resolve nama check
+# via globals()[name]. Semua check di bawah read-only/differential.
+import exploitkit as _exploitkit
+c_sqli_confirm = _exploitkit.c_sqli_confirm
+c_cmdi_confirm = _exploitkit.c_cmdi_confirm
+c_traversal_confirm = _exploitkit.c_traversal_confirm
+c_ssrf_probe = _exploitkit.c_ssrf_probe
+c_payload_replay = _exploitkit.c_payload_replay
+c_ldap_confirm = _exploitkit.c_ldap_confirm
+c_xxe_confirm = _exploitkit.c_xxe_confirm
+c_nosql_confirm = _exploitkit.c_nosql_confirm
+c_xpath_confirm = _exploitkit.c_xpath_confirm
+c_jwt_forge = _exploitkit.c_jwt_forge
+c_deser_confirm = _exploitkit.c_deser_confirm
+c_smtp_confirm = _exploitkit.c_smtp_confirm
+c_mass_assign = _exploitkit.c_mass_assign
+c_race_condition = _exploitkit.c_race_condition
+c_http_smuggling = _exploitkit.c_http_smuggling
+c_jwt_confusion = _exploitkit.c_jwt_confusion
+c_auth_bypass_headers = _exploitkit.c_auth_bypass_headers
+
+# ---- v1.4.0: offensive pack (SSTI-RCE, 2nd-order, extract, gadget, CVE,
+#      pollution->RCE, h2c, cache deception, WAF bypass) + dirbrute + credkit
+c_ssti_rce = _exploitkit.c_ssti_rce
+c_sqli_second_order = _exploitkit.c_sqli_second_order
+c_sqli_extract = _exploitkit.c_sqli_extract
+c_deser_gadget = _exploitkit.c_deser_gadget
+c_cve_exploit = _exploitkit.c_cve_exploit
+c_prototype_rce = _exploitkit.c_prototype_rce
+c_h2c_smuggling = _exploitkit.c_h2c_smuggling
+c_cache_deception = _exploitkit.c_cache_deception
+c_waf_bypass = _exploitkit.c_waf_bypass
+import dirbrute as _dirbrute
+import credkit as _credkit
+c_dir_bruteforce = _dirbrute.c_dir_bruteforce
+c_password_spray = _credkit.c_password_spray
+c_otp_bypass = _credkit.c_otp_bypass
+c_user_enum = _credkit.c_user_enum
+
+# ---- v1.5.0: offense brain pack (OOB sweep, bundle miner, entropy, authz
+#      matrix, openapi stateful, custom templates)
+c_oob_sweep = _exploitkit.c_oob_sweep
+c_js_bundle_mine = _exploitkit.c_js_bundle_mine
+c_session_entropy = _exploitkit.c_session_entropy
+c_authz_matrix = _exploitkit.c_authz_matrix
+c_openapi_stateful = _exploitkit.c_openapi_stateful
+c_custom_templates = _exploitkit.c_custom_templates
+
+# ---- v1.6.0: credential takeover pack (bukti akses akun, bukan indikasi)
+import takeover as _takeover
+c_jwt_weak_secret_takeover = _takeover.c_jwt_weak_secret_takeover
+c_reset_token_takeover = _takeover.c_reset_token_takeover
+c_oauth_token_theft = _takeover.c_oauth_token_theft
+c_otp_brute = _takeover.c_otp_brute
+c_email_change_takeover = _takeover.c_email_change_takeover
+c_ratelimit_bypass = _takeover.c_ratelimit_bypass
+c_api_key_reuse = _takeover.c_api_key_reuse
+
+# ---- v1.7.0: total domination pack (session replay, shadow admin,
+#      cred reuse, CSWSH, blind orchestrator)
+import dominion as _dom
+c_session_replay = _dom.c_session_replay
+c_shadow_admin_hunter = _dom.c_shadow_admin_hunter
+c_cred_reuse = _dom.c_cred_reuse
+c_ws_cswsh = _dom.c_ws_cswsh
+c_blind_orchestrate = _dom.c_blind_orchestrate
+
+# ---- v1.8.0: fleet & pivot pack (pivot map, cloud/container recon,
+#      grammar fuzz)
+import pivot as _pivot
+import cloudrecon as _cloud
+import fuzzkit as _fuzz
+c_pivot_internal_map = _pivot.c_pivot_internal_map
+c_cloud_container_recon = _cloud.c_cloud_container_recon
+c_grammar_fuzz = _fuzz.c_grammar_fuzz
+
+# ---- v1.9.0: AI warfare pack (LLM injection, MCP audit, AI supply
+#      chain, identity graph, cache/CDN poisoning v2)
+import llmattack as _llm
+import mcpaudit as _mcp
+import aisupply as _ais
+import identgraph as _ident
+import cacheadv as _cache
+c_llm_prompt_injection = _llm.c_llm_prompt_injection
+c_mcp_audit = _mcp.c_mcp_audit
+c_ai_supply_recon = _ais.c_ai_supply_recon
+c_identity_graph = _ident.c_identity_graph
+c_cache_poisoning_v2 = _cache.c_cache_poisoning_v2
+
+_EXPLOIT = ["c_sqli_confirm", "c_cmdi_confirm", "c_traversal_confirm",
+            "c_ssrf_probe", "c_payload_replay",
+            "c_ldap_confirm", "c_xxe_confirm",
+            "c_nosql_confirm", "c_xpath_confirm",
+            "c_jwt_forge", "c_deser_confirm", "c_smtp_confirm",
+            "c_mass_assign", "c_race_condition",
+            "c_http_smuggling", "c_jwt_confusion", "c_auth_bypass_headers",
+            "c_ssti_rce", "c_sqli_second_order", "c_sqli_extract",
+            "c_deser_gadget", "c_cve_exploit", "c_prototype_rce",
+            "c_h2c_smuggling", "c_cache_deception", "c_waf_bypass",
+            "c_oob_sweep", "c_openapi_stateful",
+            "c_jwt_weak_secret_takeover", "c_reset_token_takeover",
+            "c_oauth_token_theft", "c_email_change_takeover",
+            "c_api_key_reuse",
+            "c_session_replay", "c_shadow_admin_hunter",
+            "c_ws_cswsh", "c_blind_orchestrate",
+            "c_pivot_internal_map", "c_cloud_container_recon",
+            "c_grammar_fuzz",
+            "c_llm_prompt_injection", "c_mcp_audit", "c_ai_supply_recon",
+            "c_identity_graph", "c_cache_poisoning_v2"]
+
 _PASSIVE_BASE = ["c_version_disclosure", "c_tech_fingerprint", "c_security_headers",
                  "c_cookie_security", "c_cors", "c_tls"]
 _ACTIVE_BASE = ["c_waf_detection", "c_sensitive_files", "c_dependency_versions", "c_directory_listing",
@@ -6054,17 +6165,34 @@ _ADVANCED = ["c_host_header", "c_web_injection", "c_crlf_injection", "c_ssrf",
              "c_source_disclosure", "c_session_fixation",
              "c_password_reset_poisoning", "c_cache_poisoning", "c_email_security",
              "c_cve_candidates", "c_exposed_secrets", "c_git_secrets",
-             "c_hidden_params", "c_dns_axfr", "c_cloud_buckets"]
+             "c_hidden_params", "c_dns_axfr", "c_cloud_buckets",
+             "c_dir_bruteforce",
+             "c_js_bundle_mine", "c_session_entropy", "c_custom_templates"]
 PROFILES = {
     "passive-quick": ["c_version_disclosure", "c_security_headers", "c_tls"],
     "passive-full": _PASSIVE_BASE + ["c_email_security"],
     "active-standard": _PASSIVE_BASE + _ACTIVE_BASE,
     "active-deep": _PASSIVE_BASE + ["c_services"] + _ACTIVE_BASE + _ADVANCED,
+    # v1.2.2: profil exploit — standar penuh + modul verifikasi eksploit
+    # (SQLi/CMDi/traversal/SSRF/replay). Tetap non-destruktif; untuk target
+    # milik sendiri atau dengan otorisasi tertulis.
+    "active-exploit": _PASSIVE_BASE + ["c_services"] + _ACTIVE_BASE + _EXPLOIT,
     # ENTERPRISE: semua check + yang paling intrusif/berat (kredensial default,
     # uji rate-limit login, takeover) — hanya untuk engagement dengan scope tertulis.
-    "enterprise-full": _PASSIVE_BASE + ["c_services"] + _ACTIVE_BASE + _ADVANCED +
+    "enterprise-full": _PASSIVE_BASE + ["c_services"] + _ACTIVE_BASE + _ADVANCED + _EXPLOIT +
                        ["c_default_credentials", "c_rate_limit_login",
-                        "c_subdomain_takeover"],
+                        "c_subdomain_takeover",
+                        # v1.4.0: kredensial — paling intrusif (banyak attempt
+                        # login), hanya untuk engagement ber-scope tertulis.
+                        "c_password_spray", "c_otp_bypass", "c_user_enum",
+                        # v1.5.0: matriks authz multi-role (banyak request
+                        # ber-cookie berbeda) — intrusif sedang.
+                        "c_authz_matrix",
+                        # v1.6.0: brute OTP & bypass rate-limit login —
+                        # intrusif (banyak attempt), hanya scope tertulis.
+                        "c_otp_brute", "c_ratelimit_bypass",
+                        # v1.7.0: spray mini + reuse lintas service — intrusif.
+                        "c_cred_reuse"],
 }
 PASSIVE_PROFILES = ("passive-quick", "passive-full")
 
