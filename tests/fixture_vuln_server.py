@@ -113,6 +113,8 @@ HOME = """<!DOCTYPE html><html><head><title>FixtureMart Home</title>
 <footer>Powered by nginx — blog kami membahas akamai, barracuda, dan f5 secara umum.</footer>
 <input type="hidden" name="__VIEWSTATE" value="/wEPDwUJNDYxNjExMDAxZGQyb3JkZXItdGVzdA==">
 <input type="hidden" name="state" value='O:8:"stdClass":0:{}'>
+<script src="/static/app.v2.js"></script>
+<script src="/static/config.js"></script>
 <script>var demoToken = "__JWT__";</script>
 <script>var W = new WebSocket("__WSURL__");</script>
 </body></html>""".replace("__JWT__", weak_jwt())
@@ -217,12 +219,62 @@ def _ldap_page(entries):
             f"<p>{len(entries)} entries found</p><ul>{rows}</ul></html>")
 
 
-STATE = {"cache_host": None}
+STATE = {"cache_host": None,
+         # v1.6.0 — key live untuk kontrol API-key reuse (harus cocok dgn
+         # pattern vk_live_[0-9a-f]{16,} di takeover.py)
+         "bundled_key": "vk_live_" + "a3f9c2d17b40e5f8" * 2}
+
+# v1.9.0 — cache CDN simulasi (path -> (status, body))
+CDN_CACHE = {}
+
+WEAK_JWT_SECRET = b"supersecret"   # sengaja lemah — ada di wordlist takeover.py
+
+
+def _make_weak_jwt():
+    """Token HS256 role=user dengan secret lemah (fixture v1.6.0)."""
+    import base64 as _b
+    def _e(b):
+        return _b.urlsafe_b64encode(b).rstrip(b"=").decode()
+    h = _e(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    p = _e(json.dumps({"sub": "admin@fixture.local", "role": "user", "iat": 1730000000},
+                      separators=(",", ":")).encode())
+    s = _e(hmac.new(WEAK_JWT_SECRET, f"{h}.{p}".encode(), hashlib.sha256).digest())
+    return f"{h}.{p}.{s}"
+
+
+def _verify_weak_jwt(tok):
+    """Verifikasi token bearer dgn secret lemah. Returns claims atau None."""
+    import base64 as _b
+    try:
+        h, p, s = tok.split(".")
+        expect = _b.urlsafe_b64encode(
+            hmac.new(WEAK_JWT_SECRET, f"{h}.{p}".encode(), hashlib.sha256).digest()
+        ).rstrip(b"=").decode()
+        if not hmac.compare_digest(expect, s):
+            return None
+        pad = "=" * (-len(p) % 4)
+        return json.loads(_b.urlsafe_b64decode(p + pad))
+    except Exception:
+        return None
 UPLOADS = {}
 GUESTBOOK = []
 GUESTBOOK_SAFE = []
 PP_STORE = {"theme": "dark", "lang": "en"}
 PP_SAFE_STORE = {"theme": "dark", "lang": "en"}
+# --- v1.3.4 lab controls ---
+import threading as _thr
+RACE_VULN_USED = {"used": False}
+RACE_SAFE_USED = {"used": False}
+RACE_LOCK = _thr.Lock()
+SMUGGLE_MARKER = ""
+# Publik key PEM untuk uji JWT key-confusion (RS256 -> HS256 pakai publik key).
+# Fixture /api/jwt_rs salah memakai publik key sebagai HMAC secret.
+JWT_PUB_PEM = (
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC/qPXIZBICJ1MaJ7j8u5mW0g1Z\n"
+    "zcM0C4Qj3B1+7n4Qk9YhrPjFqYKTaRkYq1VQpR2ObxQ0r9T4m5e8hZCVQKbJYw==\n"
+    "-----END PUBLIC KEY-----"
+)
 USERS = [
     {"id": 1, "name": "Ade Pratama", "email": "ade.pratama@example.com",
      "password_hash": "$2b$12$fixturehashade0000000000000000000000000000000000001"},
@@ -700,10 +752,272 @@ class H(BaseHTTPRequestHandler):
         elif path == "/api/system/status":
             self._send(200, "{\"Version\":\"2.19.4\",\"InstanceID\":\"fx1\"}",
                        ctype="application/json")
+        elif path == "/static/app.v2.js":
+            # v1.5.0 — bundle SPA v2: endpoint legacy TIDAK ter-link di HTML
+            # mana pun, hanya hidup di dalam JS bundle (target bundle-miner).
+            self._send(200,
+                       'const routes={admin:"/admin/users",export:"/api/legacy/admin-export",'
+                       'dead:"/api/legacy/dead-export",ship:"/api/shipments/3"};\n'
+                       'fetch("/api/legacy/admin-export").then(r=>r.json());\n'
+                       'fetch("/api/legacy/dead-export");\n'
+                       'fetch("/api/shipments/3");\n', "application/javascript")
+        elif path == "/api/legacy/admin-export":
+            # v1.5.0 — kontrol bundle-miner: endpoint legacy hidup & bocor
+            # data (tidak ter-link, hanya ada di bundle).
+            self._send(200, json.dumps({"rows": [{"user": "ade", "role": "admin",
+                                                  "ssn_masked": "***-**-1001"},
+                                                 {"user": "sari", "role": "user"}]}),
+                       "application/json")
+        elif path in ("/api/session/new", "/safe/api/session/new"):
+            # v1.5.0 — kontrol entropy analyzer: token sesi PREDIKTABEL
+            # (counter berurutan) vs token acak kripto (safe).
+            if path.startswith("/safe"):
+                import secrets as _sec
+                tok = "S-" + _sec.token_hex(16)
+            else:
+                STATE["sess_n"] = STATE.get("sess_n", 100000) + 1
+                tok = f"SESS-{STATE['sess_n']}-FIXEDCHARSET"
+            self._send(200, json.dumps({"session": tok}), "application/json",
+                       extra=[("Set-Cookie", f"session={tok}; Path=/")])
+        elif path == "/admin/users":
+            # v1.5.0 — ACL role ber-cookie (aplikasi naif): hanya role=admin.
+            role = ""
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                if part.strip().startswith("role="):
+                    role = part.strip()[5:]
+            if role == "admin":
+                self._send(200, "<html>Admin Users — ade(admin), sari(user)</html>")
+            else:
+                self._send(403, "<html>Forbidden — admin only</html>")
+        elif path == "/admin/export":
+            # v1.5.0 — kontrol authz matrix RENTAN: seharusnya admin-only,
+            # tapi role=user diterima (verifikasi role di COOKIE, bukan
+            # server-side session).
+            role = ""
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                if part.strip().startswith("role="):
+                    role = part.strip()[5:]
+            if role in ("admin", "user"):
+                self._send(200, json.dumps({"export": True,
+                                            "rows": 2,
+                                            "secret": "customer-PII-rows"}),
+                           "application/json")
+            else:
+                self._send(403, "<html>Forbidden</html>")
+        elif path == "/safe/admin/export":
+            self._send(403, "<html>Forbidden</html>")
         elif path == "/openapi.json":
-            self._send(200, "{\"openapi\":\"3.1.0\",\"info\":{\"title\":"
-                            "\"Fixture API\",\"version\":\"1.4.0\"},\"paths\":{}}",
-                       ctype="application/json")
+            # v1.5.0 — spec diperkaya: path stateful utk fuzzer (harvest ID
+            # dari /api/users lalu probe /api/shipments/{sid}).
+            self._send(200, json.dumps({
+                "openapi": "3.1.0",
+                "info": {"title": "Fixture API", "version": "1.4.0"},
+                "paths": {
+                    "/api/users": {"get": {"responses": {"200": {}}}},
+                    "/api/shipments/{sid}": {"get": {
+                        "parameters": [{"name": "sid", "in": "path",
+                                        "required": True, "schema":
+                                        {"type": "integer"}}],
+                        "responses": {"200": {}}}},
+                }}), "application/json")
+        elif path.startswith("/api/shipments/"):
+            # v1.5.0 — kontrol openapi stateful: endpoint dari spec TIDAK
+            # punya ACL; ID valid 1-9 mengembalikan data (IDOR by spec).
+            try:
+                sid = int(path.rsplit("/", 1)[-1])
+            except Exception:
+                sid = -1
+            if 1 <= sid <= 9:
+                self._send(200, json.dumps({"sid": sid, "dest": "Jakarta",
+                                            "value": 150000}), "application/json")
+            else:
+                self._send(404, "no such shipment")
+        elif path.startswith("/safe/api/shipments/"):
+            self._send(403, "<html>Forbidden</html>")
+        elif path == "/api/session/jwt":
+            # v1.6.0 — kontrol JWT takeover: token HS256 dengan SECRET LEMAH
+            # ('supersecret' ada di wordlist brute), claim role=user.
+            tok = _make_weak_jwt()
+            self._send(200, json.dumps({"token": tok}), "application/json")
+        elif path == "/admin/me":
+            # v1.6.0 — endpoint admin ber-bearer JWT: verifikasi dgn secret
+            # lemah yang sama (token tempaan role=admin diterima).
+            auth = self.headers.get("Authorization", "")
+            tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            claims = _verify_weak_jwt(tok)
+            if claims and claims.get("role") == "admin":
+                self._send(200, json.dumps({"ok": True, "role": "admin",
+                                            "user": claims.get("sub", "admin")}), "application/json")
+            else:
+                self._send(401, json.dumps({"ok": False, "error": "admin only"}), "application/json")
+        elif path == "/safe/admin/me":
+            # negatif: verifikasi dengan secret KUAT (token tempaan ditolak)
+            auth = self.headers.get("Authorization", "")
+            tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            self._send(401, json.dumps({"ok": False, "error": "signature invalid"}), "application/json")
+        elif path == "/safe/oauth/authorize":
+            # v1.6.0 — negatif token theft: hanya allowlist fixture.local
+            redir = str(q.get("redirect_uri", ""))
+            if redir.startswith(("http://fixture.local/", "https://fixture.local/")):
+                self._send(302, "", "text/html",
+                           extra=[("Location", redir + "?code=vhx-ok")])
+            else:
+                self._send(400, json.dumps({"ok": False,
+                                            "error": "redirect_uri tidak di allowlist"}), "application/json")
+        elif path == "/profile":
+            # v1.6.0 — profil akun (untuk bukti email berubah)
+            email = STATE.get("account_email", "admin@fixture.local")
+            self._send(200, f"<html>Profil: admin@fixture.local | email: {email}</html>")
+        elif path == "/static/config.js":
+            # v1.6.0 — API key live tertanam di bundle (divalidasi /api/key/check)
+            # v1.9.0 — + kredensial LLM (sk-...) + email admin + IdP hint
+            #   (sasaran aisupply & identgraph)
+            self._send(200, 'const CONFIG={key:"' + STATE["bundled_key"]
+                        + '",env:"production"};\n'
+                        'const AI={openai_key:"sk-fixture2026deadbeefcafebabe",'
+                        'llm_provider:"openai"};\n'
+                        'const IDP={sso:"https://fixture.local/sso/login",'
+                        'provider:"auth0",admin:"root.admin@fixture.local"};\n'
+                        '// contact dev-ops@fixture.local\n',
+                        "application/javascript")
+        elif path == "/admin/vault":
+            # v1.7.0 — kontrol session replay: token SESS-* dari
+            # /api/session/new (diterbitkan TANPA auth) diterima sebagai
+            # kredensial halaman terproteksi.
+            sess = ""
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                if part.strip().startswith("session="):
+                    sess = part.strip()[8:]
+            if sess.startswith("SESS-"):
+                self._send(200, "<html>Vault: kunci API produksi, "
+                                "backup DB, catatan gaji</html>")
+            else:
+                self._send(401, "<html>Forbidden — butuh sesi</html>")
+        elif path == "/safe/admin/vault":
+            self._send(401, "<html>Forbidden</html>")
+        elif path == "/admin/panel":
+            # v1.7.0 — kontrol shadow admin: 403 langsung, tapi X-Original-URL
+            # dipercaya (reverse-proxy misconfiguration klasik).
+            xo = self.headers.get("X-Original-URL", "")
+            if xo == "/admin/panel":
+                self._send(200, "<html>Admin Panel — dashboard internal, "
+                                "user management, audit log</html>")
+            else:
+                self._send(403, "<html>Forbidden — admin only</html>")
+        elif path == "/safe/admin/panel":
+            self._send(403, "<html>Forbidden</html>")
+        elif path == "/blind/sleep":
+            # v1.7.0 — kontrol blind timing: nilai dengan 'sleep N' membuat
+            # respons lambat (simulasi eksekusi server-side). /safe abaikan.
+            import time as _t
+            v = str(q.get("host", ""))
+            if not path.startswith("/safe") and "sleep" in v.lower():
+                _t.sleep(0.32)
+            self._send(200, json.dumps({"ok": True, "echo_len": len(v)}),
+                       "application/json")
+        elif path == "/safe/ws":
+            # v1.7.0 — negatif CSWSH: Origin asing ditolak.
+            self._send(403, "origin not allowed", "text/plain")
+        elif path in ("/internal/netmap", "/safe/internal/netmap"):
+            # v1.8.0 — pivot: endpoint netmap internal bocor TANPA auth
+            # (topologi + kredensial internal) ; /safe menolak.
+            if path.startswith("/safe"):
+                self._send(403, json.dumps({"error": "forbidden"}),
+                           "application/json")
+            else:
+                self._send(200, json.dumps({
+                    "hosts": [
+                        {"ip": "10.0.5.10", "role": "db-postgres"},
+                        {"ip": "10.0.5.20", "role": "backup-nas"},
+                        {"ip": "10.0.5.30", "role": "domain-controller"}],
+                    "credentials": [
+                        "postgres://appuser:FixN3t_2024@10.0.5.10:5432/appdb"],
+                }), "application/json")
+        elif path in ("/cloud/metadata", "/safe/cloud/metadata"):
+            # v1.8.0 — IMDSv1: kredensial instance tanpa token IMDSv2;
+            # /safe mensimulasikan IMDSv2 (token wajib → 401).
+            if path.startswith("/safe"):
+                self._send(401, json.dumps(
+                    {"error": "IMDSv2 token required"}), "application/json")
+            else:
+                self._send(200, json.dumps({
+                    "AccessKeyId": "AKIAFIXTUREV18X",
+                    "SecretAccessKey": "FixCloudS3cret2024",
+                    "Token": "FixToken==", "Expiration": "2026-12-31"}))
+        elif path == "/cloud/validate":
+            # (GET tidak valid) — ditangani do_POST
+            self._send(405, "use POST", "text/plain")
+        elif path in ("/docker/api", "/safe/docker/api"):
+            # v1.8.0 — Docker daemon API exposed tanpa TLS/auth.
+            if path.startswith("/safe"):
+                self._send(403, "client certificates required", "text/plain")
+            else:
+                self._send(200, json.dumps({
+                    "Version": "24.0.2",
+                    "Containers": [
+                        {"Image": "app:1.4", "Ports":
+                         ["0.0.0.0:5432->5432", "0.0.0.0:6379->6379"]},
+                        {"Image": "worker:2.1", "Ports": []}]}))
+        elif path in ("/k8s/api", "/safe/k8s/api"):
+            # v1.8.0 — Kubernetes API unauthenticated: listing pods +
+            # referensi secret terbaca.
+            if path.startswith("/safe"):
+                self._send(403, json.dumps(
+                    {"error": "authentication required"}), "application/json")
+            else:
+                self._send(200, json.dumps({
+                    "kind": "PodList",
+                    "items": [
+                        {"metadata": {"name": "app-7d", "namespace":
+                                      "prod",
+                                      "annotations": {"secret-ref":
+                                                      "prod/app-db-creds"}}},
+                        {"metadata": {"name": "worker-1", "namespace":
+                                      "prod"}}]}))
+        elif path in ("/mcp/tools", "/safe/mcp/tools"):
+            # v1.9.0 — MCP server: listing tool TANPA auth, termasuk
+            # tool destruktif; /safe 403.
+            if path.startswith("/safe"):
+                self._send(403, json.dumps({"error": "unauthorized"}),
+                           "application/json")
+            else:
+                self._send(200, json.dumps({"tools": [
+                    {"name": "search_docs",
+                     "description": "search internal documents"},
+                    {"name": "exec_command",
+                     "description": "run arbitrary shell command on host"},
+                    {"name": "file_write",
+                     "description": "write arbitrary file to disk"},
+                    {"name": "db_query",
+                     "description": "run SQL on prod database",
+                     "token": "mcp-fix-token-2024"}]}))
+        elif path in ("/ai/models", "/safe/ai/models"):
+            # v1.9.0 — model endpoint (Ollama-style) tanpa auth; /safe 403.
+            if path.startswith("/safe"):
+                self._send(403, "authentication required", "text/plain")
+            else:
+                self._send(200, json.dumps({"models": [
+                    "llama3:8b", "mistral:7b", "internal-embed-v2"]}))
+        elif path == "/cdn/cache":
+            # v1.9.0 — CDN cache: mengambil X-Forwarded-Host TERAKHIR
+            # (normalisasi salah) lalu MENG-CACHE-nya untuk request
+            # berikutnya (cache per-path, TTL simulasi).
+            hdrs = self.headers.get_all("X-Forwarded-Host") or []
+            host = hdrs[-1].split(",")[-1].strip() if hdrs else \
+                "cdn.fixture.local"
+            key = "cdn:" + urlparse(self.path).path.split("?")[0]
+            if "evil.example" in host:
+                CDN_CACHE[key] = (200, "Host: " + host +
+                                   "<html>cached page</html>")
+            if key in CDN_CACHE:
+                self._send(*CDN_CACHE[key], "text/html")
+            else:
+                self._send(200, "Host: " + host +
+                           "<html>origin page</html>", "text/html")
+        elif path == "/safe/cdn/cache":
+            # v1.9.0 — kontrol cache: host KANONIK selalu, header diabaikan.
+            self._send(200, "Host: cdn.fixture.local<html>safe page</html>",
+                       "text/html")
         elif path == "/trap/vendors":
             # Jebakan vendor (regresi v3.4.1): token hex mengandung 'f5' +
             # nama-nama vendor WAF sebagai TEKS artikel biasa.
@@ -798,8 +1112,203 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, UPLOADS[name], ct)
             else:
                 self._send(404, "no such upload")
+        elif path in ("/template/render", "/safe/template/render"):
+            # v1.4.0 — kontrol SSTI: /template/render RENTAN (jinja2-style:
+            # aritmetika ter-evaluasi + objek config bisa diakses).
+            # /safe/template/render — template dirender literal (negatif).
+            name = q.get("name", "")
+            if path.startswith("/safe"):
+                self._send(200, f"<html>Hello {name}</html>")
+            elif "{{7*'7'}}" in name:
+                self._send(200, "<html>Hello 7777777</html>")
+            elif "{{7*7}}" in name:
+                self._send(200, "<html>Hello 49</html>")
+            elif "{{config}}" in name:
+                self._send(200, "<html>Hello {'SECRET_KEY': 'fixture-sk-9911',"
+                                "'DEBUG': False, 'DATABASE_URI': 'sqlite:///app.db'}</html>")
+            else:
+                self._send(200, f"<html>Hello {name}</html>")
+        elif path == "/profile/view":
+            # v1.4.0 — second-order: bio mentah dari /profile/save 'dieksekusi'
+            # sebagai query; quote tunggal -> error SQL (kelas second-order).
+            u = q.get("user", "ptk")
+            bio = STATE.get("profiles", {}).get(u, "")
+            if "'" in bio:
+                self._send(500, "You have an error in your SQL syntax near bio at line 1 (MySQL)")
+            else:
+                self._send(200, f"<html>Profil {u}: {bio or '(kosong)'}</html>")
+        elif path == "/safe/profile/view":
+            self._send(200, "<html>Profil: (kosong)</html>")
+        elif path == "/extract":
+            # v1.4.0 — kontrol SQLi auto-extract (UNION): jumlah kolom =
+            # token NULL + token table_name; information_schema -> nama tabel.
+            i = q.get("id", "1")
+            up = i.upper()
+            n_fields = up.count("NULL") + up.count("TABLE_NAME")
+            if "UNION SELECT" in up and "INFORMATION_SCHEMA" in up and n_fields >= 4:
+                self._send(200, "<html>Extract: users, orders, secrets, logs</html>")
+            elif "UNION SELECT" in up and n_fields >= 4:
+                self._send(200, "<html>Extract: vhx-empty-set</html>")
+            elif "UNION SELECT" in up:
+                self._send(500, "You have an error in your SQL syntax near 'UNION' (MySQL)")
+            else:
+                self._send(200, "<html>Item #1 Fixture detail halaman stabil untuk baseline.</html>")
+        elif path == "/cgi-bin/status":
+            # v1.4.0 — kontrol Shellshock: UA berpola bash func dieksekusi.
+            ua = self.headers.get("User-Agent", "")
+            if ua.startswith("() {") and ":;}" in ua:
+                m = re.search(r"echo\s+([A-Za-z0-9\-_]+)", ua)
+                self._send(200, f"status: ok\nexec-out: {m.group(1) if m else 'empty'}")
+            else:
+                self._send(200, "status: ok")
+        elif path == "/safe/cgi-bin/status":
+            self._send(200, "status: ok")
+        elif path == "/cgi-bin/php-cgi":
+            # v1.4.0 — kontrol PHP-CGI arg injection (CVE-2012-1823 style).
+            qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+            if "-d" in qs:
+                self._send(200, "<html>PHP Version 5.3.3 — allow_url_include=On (exposed config)</html>")
+            else:
+                self._send(200, "<html>php-cgi normal</html>")
+        elif path == "/safe/cgi-bin/php-cgi":
+            self._send(403, "Forbidden")
+        elif path == "/spel/eval":
+            # v1.4.0 — kontrol Spring SpEL injection.
+            expr = q.get("expr", "")
+            if path.startswith("/safe"):
+                self._send(200, f"<html>echo: {expr}</html>")
+            elif "#{7*7}" in expr:
+                self._send(200, "<html>eval: 49</html>")
+            elif "T(java.lang.Runtime)" in expr:
+                self._send(200, "<html>eval: class java.lang.Runtime</html>")
+            else:
+                self._send(200, f"<html>eval: {expr}</html>")
+        elif path == "/safe/spel/eval":
+            self._send(200, f"<html>echo: {q.get('expr', '')}</html>")
+        elif path in ("/pollute", "/safe/pollute"):
+            # v1.4.0 — kontrol prototype pollution -> gadget: query
+            # __proto__[...] / JSON __proto__ memodifikasi runtime (rentan);
+            # server naif men-echo X-Polluted + gadget gadgetX='exec' aktif.
+            _safe = path.startswith("/safe")
+            proto_keys = [k for k in q if "__proto__" in k.lower()] if q else []
+            polluted = (not _safe) and (bool(proto_keys)
+                                        or "__proto__" in self.path.lower())
+            if polluted:
+                # nilai gadget: dari nilai param __proto__[...] atau fallback
+                val = "1"
+                for k, v in q.items():
+                    if "__proto__" in k.lower():
+                        val = str(v) if v else ("gadgetx" if "[" in k else "1")
+                        break
+                self._send(200, json.dumps({"ok": True, "gadget": "child_process"
+                                            if val == "exec" else "set"}),
+                           "application/json",
+                           extra=[("X-Polluted", val)])
+            else:
+                self._send(200, json.dumps({"ok": True, "gadget": "none"}), "application/json")
+        elif path in ("/h2c", "/safe/h2c"):
+            # v1.4.0 — kontrol h2c smuggling: upgrade diterima & body yang
+            # berisi request kedua 'dieksekusi' backend (rentan). Safe: tolak.
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw2 = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+            upgrade = self.headers.get("Upgrade", "").lower()
+            if path == "/h2c" and upgrade == "h2c" and "/admin/internal" in raw2:
+                self._send(200, "<html>HTTP/2 stream ok — internal: VHX-INTERNAL-OK</html>")
+            elif path == "/h2c" and upgrade == "h2c":
+                self._send(200, "<html>HTTP/2 stream ok</html>")
+            else:
+                self._send(200, "<html>normal response (no upgrade)</html>")
+        elif path in ("/admin/profile", "/admin/profile.css"):
+            # v1.4.0 — kontrol Web Cache Deception: /admin/profile 403 tanpa
+            # sesi; /admin/profile.css dilayani isi privat + cacheable (naif
+            # memutus ACL berdasarkan ekstensi statis).
+            if path.endswith(".css"):
+                self._send(200, "<html>Private: email admin@fixture.local, api_key sk_live_fixture</html>",
+                           extra=[("Cache-Control", "public, max-age=3600")])
+            else:
+                self._send(403, "<html>Forbidden</html>")
+        elif path in ("/safe/admin/profile", "/safe/admin/profile.css"):
+            self._send(403, "<html>Forbidden</html>")
+        elif path == "/vault/":
+            self._send(200, "<html><title>Index of /vault/</title>"
+                            "<a href=\"/vault/keys.txt\">keys.txt</a></html>")
+        elif path == "/vault/keys.txt":
+            self._send(200, "backup db password: fixture-vault-pw-777\napi_key = vhx-fixture-key\n",
+                       "text/plain")
+        elif path == "/wafgate/echo":
+            # v1.4.0 — gerbang WAF in-process (independen dari MODE): blokir
+            # pola serangan baku; loloskan bentuk termutasi. Untuk c_waf_bypass.
+            qlow = (q.get("q", "") or "").lower()
+            blocked = ("<script>alert(" in qlow or "union select" in qlow
+                       or "../" in qlow)
+            if blocked:
+                self._send(403, "<html><title>Attention Required! | Cloudflare</title>"
+                                "Sorry, you have been blocked</html>")
+            else:
+                self._send(200, f"<html>echo: {q.get('q', '')}</html>")
+        elif path == "/admin/internal":
+            self._send(200, "<html>VHX-INTERNAL-OK</html>")
+        elif path in ("/api/log", "/safe/api/log"):
+            # v1.4.0 — Log4Shell via GET: UA JNDI dieksekusi (versi do_POST
+            # menerima body; versi ini menerima header).
+            ua = self.headers.get("User-Agent", "")
+            if path == "/api/log" and "${jndi:" in ua.lower():
+                tok = re.search(r"\$\{jndi:([^}]+)\}", ua)
+                self._send(200, json.dumps({"logged": True,
+                                            "resolved": f"vhx-dns-hit:{tok.group(1) if tok else '?'}"}),
+                           "application/json")
+            else:
+                self._send(200, "<html>log tersimpan</html>")
         elif path == "/robots.txt":
             self._send(200, "User-agent: *\nDisallow: /admin-secret\n", "text/plain")
+        elif path in ("/admin/status", "/safe/admin/status"):
+            # Kontrol positif auth-bypass via header proxy (X-Original-URL).
+            # /admin/status — RENTAN: proxy naif, header X-Original-URL
+            #   mengelabui ACL (server terlihat manggil /admin/status padahal
+            #   path asli dieksekusi). Tanpa header = 403.
+            # /safe/admin/status — ketat: selalu 403.
+            _safe = path.startswith("/safe")
+            if _safe or ("X-Original-URL" not in self.headers
+                         and "X-Rewrite-URL" not in self.headers):
+                self._send(403, "<html>Forbidden — admin only</html>")
+            else:
+                self._send(200, "<html>Admin Status — uptime 99.98% — internal build 2026</html>")
+        elif path == "/api/jwks":
+            self._send(200, json.dumps({"keys": [{"kty": "RSA", "alg": "RS256",
+                                                  "n": "qPXIZBICJ1Ma...", "e": "AQAB",
+                                                  "pem": JWT_PUB_PEM}]}), "application/json")
+        elif path in ("/api/jwt_rs", "/safe/jwt_rs"):
+            # /api/jwt_rs — RENTAN key-confusion: verifikasi HS256 dengan
+            # publik key PEM sebagai HMAC secret (bukan RS256 verify). Attacker
+            # yang tahu publik key (dari /api/jwks) bisa forge token.
+            # /safe/jwt_rs — benar: verifikasi RS256 dengan publik key (butuh
+            #   private key untuk tanda tangan, tak bisa diforge HS256).
+            _safe = path.startswith("/safe")
+            import base64 as _bb, hmac as _hh, hashlib as _h2, json as _jj
+            auth = self.headers.get("Authorization", "")
+            tok = auth[7:] if auth.startswith("Bearer ") else ""
+            try:
+                seg = tok.split(".")
+                hh = _jj.loads(_bb.urlsafe_b64decode(seg[0] + "=" * (-len(seg[0]) % 4)))
+                pp = _jj.loads(_bb.urlsafe_b64decode(seg[1] + "=" * (-len(seg[1]) % 4)))
+            except Exception:
+                hh, pp = {}, {}
+            ok = False
+            if hh.get("alg") == "HS256" and len(seg) == 3:
+                if _safe:
+                    # benar: HS256 seharusnya ditolak untuk token RS256
+                    ok = False
+                else:
+                    # salah (rentan): sign dengan publik key sebagai secret
+                    exp = _bb.urlsafe_b64encode(_hh.new(
+                        JWT_PUB_PEM.encode(), f"{seg[0]}.{seg[1]}".encode(),
+                        _h2.sha256).digest()).rstrip(b"=").decode()
+                    ok = _hh.compare_digest(exp, seg[2])
+            if ok:
+                self._send(200, json.dumps({"user": pp.get("user"), "admin": True}),
+                           "application/json")
+            else:
+                self._send(401, "401 Unauthorized")
         elif path == "/search":
             term = q.get("q", "")
             self._send(200, f"<html><title>Search</title>Results for {term} — 3 items found sepatu lari, sepatu bola, sepatu gunung dengan deskripsi panjang yang stabil.</html>")
@@ -902,8 +1411,7 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(profiles[want]), "application/json")
             else:
                 self._send(404, json.dumps({"error": "no such user"}), "application/json")
-        elif path == "/openapi.json":
-            self._send(200, json.dumps({"openapi": "3.0.0", "paths": {"/users": {}}}), "application/json")
+        # (openapi.json lama dihapus — di-shadow spec v1.5.0 yang lebih kaya)
         elif path == "/ldap/search":
             # v1.8.0: value embedded UNESCAPED into (uid=...) and the
             # filter genuinely evaluated (see _ldap_run).
@@ -950,8 +1458,6 @@ class H(BaseHTTPRequestHandler):
                 self._send(302, "", extra=[("Location", loc)])
         elif path == "/graphql":
             self._send(200, "<html>GraphQL endpoint</html>")
-        elif path == "/login":
-            self._send(200, '<html><form method="POST"><input name="username"><input type="password" name="password"></form>sign in</html>')
         else:
             self._send(404, "<html><title>404</title>Not Found - FixtureMart custom error page qwerty"
                             "<pre>Warning: mysqli_query(): You have an error in your SQL syntax; "
@@ -964,7 +1470,7 @@ class H(BaseHTTPRequestHandler):
         if MODE == "spa":
             self._send(200, HOME)  # SPA statis: POST pun dilayani shell
             return
-        path, _ = self._all_params()
+        path, q = self._all_params()
         length = int(self.headers.get("Content-Length", 0) or 0)
         raw_bytes = self.rfile.read(length) if length else b""
         raw = raw_bytes.decode("utf-8", "replace")
@@ -972,6 +1478,271 @@ class H(BaseHTTPRequestHandler):
         if path == "/forgot":
             host_used = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", "")
             self._send(200, f"<html>Tautan reset dikirim: http://{host_used}/reset?token=abc123</html>")
+        elif path in ("/spray/login", "/safe/spray/login"):
+            # v1.4.0 — kontrol password-spray & enum username.
+            # /spray/login RENTAN: (1) admin/test menerima "Password1!" tanpa
+            # rate-limit (spray); (2) pesan beda utk user sah vs tidak (enum).
+            # /safe/spray/login — selalu 401 seragam (negatif).
+            _safe = path.startswith("/safe")
+            from urllib.parse import parse_qs as _pqs
+            _form = _pqs(raw or "")
+            _qv = lambda k: (_form.get(k) or [q.get(k, "")])[0]
+            u, p = _qv("username"), _qv("password")
+            if _safe:
+                self._send(401, json.dumps({"error": "kredensial tidak valid"}), "application/json")
+            elif p == "Password1!" and u in ("admin", "test"):
+                self._send(200, json.dumps({"ok": True, "user": u,
+                                            "session": "SESS-vhx-spray"}), "application/json")
+            elif u in ("admin", "test"):
+                self._send(401, json.dumps({"error": "password salah untuk user '" + u
+                                            + "', silakan coba lagi dengan password yang benar"}),
+                           "application/json")
+            else:
+                self._send(401, json.dumps({"error": "user tidak ditemukan"}), "application/json")
+        elif path in ("/otp/verify", "/safe/otp/verify"):
+            # v1.4.0 — kontrol OTP bypass: /otp/verify RENTAN (null + kode lemah
+            # diterima, tanpa rate-limit). /safe/otp/verify selalu menolak.
+            _safe = path.startswith("/safe")
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            code = str(j.get("code", j.get("otp", "")))
+            ok = (not _safe) and (code == "" or code in ("000000", "123456", "1234"))
+            if ok:
+                self._send(200, json.dumps({"ok": True, "status": "verified",
+                                            "user": j.get("user", "admin")}), "application/json")
+            else:
+                self._send(401, json.dumps({"ok": False, "error": "kode salah"}), "application/json")
+        elif path in ("/reset/request", "/safe/reset/request"):
+            # v1.6.0 — kontrol reset-token takeover: /reset/request RENTAN
+            # (token dikembalikan DI RESPONS + token prediktabel md5(email)).
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            email = str(j.get("email", ""))
+            if path.startswith("/safe") or not email:
+                # safe: tidak pernah membocorkan token
+                self._send(200, json.dumps({"ok": True,
+                                            "message": "tautan dikirim ke email"}), "application/json")
+            else:
+                tok = hashlib.md5(email.encode()).hexdigest()
+                self._send(200, json.dumps({"ok": True, "email": email,
+                                            "reset_token": tok}), "application/json")
+        elif path in ("/reset/confirm", "/safe/reset/confirm"):
+            # v1.6.0 — konfirmasi reset: RENTAN menerima token prediktabel
+            # md5(email) dan 'mengganti password'; safe menolak.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            tok = str(j.get("token", ""))
+            if not path.startswith("/safe") and tok and \
+                    re.fullmatch(r"[0-9a-f]{32}", tok):
+                self._send(200, json.dumps({"ok": True,
+                                            "status": "password updated"}), "application/json")
+            else:
+                self._send(403, json.dumps({"ok": False,
+                                            "error": "token tidak valid / kedaluwarsa"}), "application/json")
+        elif path in ("/login/limited", "/safe/login/limited"):
+            # v1.6.0 — kontrol rate-limit bypass: /login/limited menghitung
+            # kegagalan per X-Forwarded-For (client-controlled). /safe
+            # menghitung GLOBAL (XFF diabaikan) -> lockout nyata.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            u, p = str(j.get("user", "")), str(j.get("password", ""))
+            xff = self.headers.get("X-Forwarded-For", "conn")
+            bucket = "GLOBAL" if path.startswith("/safe") else xff
+            STATE.setdefault("login_fails", {})
+            STATE["login_fails"][bucket] = STATE["login_fails"].get(bucket, 0)
+            if STATE["login_fails"].get(bucket, 0) >= 5:
+                self._send(429, json.dumps({"ok": False, "error": "terlalu banyak percobaan",
+                                            "retry_after": 60}), "application/json")
+            elif u == "admin@fixture.local" and p == "Summer2025!":
+                self._send(200, json.dumps({"ok": True, "user": u}), "application/json")
+            else:
+                STATE["login_fails"][bucket] += 1
+                self._send(401, json.dumps({"ok": False, "error": "kredensial salah"}), "application/json")
+        elif path in ("/profile/email", "/safe/profile/email"):
+            # v1.6.0 — kontrol pre-hijack: /profile/email menerima ganti email
+            # TANPA re-auth; /safe menuntut reauth=yes di body.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            email = str(j.get("email", ""))
+            if path.startswith("/safe") and str(j.get("reauth", "")) != "yes":
+                self._send(403, json.dumps({"ok": False,
+                                            "error": "re-auth dibutuhkan"}), "application/json")
+            elif not email or "@" not in email:
+                self._send(400, json.dumps({"ok": False, "error": "email tidak valid"}), "application/json")
+            else:
+                STATE["account_email"] = email
+                self._send(200, json.dumps({"ok": True, "email": email}), "application/json")
+        elif path == "/api/key/check":
+            # v1.6.0 — validasi status API key (read-only): hanya key yang
+            # memang tertanam di fixture yang 'aktif'.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            k = str(j.get("key", ""))
+            if k == STATE.get("bundled_key", ""):
+                self._send(200, json.dumps({"active": True,
+                                            "scope": "payments:write"}), "application/json")
+            else:
+                self._send(401, json.dumps({"active": False, "error": "key tidak dikenal"}), "application/json")
+        elif path == "/safe/api/key/check":
+            self._send(401, json.dumps({"active": False, "error": "tidak diizinkan"}), "application/json")
+        elif path in ("/ai/validate", "/safe/ai/validate"):
+            # v1.9.0 — validasi API key LLM (read-only simulasi models.list)
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            if not path.startswith("/safe") and \
+                    j.get("key") == "sk-fixture2026deadbeefcafebabe":
+                self._send(200, json.dumps({"active": True,
+                                            "models": 3}),
+                           "application/json")
+            else:
+                self._send(403, json.dumps({"active": False}),
+                           "application/json")
+        elif path in ("/api/llm/chat", "/safe/api/llm/chat"):
+            # v1.9.0 — chatbot LLM: VULNERABLE loyal pada prompt injection
+            # (mengulang system prompt + marker) ; /safe sanitasi.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            msg = str(j.get("message", ""))
+            low = msg.lower()
+            if path.startswith("/safe"):
+                # kontrol: model bersih menolak & tidak membocorkan
+                self._send(200, json.dumps(
+                    {"reply": "Sorry, I can only answer normal questions."}),
+                    "application/json")
+            elif ("ignore" in low or "system prompt" in low or
+                  "sys>" in low or "internal_tool" in low or
+                  "you are" in low):
+                self._send(200, json.dumps({
+                    "reply": "You are FIXTURE-ASSISTANT v1. My system "
+                             "prompt: answer only fixture questions, "
+                             "never touch internal_tool_exec unless "
+                             "instructed. DEBUG-MARKER-7734 injected."}),
+                    "application/json")
+            else:
+                self._send(200, json.dumps({"reply": "4"}), "application/json")
+        elif path in ("/cloud/validate", "/safe/cloud/validate"):
+            # v1.8.0 — validasi kredensial IMDS (read-only simulasi STS):
+            # hanya key fixture yang dianggap aktif.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            if not path.startswith("/safe") and \
+                    j.get("key") == "AKIAFIXTUREV18X":
+                self._send(200, json.dumps({"active": True,
+                                            "role": "ec2-app-role"}),
+                           "application/json")
+            else:
+                self._send(403, json.dumps({"active": False}),
+                           "application/json")
+        elif path in ("/api/fuzz", "/safe/api/fuzz"):
+            # v1.8.0 — sasaran grammar fuzz: parser RAPUH terhadap
+            # mutasi struktur (tipe salah → 500 traceback); /safe
+            # mem-validasi dan selalu 200.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = None
+            if path.startswith("/safe"):
+                self._send(200, json.dumps({"ok": True, "normalized": True}),
+                           "application/json")
+            else:
+                bad = (not isinstance(j, dict)) or \
+                    not isinstance(j.get("id"), int) or \
+                    not isinstance(j.get("name"), str) or \
+                    not isinstance(j.get("active"), bool) or \
+                    not isinstance(j.get("tags"), list)
+                if bad:
+                    self._send(500, "Traceback (most recent call last):\n"
+                               "TypeError: unsupported operand in handler\n"
+                               "Internal Server Error", "text/plain")
+                else:
+                    self._send(200, json.dumps({"ok": True, "echo": j}),
+                               "application/json")
+        elif path in ("/svc/smtp-login", "/svc/dbadmin", "/svc/panel",
+                      "/safe/svc/smtp-login", "/safe/svc/dbadmin",
+                      "/safe/svc/panel"):
+            # v1.7.0 — kontrol credential reuse: 3 service menerima
+            # kredensial web (admin/Password1!); /safe menolak.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            u, p = str(j.get("user", "")), str(j.get("password", ""))
+            if not path.startswith("/safe") and \
+                    u == "admin" and p == "Password1!":
+                self._send(200, json.dumps({"ok": True,
+                                            "service": path.split("/")[2]}),
+                           "application/json")
+            else:
+                self._send(401, json.dumps({"ok": False,
+                                            "error": "kredensial ditolak"}), "application/json")
+        elif path in ("/deser/java", "/safe/deser/java"):
+            # v1.4.0 — kontrol gadget chain Java (CommonsCollections-style):
+            # RENTAN menerima gadget ber-marker dan memicu "DNS pingback".
+            _safe = path.startswith("/safe")
+            if not _safe and ("CommonsCollections" in raw or "ysoserial" in raw):
+                self._send(200, json.dumps({"ok": True,
+                                            "pingback": "vhx-dns-hit"}), "application/json")
+            else:
+                self._send(500, "java.lang.ClassNotFoundException: deserialization rejected",
+                           "text/plain")
+        elif path in ("/deser/php", "/safe/deser/php"):
+            # v1.4.0 — kontrol gadget chain PHP (phpggc-style).
+            _safe = path.startswith("/safe")
+            if not _safe and "O:8:" in raw and ("Gadget" in raw or "RCE" in raw.upper()):
+                self._send(200, json.dumps({"ok": True,
+                                            "pingback": "vhx-dns-hit-php"}), "application/json")
+            else:
+                self._send(500, "unserialize(): rejected", "text/plain")
+        elif path in ("/profile/save", "/safe/profile/save"):
+            # v1.4.0 — kontrol second-order SQLi: bio disimpan mentah (rentan)
+            # atau dibersihkan (safe); /profile/view yang 'menjalankan' query.
+            u = q.get("user", "ptk")
+            bio = raw if "/safe/" in path else raw
+            if "/safe/" in path:
+                bio = bio.replace("'", "''")
+            STATE.setdefault("profiles", {})[u] = bio
+            self._send(200, "<html>profil tersimpan</html>")
+        elif path == "/api/log":
+            # v1.4.0 — kontrol Log4Shell: lookup JNDI dieksekusi dan token OOB
+            # 'sampai' (respons memuat resolusi vhx-dns).
+            ua = self.headers.get("User-Agent", "")
+            if "${jndi:" in ua.lower() or "${jndi:" in raw.lower():
+                tok = re.search(r"\$\{jndi:([^}]+)\}", ua + raw)
+                self._send(200, json.dumps({"logged": True,
+                                            "resolved": f"vhx-dns-hit:{tok.group(1) if tok else '?'}"}),
+                           "application/json")
+            else:
+                self._send(200, "<html>log tersimpan</html>")
+        elif path == "/safe/api/log":
+            self._send(200, "<html>log tersimpan</html>")
+        elif path in ("/h2c", "/safe/h2c"):
+            # v1.4.0 — kontrol h2c smuggling via POST: upgrade diterima &
+            # body yang berisi request kedua 'dieksekusi' backend (rentan).
+            upgrade = self.headers.get("Upgrade", "").lower()
+            if path == "/h2c" and upgrade == "h2c" and "/admin/internal" in raw:
+                self._send(200, "<html>HTTP/2 stream ok — internal: VHX-INTERNAL-OK</html>")
+            elif path == "/h2c" and upgrade == "h2c":
+                self._send(200, "<html>HTTP/2 stream ok</html>")
+            else:
+                self._send(200, "<html>normal response (no upgrade)</html>")
         elif path == "/fixation-login":
             self._send(200, "<html>welcome alt user (session tidak dirotasi)</html>")
         elif path == "/graphql" and raw.lstrip().startswith("["):
@@ -1083,6 +1854,49 @@ class H(BaseHTTPRequestHandler):
                     if k in posted:
                         prof[k] = posted[k]
             self._send(200, json.dumps(prof), "application/json")
+        elif path in ("/deser", "/safe/deser"):
+            # Kontrol positif deserialization: Python pickle.
+            # /deser — vulnerable: pickle.loads() -> __reduce__ -> eval("7*6") -> 42.
+            # /safe/deser — patched: hanya terima JSON, reject pickle bytes.
+            if path.startswith("/safe") or raw_bytes[:2] not in (b"\x80\x03", b"\x80\x04"):
+                try:
+                    posted = json.loads(raw or "{}")
+                    self._send(200, json.dumps({"deser": "json", "received": posted}),
+                               "application/json")
+                except Exception:
+                    self._send(200, json.dumps({"deser": "unknown"}), "application/json")
+            else:
+                try:
+                    import pickle as _pk
+                    result = _pk.loads(raw_bytes)
+                    self._send(200, json.dumps({"deser": "pickle", "result": result}),
+                               "application/json")
+                except Exception as _e:
+                    self._send(200, json.dumps({"deser": "pickle-error", "msg": str(_e)}),
+                               "application/json")
+        elif path in ("/contact", "/safe/contact"):
+            # Kontrol positif SMTP header injection:
+            # /contact — vulnerable: email reflect ke raw RFC header (CRLF tidak distrip).
+            # /safe/contact — patched: strip CRLF sebelum dipakai.
+            _safe = path.startswith("/safe")
+            try:
+                _form = {k: v[0] for k, v in parse_qs(raw).items()}
+            except Exception:
+                _form = {}
+            _email_raw = _form.get("email", "")
+            _email = re.sub(r"[\r\n]", "", _email_raw) if _safe else _email_raw
+            try:
+                import email.utils as _eu
+                parsed = _eu.formataddr(("Recipient", _email))
+            except Exception:
+                parsed = _email
+            raw_hdr = (f"MAIL FROM:<noreply@fixture.test>\r\n"
+                       f"RCPT TO:<{_email}>\r\n"
+                       f"From: noreply@fixture.test\r\n"
+                       f"To: {parsed}\r\n")
+            self._send(200, json.dumps({"smtp_trace": raw_hdr,
+                                       "email_received": _email}),
+                      "application/json")
         elif path == "/api/json/search":
             try:
                 posted = json.loads(raw or "{}")
@@ -1099,6 +1913,47 @@ class H(BaseHTTPRequestHandler):
                 self._send(500, "You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version")
             else:
                 self._send(200, json.dumps({"results": []}), "application/json")
+        elif path in ("/race/redeem", "/safe/race/redeem"):
+            # Kontrol positif race condition (TOCTOU) — single-use voucher.
+            # /race/redeem — RENTAN: check-then-act TANPA lock, ada sleep window
+            #   -> N request konkurren semua lolos check sebelum flag di-set.
+            # /safe/race/redeem — atomic pakai lock -> tepat 1 sukses.
+            _safe = path.startswith("/safe")
+            if _safe:
+                with RACE_LOCK:
+                    if RACE_SAFE_USED["used"]:
+                        self._send(429, "already redeemed")
+                    else:
+                        RACE_SAFE_USED["used"] = True
+                        self._send(200, "redeemed ok")
+            else:
+                if RACE_VULN_USED["used"]:
+                    self._send(429, "already redeemed")
+                else:
+                    time.sleep(0.3)  # perlebar window kompetitif (non-atomic)
+                    RACE_VULN_USED["used"] = True
+                    self._send(200, "redeemed ok")
+        elif path in ("/smuggle", "/safe/smuggle"):
+            # Kontrol positif HTTP request smuggling (CL.TE) — simulator naif.
+            # /smuggle — RENTAN: bila request membawa BOTH Content-Length dan
+            #   Transfer-Encoding: chunked, backend naif mem-prioritas TE dan
+            #   mengeksekusi "smuggled" sub-request; header X-Smuggle: <marker>
+            #   di-reflect ke respons.
+            # /safe/smuggle — ketat: tolak request dengan dua framing (400).
+            _safe = path.startswith("/safe")
+            ichunked = (self.headers.get("Transfer-Encoding", "") or "").lower()
+            icl = self.headers.get("Content-Length", "")
+            _m = re.search(r"X-Smuggle:\s*([A-Za-z0-9_-]+)", raw)
+            if _safe or (("chunked" in ichunked) and icl):
+                # safe: tolak dobel-framing; smgl: terima tapi jangan reflect
+                if _m and not _safe:
+                    self._send(200, json.dumps({"smuggled_marker": _m.group(1)}),
+                               "application/json")
+                else:
+                    self._send(400, "bad request")
+                    # terima CL.TE (rentan); jangan echol'd jika safe
+            else:
+                self._send(400, "bad request")
         elif path == "/login":
             self._send(200, "<html>welcome</html>", extra=[("Set-Cookie", "session=xyz; Path=/")])
         else:
