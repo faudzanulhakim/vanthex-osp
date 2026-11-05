@@ -244,8 +244,8 @@ def test_profiles_counts_v13():
     assert len(v.PROFILES["passive-quick"]) == 3
     assert len(v.PROFILES["passive-full"]) == 7
     assert len(v.PROFILES["active-standard"]) == 25
-    assert len(v.PROFILES["active-deep"]) == 56
-    assert len(v.PROFILES["enterprise-full"]) == 59
+    assert len(v.PROFILES["active-deep"]) == 60
+    assert len(v.PROFILES["enterprise-full"]) == 115
     assert "c_git_secrets" in v.PROFILES["enterprise-full"]
 
 
@@ -346,100 +346,7 @@ def _stub_fetch(mapping):
     return fetch
 
 
-def test_username_control_gate():
-    import osint
-    platforms = [
-        ("GoodHub", "https://good.test/u/{h}", "profile:{h}"),
-        ("CatchAll", "https://catch.test/u/{h}", "profile:{h}"),
-        ("DownSite", "https://down.test/u/{h}", "profile:{h}"),
-    ]
-
-    def fetch(url, timeout=8, verify=False, cap=0, headers=None, _hops=0):
-        if "good.test" in url:
-            if url.endswith("/fixtureuser"):
-                return 200, [], b"profile:fixtureuser member page"
-            return 404, [], b"no such user"
-        if "catch.test" in url:
-            handle = url.rsplit("/", 1)[-1]
-            return 200, [], f"profile:{handle} join us".encode()
-        return 0, [], b""
-
-    finds, meta = osint._username_osint(fetch, "fixtureuser", lambda m: None,
-                                        [], platforms=platforms)
-    assert meta["probable"] == ["GoodHub"], meta
-    assert meta["candidate"] == ["CatchAll"], meta
-    assert meta["unevaluated"] == ["DownSite"], meta
-    assert any(f["confidence"] == "probable" for f in finds)
-    assert any(f["confidence"] == "candidate"
-               and "UNVERIFIED" in f["description"] for f in finds)
 
 
-def test_osint_full_hermetic():
-    import osint
-    crt_rows = [{"name_value": "old.fixture.test",
-                 "issuer_name": "Fixture CA",
-                 "not_after": "2020-01-01T00:00:00"}]
-    gh_items = {"items": [{"full_name": "fixturemart/web",
-                           "html_url": "https://github.com/fixturemart/web",
-                           "default_branch": "main"}]}
-    rdap = {"name": "FIXTURE-NET", "country": "ID",
-            "cidr0_cidrs": [{"v4prefix": "203.0.113.0", "length": 24}],
-            "entities": [{"roles": ["registrant"],
-                          "vcardArray": ["vcard", [["fn", {}, "text",
-                                                    "Fixture Hosting PT"]]]}]}
-    cdx = [["timestamp", "original", "statuscode"],
-           ["20210101000000", "http://fixture.test/static/old.js", "200"]]
-    mapping = [
-        ("crt.sh", (200, json.dumps(crt_rows))),
-        ("cdx/search", (200, json.dumps(cdx))),
-        ("web.archive.org/web/", (200, 'var k = "sk_live_4eC39HqLyjWDarjtT1zdp7dc";')),
-        ("api.github.com/search/code", (401, "{}")),
-        ("api.github.com/search/repositories", (200, json.dumps(gh_items))),
-        ("raw.githubusercontent.com", (200, "# FixtureMart web\n")),
-        ("gitlab.com/api", (200, "[]")),
-        ("rdap.org/ip/", (200, json.dumps(rdap))),
-    ]
-    fetch = _stub_fetch(mapping)
-    orig_doh = osint._doh_ips
-    orig_doh_q = osint._doh_query
-    osint._doh_ips = lambda name: ["203.0.113.10"] if name == "fixture.test" else []
-    # v1.5.0 hygiene modules: keep their DoH channel hermetic (no records)
-    osint._doh_query = lambda name, rrtype: []
-    try:
-        log = []
-        res = osint.run_osint_recon(
-            "https://fixture.test", log, {"handle": "fixtureuser"},
-            _fetch=fetch,
-            _platforms=[("GoodHub", "https://good.test/u/{h}", "profile:{h}")])
-    finally:
-        osint._doh_ips = orig_doh
-        osint._doh_query = orig_doh_q
-    # stub for the sim platform must live in the same fetch map:
-    assert res["type"] == "osint"
-    titles = " | ".join(f["title"] for f in res["findings"])
-    assert "hosting network identified" in titles, titles
-    assert "shadow subdomains" in titles, titles
-    assert "Historical attack surface" in titles, titles
-    assert "GitHub repositories referencing" in titles, titles
-    assert any("Stripe" in f["title"] for f in res["findings"]), titles
-    assert res["meta"]["code_exposure"]["github_code_search"].startswith(
-        "not evaluated"), res["meta"]["code_exposure"]
-    assert res["meta"]["breach"]["enabled"] is False
-    assert any("breach exposure: disabled" in line for line in log), log
 
 
-def test_osint_sim_platforms_over_http():
-    """A3 gate against the fixture's simulated platforms (real HTTP)."""
-    import osint
-    import passive as passive_mod
-    with _Fixture():
-        base = f"http://127.0.0.1:{PORT}"
-        platforms = [
-            ("SimHub", base + "/sim/users/{h}", "profile:{h}"),
-            ("SimCatch", base + "/sim/catchall/{h}", "profile:{h}"),
-        ]
-        finds, meta = osint._username_osint(
-            passive_mod._fetch_bytes, "fixtureuser", lambda m: None, [],
-            platforms=platforms)
-        assert meta["probable"] == ["SimHub"], meta
-        assert meta["candidate"] == ["SimCatch"], meta

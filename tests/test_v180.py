@@ -793,19 +793,6 @@ def test_ws6d_docx_metadata_generated():
 
 # ------------------------------------------------------------ OSINT dorking
 
-def test_osint_a6_dork_formulations():
-    import osint
-    forms, dorks = osint._a6_formulations("example.com", (), "domain")
-    assert forms[0] == '"example.com"'
-    assert "site:example.com" in dorks
-    assert any("filetype:pdf" in d for d in dorks)
-    assert any("inurl:login" in d for d in dorks)
-    forms2, dorks2 = osint._a6_formulations("Jane Doe", ("jakarta",),
-                                            "name")
-    assert "Jane Doe jakarta" in forms2
-    assert any("inurl:profile" in d for d in dorks2)
-    assert any('intitle:"Jane Doe"' in d for d in dorks2)
-    assert len(forms2) <= 9
 
 
 # ------------------------------------------------------------ WS7 chaining

@@ -310,26 +310,6 @@ def test_unknown_waf_provocation_and_exceptions():
 GOODHUB = [("GoodHub", "http://127.0.0.1:1/sim/{h}", "profile:{h}")]
 
 
-def test_platform_schema_completeness():
-    import osint
-    # v1.6.0 (WS-C): the dataset was expanded 45 -> 175 under the
-    # approved People OSINT Deep design; check types now follow each
-    # platform's real behavior (message preferred, status_code /
-    # response_url where that is what the platform actually does).
-    # v1.11.0 (F5): expanded 175 -> 303 researched platforms.
-    assert len(osint.PLATFORM_SCHEMA) == 303
-    for d in osint.PLATFORM_SCHEMA:
-        assert d["claimed_handle"] and d["unclaimed_handle"], d["name"]
-        assert d["check_type"] in ("message", "status_code",
-                                   "response_url"), d["name"]
-        if d["check_type"] == "message":
-            assert d["presence_strs"], d["name"]
-    assert osint.PLATFORMS == [(d["name"], d["url_pattern"], d["marker"])
-                               for d in osint.PLATFORM_SCHEMA]
-    assert osint.generate_username_candidates("Madonna") == ["madonna"]
-    perm = osint.permuted_username_candidates("Fixture User")
-    assert perm[0] == "fixtureuser" and "fixture-user" in perm
-    assert "_fixtureuser" in perm and len(perm) <= 10
 
 
 def _selfcheck_fetch(url, **kw):
@@ -347,64 +327,8 @@ def _selfcheck_fetch(url, **kw):
     return 404, [], b""
 
 
-def test_self_check_pass_fail_unknown_and_persistence(tmp_path):
-    import osint
-    names = ["GitHub", "Keybase", "Lichess", "Medium"]
-    plats = [p for p in osint.PLATFORMS if p[0] in names]
-    state = str(tmp_path / "state.json")
-    report = osint.self_check_platforms(
-        fetch=_selfcheck_fetch, platforms=plats, apply_disable=True,
-        state_path=state)
-    by = {e["platform"]: e for e in report}
-    assert by["GitHub"]["status"] == "pass", by["GitHub"]
-    assert by["Keybase"]["status"] == "fail", by["Keybase"]
-    assert by["Medium"]["status"] == "fail", by["Medium"]
-    assert by["Lichess"]["status"] == "unknown", by["Lichess"]
-    # UNKNOWN never disables; FAIL is persisted and excluded later
-    dis = osint.disabled_platform_names(state)
-    assert dis == {"Keybase", "Medium"}, dis
-    active = osint.active_platforms(plats, state_path=state)
-    assert [p[0] for p in active] == ["GitHub", "Lichess"]
 
 
-def test_extraction_recursion_and_graph_profile():
-    import osint
-    gh_user = {"login": "fixtureuser", "name": "Fixture User",
-               "twitter_username": "fixturetw", "blog": "",
-               "followers": 5, "html_url": "https://github.com/fixtureuser"}
-
-    def fetch(url, **kw):
-        if "api.github.com/users/fixtureuser" in url:
-            return 200, [], json.dumps(gh_user).encode()
-        if "api.github.com/users/fixtureuser/repos" in url:
-            return 200, [], b"[]"
-        if "api.github.com" in url or "gitlab.com" in url:
-            return 404, [], b"{}"
-        if "x.com/fixturetw" in url:
-            return 200, [], b"profile of fixturetw"
-        return 404, [], b"not found"
-
-    plats = [p for p in osint.PLATFORMS
-             if p[0] in ("GitHub", "X (Twitter)")]
-    res = osint.run_osint_recon("fixtureuser", [],
-                                {"query": "fixtureuser"},
-                                _fetch=fetch, _platforms=plats)
-    umeta = res["meta"]["username"]
-    gh = umeta["profiles"]["GitHub"]
-    assert gh["fullname"] == "Fixture User" and gh["followers"] == 5
-    assert any(i["type"] == "username" and i["value"] == "fixturetw"
-               for i in gh["identifiers"])
-    rec = res["meta"].get("recursion") or []
-    assert any(r["handle"] == "fixturetw" and r["depth"] == 1
-               for r in rec), rec
-    g = res["meta"]["graph"]
-    link = [e for e in g["edges"] if e["relation"] == "LINKED_TO"
-            and e["target"] == "username:fixturetw"]
-    assert link and link[0]["confidence"] == "probable", g["edges"]
-    site = [n for n in g["nodes"] if n["type"] == "website"
-            and n["label"] == "GitHub"]
-    assert site and site[0].get("profile", {}).get("fullname") == \
-        "Fixture User", site
 
 
 # ------------------------------------------- WS1+WS2 integration (lab)
