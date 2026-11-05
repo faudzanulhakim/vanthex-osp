@@ -1,12 +1,12 @@
 # VANTHEX — Docker Compose Deployment
 
-**Version 1.2.1** · For native (non-Docker) installation, see
+**Version 1.2.2** · For native (non-Docker) installation, see
 [INSTALL.md](INSTALL.md). Engine, features, and scan behavior are
 identical in both installation methods; only the runtime differs.
 
 **Dashboard URLs** (after sign-in): `/` serves the artifact UI
-(2026-10-26 artifact-UI port); `/classic` was removed and now 404s;
-`/webui` serves the legacy webui SPA.
+The UI bundle ships prebuilt in `web/`; `/webui` is an alias that
+serves the same UI (the legacy webui SPA was removed).
 
 ---
 
@@ -73,10 +73,8 @@ Edit `.env`:
 PTK_ADMIN_PW=a-long-random-password
 GHCR_OWNER=<your-github-user>        # image: ghcr.io/<owner>/vanthex-osp
 GHCR_REPO=vanthex-osp
-VANTHEX_TAG=1.2.1                    # or latest
+VANTHEX_TAG=1.2.2                    # or latest
 # PTK_NVD_KEY=...                    # optional, recommended
-# VANTHEX_FIRMS_MAP_KEY              # optional: NASA FIRMS key for live fire hotspots (unset = EONET fallback)
-# VANTHEX_ABUSECH_AUTH_KEY           # optional: abuse.ch key for keyed threat-intel families (unset = offline)
 ```
 
 Then:
@@ -110,8 +108,6 @@ If the package is private, authenticate first:
 | `PTK_COOKIE_SECURE` | `1` marks session cookies `Secure` (HTTPS deployments) | — |
 | `GHCR_OWNER` / `GHCR_REPO` | Image coordinates for the deploy compose file | — / `vanthex-osp` |
 | `VANTHEX_TAG` | Image tag for the deploy compose file | `latest` |
-| `VANTHEX_FIRMS_MAP_KEY` | NASA FIRMS MAP_KEY for live fire hotspots on the globe | — (unset = EONET fallback) |
-| `VANTHEX_ABUSECH_AUTH_KEY` | abuse.ch auth key for keyed threat-intel families | — (unset = those families stay offline) |
 
 ---
 
