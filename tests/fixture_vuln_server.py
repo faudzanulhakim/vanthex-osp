@@ -275,6 +275,35 @@ JWT_PUB_PEM = (
     "zcM0C4Qj3B1+7n4Qk9YhrPjFqYKTaRkYq1VQpR2ObxQ0r9T4m5e8hZCVQKbJYw==\n"
     "-----END PUBLIC KEY-----"
 )
+# --- jwtred.py fixture assets (v1.2.2) --------------------------------
+# HS256 weak secret for /jwt/* controls; SAFE one is strong (negative).
+JWTRED_SECRET = b"vanthex-secret"
+SAFE_JWT_SECRET = b"rbQ7x!safe-key-9f2c-unguessable-Zq8w"
+OAUTH_ISSUED = set()   # codes ever issued (vuln exchange never invalidates)
+OAUTH_USED = set()     # codes consumed (safe exchange)
+
+
+def _jwtred_claims(tok, secret):
+    """Verify a 3-part HS256 token with the given secret -> claims | None."""
+    try:
+        h, p, s = tok.split(".")
+        expect = base64.urlsafe_b64encode(
+            hmac.new(secret, f"{h}.{p}".encode(), hashlib.sha256).digest()
+        ).rstrip(b"=").decode()
+        if not hmac.compare_digest(expect, s):
+            return None
+        return json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+    except Exception:
+        return None
+
+
+def _jwtred_header(tok):
+    try:
+        h = tok.split(".")[0]
+        return json.loads(base64.urlsafe_b64decode(h + "=" * (-len(h) % 4)))
+    except Exception:
+        return {}
+
 USERS = [
     {"id": 1, "name": "Ade Pratama", "email": "ade.pratama@example.com",
      "password_hash": "$2b$12$fixturehashade0000000000000000000000000000000000001"},
@@ -1456,8 +1485,314 @@ class H(BaseHTTPRequestHandler):
                 if q.get("state"):
                     loc += "&state=" + q["state"]
                 self._send(302, "", extra=[("Location", loc)])
+        elif path == "/jwt/jwks.json":
+            # jwtred: JWKS hosting an attacker 'oct' key for jku injection.
+            k = base64.urlsafe_b64encode(b"vhx-jwk-attacker-key").rstrip(b"=").decode()
+            self._send(200, json.dumps({"keys": [{"kty": "oct",
+                                                  "alg": "HS256", "k": k}]}),
+                       "application/json")
+        elif path == "/jwt/pub.pem":
+            self._send(200, JWT_PUB_PEM, "text/plain")
+        elif path in ("/jwt/profile", "/safe/jwt/profile"):
+            # jwtred: profile endpoint — vuln verifies with the WEAK secret,
+            # safe variant with a strong one (tampered tokens always 401).
+            auth = self.headers.get("Authorization", "")
+            tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            sec = SAFE_JWT_SECRET if path.startswith("/safe") else JWTRED_SECRET
+            claims = _jwtred_claims(tok, sec)
+            if claims:
+                self._send(200, json.dumps({"ok": True, "sub": claims.get("sub", ""),
+                                            "role": claims.get("role", "user"),
+                                            "isAdmin": bool(claims.get("isAdmin"))}),
+                           "application/json")
+            else:
+                self._send(401, json.dumps({"ok": False, "error": "invalid token"}),
+                           "application/json")
+        elif path in ("/jwt/none", "/safe/jwt/none"):
+            # jwtred: alg:none control — vuln accepts unsigned tokens.
+            auth = self.headers.get("Authorization", "")
+            tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            hdr = _jwtred_header(tok)
+            claims = None
+            if str(hdr.get("alg", "")).lower() == "none":
+                if not path.startswith("/safe"):
+                    try:
+                        p = tok.split(".")[1]
+                        claims = json.loads(base64.urlsafe_b64decode(
+                            p + "=" * (-len(p) % 4)))
+                    except Exception:
+                        claims = None
+            else:
+                sec = SAFE_JWT_SECRET if path.startswith("/safe") else JWTRED_SECRET
+                claims = _jwtred_claims(tok, sec)
+            if claims:
+                self._send(200, json.dumps({"ok": True, "sub": claims.get("sub", ""),
+                                            "role": claims.get("role", "user"),
+                                            "isAdmin": bool(claims.get("isAdmin"))}),
+                           "application/json")
+            else:
+                self._send(401, json.dumps({"ok": False, "error": "invalid token"}),
+                           "application/json")
+        elif path == "/jwt/kid":
+            # jwtred: kid injection control — traversal uses empty secret,
+            # SQLi pattern is "found" in the fake key store.
+            auth = self.headers.get("Authorization", "")
+            tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            kid = str(_jwtred_header(tok).get("kid", ""))
+            claims = None
+            if kid == "../../dev/null" or "' OR 1=1--" in kid:
+                claims = _jwtred_claims(tok, b"")
+            else:
+                claims = _jwtred_claims(tok, JWTRED_SECRET)
+            if claims:
+                self._send(200, json.dumps({"ok": True, "kid": kid,
+                                            "role": claims.get("role", "user")}),
+                           "application/json")
+            else:
+                self._send(401, json.dumps({"ok": False, "error": "invalid token"}),
+                           "application/json")
+        elif path == "/jwt/jku":
+            # jwtred: jku header injection — fetches attacker JWKS (oct key)
+            # and verifies with it. Local-host only (hermetic).
+            import urllib.request as _ur
+            auth = self.headers.get("Authorization", "")
+            tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            hdr = _jwtred_header(tok)
+            jku = str(hdr.get("jku", ""))
+            jwk = hdr.get("jwk") if isinstance(hdr.get("jwk"), dict) else None
+            claims = None
+            if jwk and jwk.get("k"):
+                # jwtred: embedded jwk (oct key) trusted straight from the
+                # token header.
+                try:
+                    k = str(jwk["k"])
+                    sec = base64.urlsafe_b64decode(k + "=" * (-len(k) % 4))
+                    claims = _jwtred_claims(tok, sec)
+                except Exception:
+                    claims = None
+            elif jku.startswith(("http://127.0.0.1", "http://localhost")):
+                try:
+                    jw = json.loads(_ur.urlopen(jku, timeout=3).read())
+                    k = jw["keys"][0]["k"]
+                    sec = base64.urlsafe_b64decode(k + "=" * (-len(k) % 4))
+                    claims = _jwtred_claims(tok, sec)
+                except Exception:
+                    claims = None
+            else:
+                # no key material in header: normal weak-secret verification
+                # (so the GENUINE token is a valid baseline on this endpoint)
+                claims = _jwtred_claims(tok, JWTRED_SECRET)
+            if claims:
+                self._send(200, json.dumps({"ok": True, "jku": jku,
+                                            "role": claims.get("role", "user")}),
+                           "application/json")
+            else:
+                self._send(401, json.dumps({"ok": False, "error": "invalid token"}),
+                           "application/json")
+        elif path in ("/jwt/rs", "/safe/jwt/rs"):
+            # jwtred: RS256->HS256 key confusion. /jwt/rs wrongly verifies
+            # HS256 with the PUBLIC key PEM; safe rejects HS256 outright.
+            auth = self.headers.get("Authorization", "")
+            tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            alg = str(_jwtred_header(tok).get("alg", ""))
+            claims = None
+            if path == "/jwt/rs" and alg == "HS256":
+                claims = _jwtred_claims(tok, JWT_PUB_PEM.encode())
+            if claims:
+                self._send(200, json.dumps({"ok": True,
+                                            "role": claims.get("role", "user")}),
+                           "application/json")
+            else:
+                self._send(401, json.dumps({"ok": False, "error": "invalid token"}),
+                           "application/json")
+        elif path in ("/jwt/claims", "/safe/jwt/claims"):
+            # jwtred: claim tampering — vuln decodes payload WITHOUT
+            # verifying the signature.
+            auth = self.headers.get("Authorization", "")
+            tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            claims = None
+            if path.startswith("/safe"):
+                claims = _jwtred_claims(tok, JWTRED_SECRET)
+            else:
+                try:
+                    p = tok.split(".")[1]
+                    claims = json.loads(base64.urlsafe_b64decode(
+                        p + "=" * (-len(p) % 4)))
+                except Exception:
+                    claims = None
+            if claims:
+                self._send(200, json.dumps({"ok": True, "claims": claims}),
+                           "application/json")
+            else:
+                self._send(401, json.dumps({"ok": False, "error": "invalid token"}),
+                           "application/json")
+        elif path == "/jwt/referer":
+            # jwtred: simulates an attacker page that logs the Referer.
+            self._send(200, "logged Referer: "
+                       + (self.headers.get("Referer") or "(none)"))
+        elif path == "/reset/token":
+            # jwtred: predictable reset token = md5(email + ':' + minute).
+            email = q.get("email", "alice@fixture.local")
+            host_used = self.headers.get("Host", "fixture.local")
+            tok = hashlib.md5(f"{email}:{int(time.time()) // 60}".encode()).hexdigest()
+            self._send(200, f"<html>Reset link: http://{host_used}"
+                            f"/reset/token/confirm?email={email}&token={tok}"
+                            "</html>")
+        elif path == "/jwt/oauth/authorize":
+            # jwtred: lax authorization server — ANY redirect_uri, no state,
+            # code replay accepted at /jwt/oauth/exchange.
+            ru = q.get("redirect_uri", "")
+            if not ru:
+                self._send(400, "missing redirect_uri")
+            elif q.get("response_type") == "token":
+                self._send(302, "", extra=[("Location",
+                                            ru + "#access_token=vhx-implicit-token"
+                                                 "&token_type=bearer")])
+            else:
+                code = "vxo-" + os.urandom(8).hex()
+                OAUTH_ISSUED.add(code)
+                sep = "&" if "?" in ru else "?"
+                self._send(302, "", extra=[("Location",
+                                            ru + sep + "code=" + code)])
+        elif path == "/jwt/oauth/exchange":
+            # jwtred: VULN — never invalidates the code (replay accepted).
+            code = q.get("code", "")
+            if code in OAUTH_ISSUED:
+                self._send(200, json.dumps({"ok": True,
+                                            "access_token": "at-" + code}),
+                           "application/json")
+            else:
+                self._send(400, json.dumps({"ok": False,
+                                            "error": "unknown code"}),
+                           "application/json")
+        elif path == "/safe/jwt/oauth/exchange":
+            # jwtred: SAFE — single-use code (replay rejected).
+            code = q.get("code", "")
+            if code in OAUTH_ISSUED and code not in OAUTH_USED:
+                OAUTH_USED.add(code)
+                self._send(200, json.dumps({"ok": True,
+                                            "access_token": "at-" + code}),
+                           "application/json")
+            else:
+                self._send(400, json.dumps({"ok": False,
+                                            "error": "code invalid or used"}),
+                           "application/json")
         elif path == "/graphql":
             self._send(200, "<html>GraphQL endpoint</html>")
+        elif path == "/api/admin/users":
+            # v1.2.2 — authz matrix: admin-only JSON list (role check via
+            # X-Test-User session header; admin bertahan, lainnya 403).
+            if self.headers.get("X-Test-User") == "admin":
+                self._send(200, json.dumps({"users": [
+                    {"id": 999, "name": "Admin Fixture", "role": "admin"},
+                    {"id": 1, "name": "Ade Pratama", "role": "user"}]}),
+                    "application/json")
+            else:
+                self._send(403, json.dumps({"error": "admin only"}),
+                           "application/json")
+        elif path == "/api/user/me":
+            # v1.2.2 — authz matrix: profil sesi sendiri (id dipakai sebagai
+            # baseline 'own id' oleh cek IDOR).
+            who = self.headers.get("X-Test-User", "user1")
+            self._send(200, json.dumps({
+                "id": 999 if who == "admin" else 1,
+                "role": "admin" if who == "admin" else "user",
+                "name": who}), "application/json")
+        elif path.startswith("/api/user/") and path.endswith("/profile"):
+            # v1.2.2 — IDOR RENTAN: profil APAPUN dikembalikan TANPA cek auth
+            # (ganti id -> baca profil user lain / anon pun bisa).
+            uid = path[len("/api/user/"):-len("/profile")]
+            self._send(200, json.dumps({
+                "id": uid, "name": f"User {uid}",
+                "email": f"user{uid}@fixture.test",
+                "ssn_masked": f"***-**-{uid[-4:] if uid else '0000'}"}),
+                "application/json")
+        elif path == "/app.js":
+            # v1.2.2 — bundle SPA mining: fetch endpoint tersembunyi yang
+            # tidak ter-link di HTML mana pun.
+            self._send(200,
+                       'fetch("/api/hidden/config").then(r=>r.json());\n'
+                       'var me="/api/user/me";\n'
+                       'axios.get("/api/orders/7");\n'
+                       'query ViewerProfile { viewer { id } }\n',
+                       "application/javascript")
+        elif path == "/api/hidden/config":
+            self._send(200, json.dumps({"feature_flags": ["bola_lab"],
+                                        "env": "test"}), "application/json")
+        elif path == "/fp/echo":
+            # v1.2.4 FP pattern (field: Next.js SPA behind auth): 302 to the
+            # login page with next= carrying the URL-encoded incoming query.
+            from urllib.parse import quote as _q
+            qs = urlparse(self.path).query
+            self.send_response(302)
+            self.send_header("Location", f"/fp/login?next={_q('/fp/echo?' + qs, safe='')}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        elif path == "/fp/login":
+            # Renders the next= param back in HTML (the FP echo surface).
+            nxt = str(q.get("next", ""))
+            self._send(200, "<html><head><title>Sign in required</title></head>"
+                       "<body><form method='post' action='/fp/login'>"
+                       "<input name='user'><input type='password' name='password'>"
+                       "</form>"
+                       f"<p>Continue: <a href=\"/fp/login?next={nxt}\">next</a>"
+                       f"<input type='hidden' name='next' value='{nxt}'></p>"
+                       "</body></html>")
+        elif path == "/fp/true-cmdi":
+            # v1.2.4 real-execution simulation: parse q for an 'echo X'
+            # expression and return ONLY the decoded X / evaluated result
+            # (never the payload string).
+            import re as _re
+            v = str(q.get("q", ""))
+            out = "done"
+            for mm in _re.finditer(r"echo\s+(\S+)", v):
+                tok = mm.group(1).strip("`$()")
+                mprod = _re.fullmatch(r"(\d+)\*(\d+)", tok)
+                if mprod:
+                    out = str(int(mprod.group(1)) * int(mprod.group(2)))
+                else:
+                    out = tok
+                break
+            self._send(200, out + "\n", "text/plain")
+        elif path == "/fp/safe/cmdi":
+            # Negative control: input never reaches a shell.
+            self._send(200, "done\n", "text/plain")
+        elif path == "/fp/auth-redirect":
+            # Auth redirect WITHOUT any query echo: the fp-guard 'skip' case.
+            self.send_response(302)
+            self.send_header("Location", "/fp/login?next=/fp/secure")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        elif path == "/fp/waf-block":
+            # accuracy-v2: WAF/challenge block page (Cloudflare-style) — the
+            # preflight classifier must emit the INCONCLUSIVE blocked finding.
+            self._send(403,
+                       "<html><head><title>Just a moment...</title></head>"
+                       "<body>Attention Required! | Checking your browser "
+                       "before accessing. cf-chl: 8f00abcd</body></html>")
+        elif path in ("/fp/domxss", "/fp/domxss-static"):
+            # accuracy-v2: DOM XSS pages — inline script with a plausible
+            # source (location.search) and a reachable innerHTML sink.
+            # /fp/domxss reflects the q value into the page body (differential
+            # path); /fp/domxss-static does not (static-analysis downgrade).
+            refl = str(q.get("q", ""))
+            body = ("<html><head><title>DOM XSS lab</title></head><body>"
+                    + (f"<p id='reflected'>{refl}</p>" if path == "/fp/domxss" else "<p id='reflected'></p>")
+                    + "<div id='o'></div>"
+                    "<script>var p=new URLSearchParams(location.search);"
+                    "document.getElementById('o').innerHTML=p.get('q');</script>"
+                    "</body></html>")
+            self._send(200, body)
+        elif path == "/fp/header-good":
+            # accuracy-v2: hardened headers — CSP frame-ancestors present (so
+            # the x-frame-options finding must be suppressed), nosniff,
+            # referrer-policy set; x-frame-options intentionally absent.
+            self._send(200, "<html><title>hardened</title></head><body>ok</body></html>",
+                       extra=[("Content-Security-Policy",
+                               "default-src 'self'; frame-ancestors 'self'"),
+                              ("X-Content-Type-Options", "nosniff"),
+                              ("Referrer-Policy", "strict-origin-when-cross-origin"),
+                              ("Permissions-Policy", "geolocation=()")])
         else:
             self._send(404, "<html><title>404</title>Not Found - FixtureMart custom error page qwerty"
                             "<pre>Warning: mysqli_query(): You have an error in your SQL syntax; "
@@ -1475,7 +1810,59 @@ class H(BaseHTTPRequestHandler):
         raw_bytes = self.rfile.read(length) if length else b""
         raw = raw_bytes.decode("utf-8", "replace")
         self._maybe_sleep([raw])
-        if path == "/forgot":
+        if path == "/jwt/login":
+            # jwtred: issues an HS256 token signed with the WEAK secret
+            # 'vanthex-secret', role=user.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            user = str(j.get("user") or j.get("username") or "alice")
+            def _e(b):
+                return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+            h = _e(json.dumps({"alg": "HS256", "typ": "JWT"},
+                              separators=(",", ":")).encode())
+            p = _e(json.dumps({"sub": user, "role": "user",
+                               "iat": int(time.time())},
+                              separators=(",", ":")).encode())
+            s = _e(hmac.new(JWTRED_SECRET, f"{h}.{p}".encode(),
+                            hashlib.sha256).digest())
+            self._send(200, json.dumps({"ok": True, "user": user,
+                                        "token": f"{h}.{p}.{s}"}),
+                       "application/json")
+        elif path == "/reset/token":
+            # jwtred: predictable reset token = md5(email + ':' + minute).
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            email = str(j.get("email") or "alice@fixture.local")
+            host_used = self.headers.get("Host", "fixture.local")
+            tok = hashlib.md5(f"{email}:{int(time.time()) // 60}".encode()).hexdigest()
+            self._send(200, json.dumps({
+                "ok": True, "email": email, "reset_token": tok,
+                "link": f"http://{host_used}/reset/token/confirm"
+                        f"?email={email}&token={tok}"}), "application/json")
+        elif path == "/reset/token/confirm":
+            # jwtred: accepts the predictable (timestamp-derivable) token.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            email = str(j.get("email") or "")
+            tok = str(j.get("token") or "")
+            minute = int(time.time()) // 60
+            ok = tok in {hashlib.md5(f"{email}:{m}".encode()).hexdigest()
+                         for m in (minute - 1, minute, minute + 1)}
+            if ok:
+                self._send(200, json.dumps({"ok": True,
+                                            "status": "password updated"}),
+                           "application/json")
+            else:
+                self._send(403, json.dumps({"ok": False,
+                                            "error": "token invalid"}),
+                           "application/json")
+        elif path == "/forgot":
             host_used = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", "")
             self._send(200, f"<html>Tautan reset dikirim: http://{host_used}/reset?token=abc123</html>")
         elif path in ("/spray/login", "/safe/spray/login"):
@@ -1954,8 +2341,97 @@ class H(BaseHTTPRequestHandler):
                     # terima CL.TE (rentan); jangan echol'd jika safe
             else:
                 self._send(400, "bad request")
+        elif path == "/api/user/profile/update":
+            # v1.2.2 — mass assignment REFLECT-ONLY: menerima field role/
+            # is_admin/permissions dan meng-echo-nya di respons, tetapi TIDAK
+            # menyimpan (fetch profil berikutnya tetap role=user -> probable).
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            resp = {"ok": True, "user": "user1", "role": "user"}
+            if isinstance(j, dict):
+                resp.update(j)
+            self._send(200, json.dumps(resp), "application/json")
         elif path == "/login":
             self._send(200, "<html>welcome</html>", extra=[("Set-Cookie", "session=xyz; Path=/")])
+        # ---- authattack (auth engine) kontrol routes --------------------
+        elif path in ("/auth/login", "/safe/auth/login"):
+            # /auth/login RENTAN: 3 pasangan lemah (admin:admin123,
+            # test:test1234, dev:devpass1); lockout 5 gagal per XFF bucket
+            # (client-controlled -> bisa di-evasi dgn XFF baru).
+            # /safe/auth/login: tidak ada kredensial lemah, lockout GLOBAL
+            # (XFF diabaikan) -> negatif utk brute & evasi.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            if not j:
+                j = {}
+                for part in (raw or "").split("&"):
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        j[k] = v
+            u = str(j.get("username", j.get("user", "")))
+            p = str(j.get("password", ""))
+            xff = self.headers.get("X-Forwarded-For", "conn")
+            bucket = "GLOBAL" if path.startswith("/safe") else xff
+            STATE.setdefault("login_fails", {})
+            STATE["login_fails"].setdefault(bucket, 0)
+            creds = {} if path.startswith("/safe") else {
+                "admin": "admin123", "test": "test1234", "dev": "devpass1"}
+            if STATE["login_fails"][bucket] >= 5:
+                self._send(429, json.dumps({"ok": False,
+                                            "error": "too many attempts, locked"}),
+                           "application/json")
+            elif u in creds and creds[u] == p:
+                self._send(200, json.dumps({"ok": True, "user": u,
+                                            "session": "SESS-authattack"}),
+                           "application/json")
+            else:
+                STATE["login_fails"][bucket] += 1
+                self._send(401, json.dumps({"ok": False,
+                                            "error": "invalid credentials"}),
+                           "application/json")
+        elif path == "/auth/open-login":
+            # login tanpa lockout/rate-limit sama sekali (selalu 401).
+            self._send(401, json.dumps({"ok": False,
+                                        "error": "invalid credentials"}),
+                       "application/json")
+        elif path == "/auth/register":
+            # RENTAN mass-assignment: merefleksikan role/isAdmin/email_verified
+            # dari body registrasi.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            u = str(j.get("username", j.get("user", "user")))
+            role = "user"
+            if j.get("role") == "admin" or j.get("isAdmin") is True:
+                role = "admin"
+            resp = {"ok": True, "user": u, "role": role}
+            if "email_verified" in j:
+                resp["email_verified"] = bool(j.get("email_verified"))
+            self._send(200, json.dumps(resp), "application/json")
+        elif path == "/auth/otp":
+            # RENTAN window brute: menerima 123456..123463 (window 8 kode),
+            # TANPA lockout / rate-limit.
+            try:
+                j = json.loads(raw or "{}")
+            except Exception:
+                j = {}
+            try:
+                code = int(str(j.get("code", "")))
+            except Exception:
+                code = -1
+            if 123456 <= code <= 123463:
+                self._send(200, json.dumps({"ok": True, "user":
+                                            str(j.get("user", "admin"))}),
+                           "application/json")
+            else:
+                self._send(401, json.dumps({"ok": False,
+                                            "error": "invalid code"}),
+                           "application/json")
         else:
             self._send(404, "not found")
 
