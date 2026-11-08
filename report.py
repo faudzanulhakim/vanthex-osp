@@ -141,12 +141,15 @@ def render_report(scan, findings, lang="en"):
             <tr><td>{T("lbl_cvss_vector")}</td><td><code>{H.escape(vec)}</code> <span class="small">{T("cvss_vector_note")}</span></td></tr>
             <tr><td>{T("lbl_weakness")}</td><td>{H.escape(f.get('cwe') or '-')} &nbsp;|&nbsp; {H.escape(f.get('owasp') or '-')}</td></tr>
             <tr><td>{T("lbl_conf_status")}</td><td>{conf} / {H.escape(str(status))}</td></tr>
+            {f'<tr><td>Verification:</td><td><b>{H.escape(str(f["verification"]))}</b></td></tr>' if f.get('verification') else ''}
             <tr><td>{T("lbl_origin")}</td><td>{H.escape(str(f.get('origin', 'active')).capitalize())}{T("origin_suffix")}</td></tr>
+            {f'<tr><td>{T("lbl_priority")}</td><td><b>{H.escape(RC.priority_line(f))}</b></td></tr>' if f.get('priority') else ''}
             {f'<tr><td>{T("lbl_location")}</td><td><code>{H.escape(loc + (" ?" + prm if prm else ""))}</code></td></tr>' if loc else ''}
             {f'<tr><td>{T("lbl_assigned_to")}</td><td>{H.escape(str(f["assignee"]))}</td></tr>' if f.get('assignee') else ''}
             {f'<tr><td>{T("lbl_remediation_due")}</td><td>{H.escape(str(f["due_date"]))}</td></tr>' if f.get('due_date') else ''}
           </table>
           <h4 class="lbl">{T("h_description")}</h4><p>{H.escape(f.get('description') or '')}</p>
+          {f'<p style="color:#9B2226;background:#FDF3F2;padding:6px 10px;border-left:3px solid #9B2226;"><b>Verification note:</b> {H.escape(str(f["verification_note"]))}</p>' if f.get('verification_note') else ''}
           {f'<h4 class="lbl">{T("h_evidence")}</h4><pre>{H.escape(str(f["evidence"])[:900])}</pre>' if f.get('evidence') else ''}
           <h4 class="lbl">{T("h_steps")}</h4><ol>{steps}</ol>
           {poc_html}
@@ -188,6 +191,25 @@ def render_report(scan, findings, lang="en"):
         for lbl, sevs, guide in prio)
     warnings = "".join(f'<p><b>{T("scan_warning_prefix").strip()}</b> {H.escape(str(w))}</p>'
                        for w in (meta.get("warnings") or []))
+    # Attack Paths (v1.2.3): compact chain list under the roadmap; graceful
+    # when the scan has no attack_graph (env-off or no choppable findings).
+    _ag = meta.get("attack_graph") or scan.get("attack_graph") or {}
+    _ag_chains = (_ag.get("chains") or []) if isinstance(_ag, dict) else []
+    if _ag_chains:
+        try:
+            import attackgraph as _agm
+            _items = "".join(
+                f'<li>{H.escape(_agm.chain_label(c))}</li>'
+                for c in _ag_chains[:3])
+        except Exception:
+            _items = "".join(
+                f'<li>{H.escape(" -> ".join(str(t) for t in (c.get("titles") or c.get("nodes") or [])))} '
+                f'(impact {c.get("impact_score", 0)}/100)</li>'
+                for c in _ag_chains[:3])
+        attack_paths = (f'<h3 class="sub">Attack Paths</h3>'
+                        f'<ul>{_items}</ul>')
+    else:
+        attack_paths = ""
     techs = meta.get("tech_profile") or meta.get("technologies") or []
     tech_html = ""
     if techs:
@@ -296,6 +318,7 @@ def render_report(scan, findings, lang="en"):
 <table><tr><th>{T("col_priority")}</th><th style="text-align:center;width:90px">{T("col_findings")}</th><th>{T("col_guidance")}</th></tr>
 {roadmap}</table>
 <p>{T("roadmap_note")}</p>
+{attack_paths}
 
 <h2 class="sec" id="sa">{T("appA")}</h2>
 <p>{T("appA_note_html")}</p>

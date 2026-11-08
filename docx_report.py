@@ -286,7 +286,8 @@ def generate_docx(scan, findings, path, lang="en"):
                  ([C(T("lbl_cvss_vector"), AW[0]), C(RC.cvss_vector(f) + " " + T("cvss_vector_note"), AW[1])], False),
                  ([C(T("lbl_weakness"), AW[0]), C(f"{f.get('cwe') or '-'} | {f.get('owasp') or '-'}", AW[1])], False),
                  ([C(T("lbl_conf_status"), AW[0]), C(f"{conf} / {status}", AW[1])], False),
-                 ([C(T("lbl_origin"), AW[0]), C(str(f.get('origin', 'active')).capitalize() + T("origin_suffix"), AW[1])], False)]
+                 ([C(T("lbl_origin"), AW[0]), C(str(f.get('origin', 'active')).capitalize() + T("origin_suffix"), AW[1])], False)] + (
+            [([C(T("lbl_priority"), AW[0]), C(RC.priority_line(f), AW[1], bold=True)], False)] if f.get("priority") else [])
         if f.get("location"):
             attrs.append(([C(T("lbl_location"), AW[0]),
                           C(f["location"] + (f" ?{f['param']}" if f.get("param") else ""), AW[1])], False))
@@ -335,6 +336,22 @@ def generate_docx(scan, findings, path, lang="en"):
     body.append(_table(RW, rrows, band=True))
     body.append(_p([_r(T("roadmap_note"), 20, color="5B6B7F")]))
 
+    # Attack Paths (v1.2.3): bullet list of top exploitation chains;
+    # graceful when the scan has no attack_graph.
+    _ag = meta.get("attack_graph") or scan.get("attack_graph") or {}
+    _ag_chains = (_ag.get("chains") or []) if isinstance(_ag, dict) else []
+    if _ag_chains:
+        body.append(_p([_r("Attack Paths", 23, True, NAVY)],
+                       spacing_before=160, spacing_after=40))
+        for c in _ag_chains[:3]:
+            try:
+                import attackgraph as _agm
+                _label = _agm.chain_label(c)
+            except Exception:
+                _label = (f"{' -> '.join(str(t) for t in (c.get('titles') or c.get('nodes') or []))} "
+                          f"(impact {c.get('impact_score', 0)}/100)")
+            body.append(_p([_r(f"— {_label}", 20)], spacing_after=30))
+
     # ---------------- APPENDIX A ----------------
     body.append(_p([_r(T("appA"), 28, True, NAVY)], style="Heading1"))
     BW = [1800, 1800, 5400]
@@ -367,10 +384,15 @@ def generate_docx(scan, findings, path, lang="en"):
         conf = _conf(f.get("confidence") or "probable")
         body.append(_p([_r(f"C.{i} {T('submission_word')} F-{i:03d}", 22, True, NAVY)],
                        style="Heading2", spacing_before=140, spacing_after=40))
-        for label, val in [(T("lbl_title"), f["title"]), (T("lbl_asset"), target),
-                           (T("lbl_weakness"), f"{f.get('cwe') or '-'} · {f.get('owasp') or '-'}"),
-                           (T("lbl_severity"), f"{RI.sev_label(lang, f['severity'])} — CVSS {f.get('cvss', 0)} · {RC.cvss_vector(f)} · {T('lbl_confidence_word')}: {conf}"),
-                           (T("lbl_summary"), f["description"])]:
+        _fv_rows = [(T("lbl_title"), f["title"]), (T("lbl_asset"), target),
+                    (T("lbl_weakness"), f"{f.get('cwe') or '-'} · {f.get('owasp') or '-'}"),
+                    (T("lbl_severity"), f"{RI.sev_label(lang, f['severity'])} — CVSS {f.get('cvss', 0)} · {RC.cvss_vector(f)} · {T('lbl_confidence_word')}: {conf}"),
+                    (T("lbl_summary"), f["description"])]
+        if f.get("verification"):
+            _fv_rows.append(("Verification:", str(f["verification"])))
+        if f.get("verification_note"):
+            _fv_rows.append(("Verification note", str(f["verification_note"])))
+        for label, val in _fv_rows:
             body.append(_p([_r(f"{label}: ", 20, True), _r(val, 20)], spacing_after=20))
         steps_txt = " ".join(f"({si}) {s}" for si, s in
                              enumerate(RC.steps_for(f, target, lang), 1))
