@@ -66,6 +66,11 @@ def init_db():
             ts TEXT);
         """)
         _migrate(c)
+        # v1.2.4 roles: legacy rows (pre-roles 'analyst' default, NULL, or
+        # any unknown value) become 'operator'; 'admin' rows are untouched,
+        # so existing single-admin installs keep working unchanged.
+        c.execute("UPDATE users SET role='operator' "
+                  "WHERE role IS NULL OR role NOT IN ('admin','operator','viewer')")
         c.execute("INSERT OR REPLACE INTO schema_meta(k, v) VALUES"
                   "('schema_version', '3')")
         if not c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
@@ -104,8 +109,12 @@ def init_db():
             pass
 
 
-def create_user(username, password, role="analyst"):
+def create_user(username, password, role="operator"):
     import hashlib, secrets
+    # v1.2.4 roles: only known roles are storable; unknown values collapse
+    # to the least-privilege default instead of silently escalating.
+    import rbac as _rbac
+    role = _rbac.normalize_role(role if str(role).strip() else "operator")
     # Akun tanpa nama atau dengan password kosong/lemah tidak boleh
     # lahir: hash PBKDF2 dari password kosong tetap bisa dipakai untuk
     # login, jadi validasi harus ada di lapisan penyimpanan juga —
@@ -218,10 +227,22 @@ def get_findings(scan_id):
         return [dict(r) for r in rows]
 
 
+def cleanup_orphan_findings():
+    """Hapus findings yang scan-nya sudah tidak ada (warisan DB lama /
+    penghapusan yang tidak kaskade). Dipanggil di delete_scan dan
+    delete_asset agar daftar finding tidak pernah menampilkan yatim."""
+    with _db() as c:
+        n = c.execute(
+            "DELETE FROM findings WHERE scan_id NOT IN (SELECT id FROM scans)"
+        ).rowcount
+    return n
+
+
 def delete_scan(scan_id):
     with _db() as c:
         c.execute("DELETE FROM findings WHERE scan_id=?", (scan_id,))
         c.execute("DELETE FROM scans WHERE id=?", (scan_id,))
+    cleanup_orphan_findings()
     return True
 
 
@@ -295,6 +316,14 @@ def _migrate_v32(c):
         id TEXT PRIMARY KEY, target TEXT, profile TEXT, interval_h REAL,
         next_run REAL, enabled INTEGER DEFAULT 1, created_by TEXT, created_at REAL);
     """)
+    # v1.2.3 scheduler windows: optional 'window' (JSON) + 'diff_mode' flag
+    # on existing schedules tables (backward compatible ALTER).
+    scols = {r[1] for r in c.execute("PRAGMA table_info(schedules)")}
+    if scols and "window" not in scols:
+        c.execute("ALTER TABLE schedules ADD COLUMN window TEXT")
+    if scols and "diff_mode" not in scols:
+        c.execute("ALTER TABLE schedules ADD COLUMN diff_mode INTEGER DEFAULT 0")
+
 
 
 def init_v32():
@@ -446,21 +475,35 @@ def assets_summary():
     return sorted(assets.values(), key=lambda x: -x["last_scan"])
 
 
-def create_schedule(target, profile, interval_h, created_by):
+def create_schedule(target, profile, interval_h, created_by,
+                    window=None, diff_mode=False):
     sid = uuid.uuid4().hex[:10]
     now = time.time()
+    win_json = json.dumps(window) if window else None
     with _db() as c:
         _migrate_v32(c)
-        c.execute("INSERT INTO schedules VALUES(?,?,?,?,?,?,?,?)",
-                  (sid, target, profile, float(interval_h), now + float(interval_h) * 3600,
-                   1, created_by, now))
+        c.execute("INSERT INTO schedules(id,target,profile,interval_h,next_run,"
+                  "enabled,created_by,created_at,window,diff_mode) "
+                  "VALUES(?,?,?,?,?,1,?,?,?,?)",
+                  (sid, target, profile, float(interval_h),
+                   now + float(interval_h) * 3600, created_by, now,
+                   win_json, 1 if diff_mode else 0))
     return sid
 
 
 def list_schedules():
     with _db() as c:
         _migrate_v32(c)
-        return [dict(r) for r in c.execute("SELECT * FROM schedules ORDER BY created_at DESC")]
+        out = []
+        for r in c.execute("SELECT * FROM schedules ORDER BY created_at DESC"):
+            d = dict(r)
+            try:
+                d["window"] = json.loads(d["window"]) if d.get("window") else None
+            except Exception:
+                d["window"] = None
+            d["diff_mode"] = bool(d.get("diff_mode"))
+            out.append(d)
+        return out
 
 
 def delete_schedule(sid):
@@ -488,6 +531,114 @@ def mark_schedule_ran(sid, interval_h):
         _migrate_v32(c)
         c.execute("UPDATE schedules SET next_run=? WHERE id=?",
                   (time.time() + float(interval_h) * 3600, sid))
+
+
+# ------------------------------------------------- schedule windows (v1.2.3)
+# Days use Python weekday numbering: 0=Monday .. 6=Sunday, matching
+# time.localtime().tm_wday. Times are server local time, 'HH:MM'.
+
+_WINDOW_RE = __import__("re").compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+
+
+def parse_schedule_window(raw):
+    """Normalize a schedule window. Returns {'days': [...], 'start': 'HH:MM',
+    'end': 'HH:MM'} or None when absent/invalid. Invalid raises nothing at
+    the parse level — callers distinguish absent (raw falsy) vs invalid."""
+    if not isinstance(raw, dict):
+        return None
+    start = str(raw.get("start", ""))
+    end = str(raw.get("end", ""))
+    if not _WINDOW_RE.match(start) or not _WINDOW_RE.match(end):
+        return None
+    days = raw.get("days", [0, 1, 2, 3, 4, 5, 6])
+    if not isinstance(days, list):
+        return None
+    try:
+        days = sorted({int(d) for d in days})
+    except (TypeError, ValueError):
+        return None
+    if not days or any(d < 0 or d > 6 for d in days):
+        return None
+    return {"days": days, "start": start, "end": end}
+
+
+def _window_minutes(hhmm):
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
+
+
+def _in_window(window, ts):
+    """Is local timestamp ts inside the window? Start inclusive, end
+    exclusive; end < start means an overnight window spanning midnight —
+    the early-morning part belongs to the previous day's slot."""
+    lt = time.localtime(ts)
+    days = set(window["days"])
+    t = lt.tm_hour * 60 + lt.tm_min
+    s = _window_minutes(window["start"])
+    e = _window_minutes(window["end"])
+    if s <= e:
+        return lt.tm_wday in days and s <= t < e
+    # overnight: late-evening side on the start day ...
+    if t >= s and lt.tm_wday in days:
+        return True
+    # ... early-morning side on the day after the start day.
+    if t < e:
+        return (lt.tm_wday - 1) % 7 in days
+    return False
+
+
+def window_fire(window, next_run, now=None):
+    """Decide whether a due schedule should fire now.
+
+    Returns (fire, catchup). Without a window everything is (True, False) —
+    fully backward compatible. With a window:
+      - inside the window right now -> fire normally;
+      - outside the window but a full window slot already elapsed since
+        next_run (e.g. server was down) -> fire once with catchup=True;
+      - otherwise -> wait for the next window."""
+    now = time.time() if now is None else now
+    w = parse_schedule_window(window)
+    if not w:
+        return True, False
+    if _in_window(w, now):
+        return True, False
+    import datetime as _dt
+    base = _dt.datetime.fromtimestamp(now)
+    for back in range(0, 8):
+        day = base - _dt.timedelta(days=back)
+        if day.weekday() not in set(w["days"]):
+            continue
+        s = _window_minutes(w["start"])
+        e = _window_minutes(w["end"])
+        wstart = day.replace(hour=s // 60, minute=s % 60,
+                             second=0, microsecond=0).timestamp()
+        wend_day = day if e > s or e == s else day + _dt.timedelta(days=1)
+        wend = wend_day.replace(hour=e // 60, minute=e % 60,
+                                second=0, microsecond=0).timestamp()
+        if wstart >= float(next_run) and wend <= now:
+            return True, True
+    return False, False
+
+
+def scan_diff_summary(scan_id, max_items=20):
+    """Compact diff summary for the scheduler: {'new': n, 'resolved': n,
+    'by_severity': {...}, 'new_titles': [...], 'resolved_titles': [...]}
+    with the title lists bounded to max_items (diff summary max 20 lines)."""
+    d = diff_scans(scan_id)
+    if d is None:
+        return None
+    by_sev = {}
+    if d["new"]:
+        sev_by_title = {}
+        for f in get_findings(scan_id):
+            sev_by_title.setdefault(f["title"], f.get("severity") or "info")
+        for title in d["new"]:
+            s = sev_by_title.get(title, "info")
+            by_sev[s] = by_sev.get(s, 0) + 1
+    return {"new": len(d["new"]), "resolved": len(d["resolved"]),
+            "by_severity": by_sev,
+            "new_titles": d["new"][:max_items],
+            "resolved_titles": d["resolved"][:max_items]}
 
 
 def stats_extended():
@@ -576,9 +727,11 @@ def _migrate_v34(c):
     """)
 
 
-def update_finding(finding_id, status=None, assignee=None, due_date=None):
+def update_finding(finding_id, status=None, assignee=None, due_date=None,
+                   confidence=None, poc_proof=None):
     """Update triage lanjutan: status (+cap waktu perubahan untuk MTTR),
-    penanggung jawab, dan tenggat remediasi."""
+    penanggung jawab, tenggat remediasi — dan (PoC sandbox v1.2.3)
+    confidence upgrade + bukti PoC (disimpan di kolom evidence)."""
     sets, args = [], []
     if status is not None:
         if status not in FINDING_STATUSES:
@@ -589,6 +742,11 @@ def update_finding(finding_id, status=None, assignee=None, due_date=None):
         sets.append("assignee=?"); args.append(str(assignee)[:80])
     if due_date is not None:
         sets.append("due_date=?"); args.append(str(due_date)[:10])
+    if confidence in ("confirmed", "probable", "candidate"):
+        sets.append("confidence=?"); args.append(confidence)
+    if poc_proof:
+        sets.append("evidence=?")
+        args.append(f"PoC proof: {str(poc_proof)[:300]}")
     if not sets:
         return False
     args.append(finding_id)
@@ -683,9 +841,25 @@ def delete_asset(host):
         host_part = urlparse(host).hostname or ""
     elif "/" in host:
         host_part = host.split("/")[0]
+    host_part = (host_part or host).lower().rstrip(".")
+
+    def _same_host(target: str) -> bool:
+        t = (target or "").strip().lower()
+        if t in (host.lower(), host_part):
+            return True
+        try:
+            return (urlparse(t).hostname or "").lower().rstrip(".") == host_part
+        except Exception:
+            return False
+
     with _db() as c:
+        # Match scans by HOSTNAME, not by exact string — targets are stored
+        # verbatim (scheme, path, trailing slash) while the asset view shows
+        # the bare host; exact matching left sibling scans and their findings
+        # behind (field-reported bug).
         ids = [r[0] for r in c.execute(
-            "SELECT id FROM scans WHERE target=?", (host,))]
+            "SELECT id,target FROM scans").fetchall()
+            if _same_host(r["target"])]
         nf = 0
         if ids:
             q = ",".join("?" * len(ids))
@@ -694,14 +868,18 @@ def delete_asset(host):
                 ids).fetchone()[0]
             c.execute(f"DELETE FROM findings WHERE scan_id IN ({q})", ids)
             c.execute(f"DELETE FROM scans WHERE id IN ({q})", ids)
-        c.execute("DELETE FROM asset_meta WHERE host=?", (host,))
+        c.execute("DELETE FROM asset_meta WHERE host=? OR host=?",
+                  (host, host_part))
         keys = [k for k in {host, host_part} if k]
         ns = 0
         if keys:
             q = ",".join("?" * len(keys))
             ns = c.execute(
                 f"DELETE FROM suppressions WHERE host IN ({q})", keys).rowcount
-    return {"scans": len(ids), "findings": nf, "suppressions": ns}
+        orphans = c.execute(
+            "DELETE FROM findings WHERE scan_id NOT IN (SELECT id FROM scans)"
+        ).rowcount
+    return {"scans": len(ids), "findings": nf + orphans, "suppressions": ns}
 
 
 def get_setting(key, default=""):
