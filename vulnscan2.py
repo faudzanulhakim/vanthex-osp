@@ -16,15 +16,18 @@ import base64
 import hashlib
 import hmac as hmac_mod
 import json
+import os
 import re
 import secrets as pysecrets
+import threading
 import time
-from urllib.parse import parse_qsl, quote, urlencode, urlparse
+from urllib.parse import parse_qsl, quote, unquote_plus, urlencode, urlparse
 
 from netclient import Client, similarity
 import netclient
 import crawler as crawl_mod
 import wafscore
+import wafbank
 import xssverify
 import timingoracle
 import diffconfirm
@@ -65,12 +68,237 @@ def _zero_delay(payload):
     return p
 
 
+def _infer_verification(confidence):
+    """Default verification status inferred from confidence (v1.2.4 FP guard):
+    callers that produce stronger proof pass verification explicitly."""
+    return {"confirmed": "signature", "probable": "manual-required",
+            "candidate": "reflection-only"}.get(confidence, "manual-required")
+
+
+VERIFICATION_STATUSES = ("executed-proof", "differential", "signature",
+                         "reflection-only", "static-analysis",
+                         "version-fingerprint", "manual-required",
+                         "fp-guard-skipped")
+
+
+FP_ECHO_NOTE = ("Marker only reflected inside an echoed query string or "
+                "login redirect — NOT proof of execution. Manual "
+                "verification required.")
+
+
 def F(sev, title, desc, evidence="", cwe="", owasp="", cvss=0.0, remed="",
-      confidence="probable", location="", param="", origin="active"):
-    return {"severity": sev, "title": title, "description": desc,
-            "evidence": evidence, "cwe": cwe, "owasp": owasp, "cvss": cvss,
-            "remediation": remed, "confidence": confidence,
-            "location": location, "param": param, "origin": origin}
+      confidence="probable", location="", param="", origin="active",
+      verification=None, verification_note=""):
+    f = {"severity": sev, "title": title, "description": desc,
+         "evidence": evidence, "cwe": cwe, "owasp": owasp, "cvss": cvss,
+         "remediation": remed, "confidence": confidence,
+         "location": location, "param": param, "origin": origin}
+    f["verification"] = verification or _infer_verification(confidence)
+    if verification_note:
+        f["verification_note"] = verification_note
+    return f
+
+
+def _resp_headers(resp):
+    """headers as a dict (case-insensitive lookup prepared), tolerating
+    dict, list-of-tuples, or missing."""
+    h = getattr(resp, "headers", None) or {}
+    try:
+        return {str(k).lower(): str(v) for k, v in h.items()}
+    except AttributeError:
+        try:
+            return {str(k).lower(): str(v) for k, v in h}
+        except Exception:
+            return {}
+
+
+def _is_auth_redirect(resp):
+    """True when the response is an unauthenticated redirect to a login
+    path, or a login page echoing the request path in a next= parameter.
+    Such responses must never be used as execution proof (v1.2.4)."""
+    try:
+        status = int(getattr(resp, "status", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    hh = _resp_headers(resp)
+    location = hh.get("location", "")
+    if 300 <= status < 400:
+        low = location.lower()
+        return any(k in low for k in ("login", "signin", "sign-in",
+                                      "auth", "sso", "session/new",
+                                      "account/login"))
+    body = getattr(resp, "body", "") or ""
+    if not status or not body:
+        return False
+    # 200 login page that echoes the request in a next=/redirect= parameter
+    if re.search(r"type=[\"']?password", body, re.I) and \
+            re.search(r"(?:next|redirect|return_to|continue)=", body, re.I):
+        return True
+    return False
+
+
+def _echo_only_response(resp, marker):
+    """True when `marker` appears ONLY inside an echoed query-string
+    context (v1.2.4 FP guard): a redirect Location echo, or a URL-encoded
+    / next= query echo in the body — and no DECODED standalone marker
+    exists anywhere in the body outside that echo (which would be real
+    execution proof, e.g. output of echo without the payload string)."""
+    m = str(marker or "")
+    if not m:
+        return False
+    body = getattr(resp, "body", "") or ""
+    hh = _resp_headers(resp)
+    location = hh.get("location", "")
+    try:
+        status = int(getattr(resp, "status", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if not body and not location:
+        return False
+    enc = quote(m, safe="")
+    enc2 = quote(enc, safe="")
+    # (a) redirect whose Location echoes the marker (encoded or raw)
+    loc_echo = bool(location) and (m in location or enc in location
+                                   or enc2 in location)
+    # (c) a decoded marker OUTSIDE any echoed query value = standalone proof
+    stripped = re.sub(r"((?:next|redirect|return_to|continue|url)\s*=\s*)"
+                      r"([^&\"'<>\s]+)", r"\1", body, flags=re.I)
+    if m in stripped:
+        return False
+    if not body:
+        return loc_echo
+    # (b) marker echoed inside a next= style parameter (raw or decoded,
+    #     single- or double-encoded), or as a URL-encoded blob in the body
+    body_echo = enc in body or enc2 in body
+    if not body_echo:
+        for mo in re.finditer(r"(?:next|redirect|return_to|continue|url)"
+                              r"\s*=\s*([^&\"'<>\s]+)", body, re.I):
+            v = mo.group(1)
+            for _ in range(2):
+                v = unquote_plus(v)
+                if m in v:
+                    body_echo = True
+                    break
+            if body_echo:
+                break
+    if loc_echo or body_echo:
+        return True
+    return False
+
+
+def _fp_gate(ctx, resp, marker, loc=""):
+    """Classify a response for the FP guard. Returns:
+    'echo'  — marker only echoed in a query string: downgrade to candidate
+              (still surfaced, but never as confirmed execution proof);
+    'skip'  — unauthenticated redirect with no marker echo: skip entirely;
+    'ok'    — evidence may be credited."""
+    try:
+        if marker and _echo_only_response(resp, marker):
+            return "echo"
+        if _is_auth_redirect(resp):
+            ctx.L(f"  [fp-guard] {loc or 'endpoint'}: skipped, "
+                  "unauthenticated redirect")
+            return "skip"
+    except Exception:
+        return "ok"
+    return "ok"
+
+
+# --------------------------------------------------------------- self-healing
+# (v1.2.3): when a path-dependent check probes an optional endpoint that
+# 404s, the endpoint may simply have MOVED (trailing slash, casing,
+# kebab/camelCase, plural/singular, suffix, api/v1 prefix). heal_path tries
+# a small, deterministic set of smart variants before declaring not-found.
+# Opt out globally with env PTK_HEAL=0.
+_NO_EXT_RE = re.compile(r"\.(php[0-9]?|html?|asp|aspx|jsp|json|xml|do|action)$")
+
+
+def heal_variants(path):
+    """Deterministic list of smart variants for a not-found path (the
+    original path itself is NOT included)."""
+    p = str(path or "")
+    if not p:
+        return []
+    out, seen = [], {p}
+
+    def addv(v):
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+
+    stem = p.rstrip("/")
+    addv(p + "/")                      # trailing slash
+    if stem != p:
+        addv(stem)                     # or remove it
+    addv(stem.lower())
+    addv(stem.lower() + "/")
+    segs = stem.split("/")
+
+    def camel(s):
+        parts = s.split("-")
+        return parts[0] + "".join(w.capitalize() for w in parts[1:])
+
+    def kebab(s):
+        return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", s).lower()
+
+    alt = []
+    for s in segs:
+        if not s:
+            alt.append(s)
+        elif "-" in s:
+            alt.append(camel(s))
+        elif any(c.isupper() for c in s):
+            alt.append(kebab(s))
+        else:
+            alt.append(s)
+    if alt != segs:
+        addv("/".join(alt))
+        addv("/".join(alt) + "/")
+    last = segs[-1] if segs and segs[-1] else ""
+    if last:
+        if last.endswith("s") and len(last) > 2:
+            addv("/".join(segs[:-1]) + "/" + last[:-1])
+        else:
+            addv("/".join(segs[:-1]) + "/" + last + "s")
+    if not _NO_EXT_RE.search(stem):
+        for suf in (".php", ".html"):
+            addv(stem + suf)
+            addv(stem + suf + "/")
+    if not stem.startswith(("/api", "/v1", "/v2")):
+        for pre in ("api", "v1", "v2"):
+            addv("/" + pre + stem)
+    return out
+
+
+def heal_path(ctx, path, variants_budget=8):
+    """Probe smart variants of a path that returned 404/410.
+
+    Returns (variant, response) for the first variant that is NOT
+    404/410, or None when the endpoint stays missing (or healing is
+    disabled via PTK_HEAL=0 / the scan was cancelled / budget spent).
+    Logs at most a few '[heal]' lines per scan.
+    """
+    if os.environ.get("PTK_HEAL", "1").strip().lower() in ("0", "false", "off"):
+        return None
+    logs = getattr(ctx, "_heal_logs", None)
+    if logs is None:
+        logs = ctx._heal_logs = []
+    tried = 0
+    for v in heal_variants(path):
+        if tried >= variants_budget or ctx.cancelled():
+            return None
+        tried += 1
+        try:
+            r = ctx.client.get(v)
+        except Exception:
+            return None
+        if r.status in (404, 410):
+            continue
+        if len(logs) < 5:
+            ctx.L(f"[heal] {path} -> {v} ({r.status})")
+        logs.append((path, v, r.status))
+        return (v, r)
+    return None
 
 
 class Ctx:
@@ -113,6 +341,7 @@ class Ctx:
         self._oob_reported = set()   # tokens already turned into findings
         self._oob_last_plant_ts = 0.0
         self._xss_marks = None        # WS2 marker sandwich (lazy)
+        self._waf_vendor = None       # v1.2.3 wafbank fingerprint (set by c_waf_detection)
         # v1.8.0: structured per-check metadata that is not a finding
         # (BFLA matrix rows, AXFR/bucket/OAuth evaluation summaries,
         # leftover upload artifacts) — surfaced in the scan result.
@@ -148,7 +377,7 @@ class Ctx:
             self.log.append(msg)
 
     def cancelled(self):
-        if self._cancel and self._cancel():
+        if getattr(self, "_cancel", None) and self._cancel():
             return True
         return bool(getattr(self, "_deadline", None)
                     and time.time() > self._deadline)
@@ -287,7 +516,8 @@ def c_version_disclosure(ctx, add):
         add(F("LOW", f"X-Powered-By disclosure: {pb}",
               "Backend technology exposed.", evidence=pb, cwe="CWE-200",
               owasp="A05:2021", cvss=3.1, remed='Remove the X-Powered-By header.',
-              confidence="confirmed", location="/"))
+              confidence="confirmed", location="/",
+              verification="version-fingerprint"))
 
 
 def _tech_fingerprint(ctx):
@@ -546,6 +776,13 @@ def c_security_headers(ctx, add):
     if not r.ok:
         return
     present = {k.lower() for k, _ in r.headers}
+    # Accuracy v2 (b): evidence quotes the exact observed response headers,
+    # not a generic sentence.
+    observed = "; ".join(f"{k}: {str(v)[:80]}" for k, v in list(r.headers)[:24])
+    evidence_headers = (f"observed response headers: {observed[:600]}"
+                        if observed else "observed response headers: (none)")
+    csp_header = r.hdr("content-security-policy") or ""
+    csp_has_frame_ancestors = "frame-ancestors" in csp_header.lower()
     rules = [("strict-transport-security", "MEDIUM", "CWE-319", 5.9,
               'Enable HSTS: Strict-Transport-Security: max-age=31536000; includeSubDomains'),
              ("content-security-policy", "MEDIUM", "CWE-79", 5.4,
@@ -561,12 +798,18 @@ def c_security_headers(ctx, add):
     https = ctx.client.scheme == "https"
     for name, sev, cwe, cvss, remed in rules:
         if name == "strict-transport-security" and not https:
+            # plain-HTTP site that never offered TLS: HSTS is not applicable
+            continue
+        if name == "x-frame-options" and csp_has_frame_ancestors:
+            # a CSP frame-ancestors directive already covers framing control
             continue
         if name not in present:
             add(F(sev, f"Security header not set: {name}",
                   f"Header {name} not found in the response. {remed}",
+                  evidence=f"'{name}' absent — {evidence_headers}",
                   cwe=cwe, owasp="A05:2021 Security Misconfiguration", cvss=cvss,
-                  remed=remed, confidence="confirmed", location="/"))
+                  remed=remed, confidence="confirmed", location="/",
+                  verification="signature"))
     csp = r.hdr("content-security-policy")
     if csp:
         weak = [w for w in ("unsafe-inline", "unsafe-eval") if w in csp]
@@ -1160,14 +1403,20 @@ def c_directory_listing(ctx, add):
     for path in ["/uploads/", "/backup/", "/files/", "/static/", "/images/",
                  "/media/", "/assets/", "/data/", "/download/", "/documents/"]:
         r = ctx.client.get(path)
+        loc = path
+        if r.status in (404, 410):
+            h = heal_path(ctx, path)          # self-healing: moved listing?
+            if not h:
+                continue
+            loc, r = h
         if r.status == 200 and not ctx.is_missing(r) and re.search(
                 r"Index of /|Directory listing for|<title>Index of|Parent Directory</a>", r.body):
-            add(F("MEDIUM", f"Directory listing enabled: {path}",
+            add(F("MEDIUM", f"Directory listing enabled: {loc}",
                   'An attacker can inventory all files in this directory.',
                   evidence='listing signature detected and not a soft-404',
                   cwe="CWE-548", owasp="A05:2021 Security Misconfiguration", cvss=5.3,
                   remed='Disable autoindex at the web server.',
-                  confidence="confirmed", location=path))
+                  confidence="confirmed", location=loc))
 
 
 def c_admin_panels(ctx, add):
@@ -1175,14 +1424,20 @@ def c_admin_panels(ctx, add):
                  "/wp-login.php", "/cpanel", "/console", "/admin/dashboard",
                  "/user/login", "/auth/login"]:
         r = ctx.client.get(path)
+        loc = path
+        if r.status in (404, 410):
+            h = heal_path(ctx, path)          # self-healing: moved panel?
+            if not h:
+                continue
+            loc, r = h
         if r.status == 200 and r.body and not ctx.is_missing(r) and re.search(
                 r'type=["\']password["\']|sign in|log ?in', r.body, re.I):
-            add(F("MEDIUM", f"Admin/login panel exposed: {path}",
+            add(F("MEDIUM", f"Admin/login panel exposed: {loc}",
                   'Ensure the panel is protected by rate limiting, MFA, and IP restrictions. A real password form was found (not a disguised 404 page).',
                   evidence=f"HTTP 200 with a password form", cwe="CWE-1188",
                   owasp="A07:2021 Identification & Authentication Failures", cvss=5.3,
                   remed='Restrict access via IP/VPN; enable MFA; rate-limit logins.',
-                  confidence="confirmed", location=path))
+                  confidence="confirmed", location=loc))
 
 
 def c_http_methods(ctx, add):
@@ -1239,7 +1494,7 @@ def c_open_redirect(ctx, add):
                 add(F("HIGH", f"Open Redirect: {base} param '{pname}'",
                       'Redirect follows user input without domain validation.',
                       evidence=f"Location: {loc}", cwe="CWE-601",
-                      owasp="A01:2021 Broken Access Control", cvss=6.1,
+                      owasp="A01:2021 Broken Access Control", cvss=7.5,
                       remed='Whitelist redirect targets; do not use absolute URLs from input.',
                       confidence="confirmed", location=base, param=pname))
                 return
@@ -1463,22 +1718,31 @@ def c_api_exposure(ctx, add):
     }
     for path, label in docs.items():
         r = ctx.client.get(path)
+        loc = path
+        if r.status in (404, 410):
+            h = heal_path(ctx, path)          # self-healing: moved docs?
+            if not h:
+                continue
+            loc, r = h
         if r.status != 200 or ctx.is_missing(r) or not r.body:
             continue
         sig = re.search(r'"(openapi|swagger)"\s*:|swagger-ui|redoc|openapi', r.body, re.I)
         if sig:
-            add(F("MEDIUM", f"API documentation exposed: {label} ({path})",
+            add(F("MEDIUM", f"API documentation exposed: {label} ({loc})",
                   'A public API spec/UI maps all endpoints for an attacker. If the API is intentionally public this may be acceptable — assess the risk.',
                   evidence=f"HTTP 200, signature: {sig.group(0)[:40]}", cwe="CWE-200",
                   owasp="A05:2021", cvss=5.3,
                   remed='Restrict API docs to the internal network / require authentication.',
-                  confidence="confirmed", location=path))
+                  confidence="confirmed", location=loc))
             break
     # GraphQL introspection — verifikasi nyata dengan query introspeksi
     for gpath in ["/graphql", "/api/graphql", "/graphiql"]:
         r = ctx.client.get(gpath)
-        if r.status == 404 or ctx.is_missing(r):
-            continue
+        if r.status in (404, 410) or ctx.is_missing(r):
+            h = heal_path(ctx, gpath)         # self-healing: moved GraphQL?
+            if not h:
+                continue
+            gpath, r = h
         q = '{"query":"{__schema{queryType{name}}}"}'
         resp = ctx.client.post(gpath, data=q,
                                headers={"Content-Type": "application/json"})
@@ -1684,6 +1948,7 @@ def c_web_injection(ctx, add):
             pass
         return out
     time_tested = 0
+    _waf_budget = 12  # v1.2.3: cap on total wafbank retry requests for this check
     for base, pname, method, orig in targets:
         if ctx.cancelled():
             return
@@ -1717,11 +1982,25 @@ def c_web_injection(ctx, add):
         sqli_struct = False  # bukti struktural SQL (error/UNION/boolean) — gerbang XPath
         for payload in ["1'", '1"', "1')", "1' OR '1'='1"]:
             r = R(payload)
-            errs = _sql_error_in(r.body, bbody)
-            if errs:
+            _errs = _sql_error_in(r.body, bbody)
+            _tname = None
+            if not _errs and wafbank.is_blocked(r.status, r.body):
+                # v1.2.3 (wafbank): canonical form was BLOCKED by a detected
+                # WAF — retry with fingerprint-specific transforms before
+                # concluding anything. Budget-capped (12 per check).
+                _tname, r, _waf_budget = wafbank.bypass_retry(
+                    ctx, R, payload, _waf_budget,
+                    err_check=lambda b: bool(_sql_error_in(b, bbody)),
+                    log=ctx.L)
+                _errs = _sql_error_in(r.body, bbody) if r is not None else []
+            if _errs:
+                _ev = f"payload={payload!r} -> error: {_errs[0]}"
+                if _tname:
+                    _ev += (f"; wafbank bypass transform: {_tname} "
+                            "(canonical form was blocked)")
                 add(F("CRITICAL", f"SQL Injection (error-based): {base} param '{pname}'",
                       'The injection payload triggered a database error message that does not appear in the baseline.',
-                      evidence=f"payload={payload!r} -> error: {errs[0]}",
+                      evidence=_ev,
                       cwe="CWE-89", owasp="A03:2021 Injection", cvss=9.8,
                       remed='Use parameterized queries/prepared statements.',
                       confidence="confirmed", location=loc, param=pname))
@@ -1934,7 +2213,7 @@ def c_web_injection(ctx, add):
                 add(F("CRITICAL", f"{kind} verified: {base} param '{pname}'",
                       'System file contents outside the webroot were successfully read via the parameter.',
                       evidence=f"payload={payload!r} -> system file signature found",
-                      cwe="CWE-22", owasp="A01:2021 Broken Access Control", cvss=8.6,
+                      cwe="CWE-22", owasp="A01:2021 Broken Access Control", cvss=9.8,
                       remed='Whitelist file names; do not concatenate input into paths; chroot/jail the file directory.',
                       confidence="confirmed", location=loc, param=pname))
                 break
@@ -1975,12 +2254,26 @@ def c_web_injection(ctx, add):
                 # (mentah, URL-decoded, maupun HTML-unescaped).
                 if cmk in (r.body or "") and not _reflected(payload, r.body) \
                         and cmk not in bbody:
-                    add(F("CRITICAL", f"Command Injection verified: {base} param '{pname}'",
-                          'Command marker reflected in the response — input is executed by the shell.',
-                          evidence=f"payload={payload!r} -> marker reflected", cwe="CWE-78",
-                          owasp="A03:2021 Injection", cvss=9.8,
-                          remed="Avoid shells; use an API library & argument whitelisting.",
-                          confidence="confirmed", location=loc, param=pname))
+                    _f = F("CRITICAL", f"Command Injection verified: {base} param '{pname}'",
+                           'Command marker reflected in the response — input is executed by the shell.',
+                           evidence=f"payload={payload!r} -> marker reflected", cwe="CWE-78",
+                           owasp="A03:2021 Injection", cvss=9.8,
+                           remed="Avoid shells; use an API library & argument whitelisting.",
+                           confidence="confirmed", location=loc, param=pname,
+                           verification="executed-proof")
+                    # v1.2.4 FP guard: a marker echoed back only inside an
+                    # echoed query string / login redirect (e.g. Next.js
+                    # ?next=<urlencoded request>) is NOT execution proof.
+                    _g = _fp_gate(ctx, r, cmk, loc)
+                    if _g == "skip":
+                        cmd_found = True
+                        break
+                    if _g == "echo":
+                        _f.update(confidence="candidate",
+                                  verification="reflection-only",
+                                  verification_note=FP_ECHO_NOTE)
+                        _f["title"] += " (reflection only)"
+                    add(_f)
                     cmd_found = True
                     break
         if not cmd_found and stable and time_tested < 3:
@@ -2185,7 +2478,7 @@ def _oob_emit(ctx, add, entry, hits):
     elif kind == "XXE":
         add(F("CRITICAL", f"Blind XXE confirmed via out-of-band callback: {loc}",
               "The XML parser resolved the external entity planted in the posted XML body and called the canary URL — XML External Entity processing is enabled on this endpoint.",
-              evidence=ev, cwe="CWE-611", owasp="A05:2021 Security Misconfiguration", cvss=8.2,
+              evidence=ev, cwe="CWE-611", owasp="A05:2021 Security Misconfiguration", cvss=9.8,
               remed="Disable DTD/external entities in the XML parser (disallow DOCTYPE or external entity resolution).",
               confidence="confirmed", location=loc, param=""))
     elif kind == "CMDi":
@@ -2197,7 +2490,7 @@ def _oob_emit(ctx, add, entry, hits):
     elif kind == "XSS":
         add(F("HIGH", f"Blind XSS confirmed via out-of-band callback: {loc}",
               "A script planted through this form was loaded from the canary origin — the stored content was rendered in a context that fetched the unique canary URL, proving stored script execution reaches a viewer's browser (or a server-side renderer). No callback would mean unproven, and none is claimed without one.",
-              evidence=ev, cwe="CWE-79", owasp="A03:2021 Injection", cvss=6.1,
+              evidence=ev, cwe="CWE-79", owasp="A03:2021 Injection", cvss=7.5,
               remed="Contextually encode all user content on output; deploy a Content-Security-Policy that does not allow arbitrary script origins.",
               confidence="confirmed", location=loc, param=""))
 
@@ -2402,22 +2695,26 @@ def c_ssrf(ctx, add):
         hit = False
         rf = ctx.req_param(base, pname, "file:///etc/passwd", method, orig)
         if re.search(r"root:.*?:0:0:", rf.body or ""):
-            add(F("CRITICAL", f"SSRF/LFI via file:// scheme: {base} param '{pname}'",
+            _f = F("CRITICAL", f"SSRF/LFI via file:// scheme: {base} param '{pname}'",
                   'The URL parameter accepts the file:// scheme and returns the contents of /etc/passwd — the server-side fetcher does not validate the scheme/destination.',
                   evidence='signature /etc/passwd from file:///etc/passwd', cwe="CWE-918",
                   owasp="A10:2021 SSRF", cvss=9.1,
                   remed='Whitelist the http/https schemes + destination hosts; block file/gopher/dict.',
-                  confidence="confirmed", location=base, param=pname))
+                  confidence="confirmed", location=base, param=pname)
+            if _fp_gate(ctx, rf, "file:///etc/passwd", base) != "skip":
+                add(_f)
             hit = True
         r = ctx.req_param(base, pname, meta, method, orig)
         body = r.body or ""
         if re.search(r"ami-id|instance-id|instance-type|iam/security-credentials", body):
-            add(F("CRITICAL", f"SSRF to cloud metadata: {base} param '{pname}'",
+            _f = F("CRITICAL", f"SSRF to cloud metadata: {base} param '{pname}'",
                   'The server fetched and displayed cloud instance metadata (169.254.169.254) — instance credentials could be leaked.',
                   evidence='cloud metadata signature in the response', cwe="CWE-918",
                   owasp="A10:2021 SSRF", cvss=9.1,
                   remed='Block the metadata IP & private addresses from the fetcher; whitelist destination hosts.',
-                  confidence="confirmed", location=base, param=pname))
+                  confidence="confirmed", location=base, param=pname)
+            if _fp_gate(ctx, r, meta, base) != "skip":
+                add(_f)
             hit = True
         if home_sig:
             port = ctx.client.port
@@ -2425,12 +2722,14 @@ def c_ssrf(ctx, add):
             r2 = ctx.req_param(base, pname, internal, method, orig)
             base_r = ctx.req_param(base, pname, "1", method, orig)
             if home_sig in (r2.body or "") and home_sig not in (base_r.body or ""):
-                add(F("HIGH", f"SSRF (internal fetch proven): {base} param '{pname}'",
+                _f = F("HIGH", f"SSRF (internal fetch proven): {base} param '{pname}'",
                       f"The URL parameter makes the server fetch content from 127.0.0.1 (internal homepage title '{home_sig[:40]}' appears in the response).",
                       evidence=f"fetch {internal} -> internal content reflected",
                       cwe="CWE-918", owasp="A10:2021 SSRF", cvss=8.6,
                       remed='Whitelist fetch destination hosts; block private/loopback addresses.',
-                      confidence="probable", location=base, param=pname))
+                      confidence="probable", location=base, param=pname)
+                if _fp_gate(ctx, r2, internal, base) != "skip":
+                    add(_f)
                 hit = True
 
 
@@ -2554,7 +2853,7 @@ def c_services(ctx, add):
 
 # Kandidat CVE berbasis versi ter-fingerprint — SELALU confidence=candidate.
 CVE_CANDIDATES = [
-    ("Apache", "2.4.49", "CVE-2021-41773", "CRITICAL", 9.8,
+    ("Apache", "2.4.49", "CVE-2021-41773", "CRITICAL", 7.5,
      'Apache 2.4.49 is vulnerable to path traversal/RCE (CVE-2021-41773). A separate active probe will attempt to confirm it.'),
     ("Apache", "2.4.50", "CVE-2021-42013", "CRITICAL", 9.8,
      'Apache 2.4.50 is vulnerable to the CVE-2021-42013 traversal variant.'),
@@ -2826,7 +3125,7 @@ def c_cve_candidates(ctx, add):
             add(F("CRITICAL", 'CVE-2021-41773 CONFIRMED: Apache path traversal',
                   'A traversal probe read /etc/passwd from the vulnerable Apache target.',
                   evidence='signature /etc/passwd from the .%2e probe', cwe="CWE-22",
-                  owasp="A01:2021", cvss=9.8,
+                  owasp="A01:2021", cvss=7.5,
                   remed='Upgrade Apache to >=2.4.51 IMMEDIATELY.',
                   confidence="confirmed", location=probe))
 
@@ -2921,6 +3220,11 @@ def c_waf_detection(ctx, add):
                 scored, wafscore.score_waf(p["headers"], p["body"],
                                            status=p["status"]))
     vendor = wafscore.best_vendor(scored)
+    # v1.2.3: remember the fingerprint for WAF-aware retry (wafbank) in
+    # later injection checks; confirmed blocking without a vendor signal
+    # degrades to the generic bank.
+    ctx._waf_vendor = (wafbank.normalize_vendor(vendor["vendor"]) if vendor
+                       else ("generic" if v["confirmed"] else None))
     ctx.L(f"  [waf] behavior: {v['blocked_attacks']}/{v['total_attacks']} attacks blocked, controls blocked {v['blocked_controls']}; vendor: "
           + (f"{vendor['vendor']} score {vendor['score']:.2f}" if vendor else "-"))
     note = ("Scan results may be suppressed (payloads blocked) — negative findings on this target must be read as 'not confirmed', not 'clean'.")
@@ -2967,33 +3271,97 @@ DOM_SINKS = [r"\.innerHTML\s*=", r"\.outerHTML\s*=", r"document\.write(?:ln)?\s*
              r"\$\s*\([^)]*\)\.html\s*\("]
 
 
+def _dom_reflection_probe(ctx, path):
+    """Runtime reflection probe for a static DOM-XSS candidate (accuracy v2):
+    request the page with a unique PTKDOM marker in one discovered query
+    parameter and check whether the marker VALUE is reflected in the
+    response HTML (not merely echoed back inside a URL). Returns
+    (marker, reflected_bool). Never raises."""
+    marker = "PTKDOM" + pysecrets.token_hex(4)
+    param = "q"
+    try:
+        for pq in list(getattr(ctx.surface(full=True), "param_urls", None) or [])[:5]:
+            base, names = crawl_mod.params_of(pq)
+            if base.rstrip("/") == str(path).rstrip("/") and names:
+                param = names[0]
+                break
+    except Exception:
+        pass
+    try:
+        r = ctx.client.get(path, params=f"{param}={marker}")
+    except Exception:
+        return marker, False
+    body = getattr(r, "body", "") or ""
+    if marker not in body:
+        return marker, False
+    # exclude URL echo: an occurrence inside a URL attribute that carries a
+    # query string, or directly preceded by ?param=, is not HTML reflection.
+    for m in re.finditer(re.escape(marker), body):
+        around = body[max(0, m.start() - 80):m.end() + 20]
+        if re.search(r"""(?:href|src|action)\s*=\s*["'][^"']*\?""", around, re.I):
+            continue
+        if f"?{param}=" in around:
+            continue
+        return marker, True
+    return marker, False
+
+
+DOM_XSS_CAP = 3
+
+
 def c_dom_xss(ctx, add):
     """DOM XSS statis: file JS same-host yang memuat SOURCE (location.search/hash/dll)
     DAN SINK berbahaya (innerHTML/document.write/eval) dalam file yang sama = probable.
     WS2 v1.4.0: blok <script> INLINE kini juga dianalisis, diekstrak dari
     DOM TER-PARSE (lxml — bukan regex di atas HTML mentah); tetap probable,
     karena analisis statis tidak membuktikan aliran data — jalur konfirmasi
-    DOM XSS adalah eksekusi headless."""
+    DOM XSS adalah eksekusi headless.
+    Accuracy v2: (a) BOTH a plausible source AND a reachable sink are already
+    required; (b) one runtime reflection probe decides between verification
+    'differential' (marker value reflected in HTML) and 'static-analysis'
+    with an explicit manual-verification note; (c) capped at 3 findings."""
     surf = ctx.surface(full=True)
     home = surf.homepage or ctx.client.get("/")
+    dom_probe = None   # (marker, reflected) — probed once per scan
+    dom_n = 0
     srcs = [s for s in re.findall(r'''<script[^>]+src\s*=\s*["']([^"']+)["']''',
                                   home.body or "", re.I) if s.startswith("/")]
     for src in list(dict.fromkeys(srcs))[:6]:
+        if dom_n >= DOM_XSS_CAP:
+            break
         r = ctx.client.get(src)
         if r.status != 200 or not r.body:
             continue
         srcs_hit = [p for p in DOM_SOURCES if re.search(p, r.body)]
         sinks_hit = [p for p in DOM_SINKS if re.search(p, r.body)]
         if srcs_hit and sinks_hit:
-            add(F("HIGH", f"DOM-based XSS indication in JS file: {src}",
-                  f"This JavaScript file reads user-controlled input ({srcs_hit[0]}) and writes to a dangerous sink ({sinks_hit[0]}) — a classic DOM XSS combination. Static analysis does not prove the data flow is connected; manual verification in a browser is still required.",
-                  evidence=f"source={srcs_hit[0]} sink={sinks_hit[0]}", cwe="CWE-79",
-                  owasp="A03:2021 Injection", cvss=7.4,
-                  remed='Use textContent, not innerHTML/document.write, for data from URLs; sanitize with DOMPurify.',
-                  confidence="probable", location=src))
+            if dom_probe is None:
+                page = src.split("?")[0]
+                dom_probe = _dom_reflection_probe(ctx, page)
+            marker, reflected = dom_probe
+            if reflected:
+                add(F("HIGH", f"DOM-based XSS indication in JS file: {src}",
+                      f"This JavaScript file reads user-controlled input ({srcs_hit[0]}) and writes to a dangerous sink ({sinks_hit[0]}). The runtime reflection probe confirmed the marker value is reflected in the response HTML — the data path is live at runtime; manual browser verification is still recommended.",
+                      evidence=f"source={srcs_hit[0]} sink={sinks_hit[0]}; reflection probe: marker {marker} reflected in response HTML", cwe="CWE-79",
+                      owasp="A03:2021 Injection", cvss=7.4,
+                      remed='Use textContent, not innerHTML/document.write, for data from URLs; sanitize with DOMPurify.',
+                      confidence="probable", location=src,
+                      verification="differential"))
+            else:
+                add(F("HIGH", f"DOM-based XSS indication in JS file: {src}",
+                      f"This JavaScript file reads user-controlled input ({srcs_hit[0]}) and writes to a dangerous sink ({sinks_hit[0]}) — a classic DOM XSS combination. Static analysis does not prove the data flow is connected; manual verification in a browser is still required.",
+                      evidence=f"source={srcs_hit[0]} sink={sinks_hit[0]}", cwe="CWE-79",
+                      owasp="A03:2021 Injection", cvss=7.4,
+                      remed='Use textContent, not innerHTML/document.write, for data from URLs; sanitize with DOMPurify.',
+                      confidence="probable", location=src,
+                      verification="static-analysis",
+                      verification_note='Static source-to-sink pattern only — value reflection unconfirmed at runtime. Manual verification required.'))
+            dom_n += 1
     # ---- inline <script> blocks, extracted from the PARSED DOM
     seen_pages = []
     for pg in ["/"] + list(surf.pages or [])[:5]:
+        if dom_n >= DOM_XSS_CAP:
+            break
         pth = pg.split("?")[0]
         if pth in seen_pages:
             continue
@@ -3018,12 +3386,27 @@ def c_dom_xss(ctx, add):
             srcs_hit = [p for p in DOM_SOURCES if re.search(p, code)]
             sinks_hit = [p for p in DOM_SINKS if re.search(p, code)]
             if srcs_hit and sinks_hit:
-                add(F("HIGH", f"DOM-based XSS indication in inline script: {pth}",
-                      f"An inline <script> block on this page (extracted from the parsed DOM) reads user-controlled input ({srcs_hit[0]}) and writes to a dangerous sink ({sinks_hit[0]}) — a classic DOM XSS combination. Static analysis does not prove the data flow is connected; manual verification in a browser is still required.",
-                      evidence=f"inline script: source={srcs_hit[0]} sink={sinks_hit[0]}", cwe="CWE-79",
-                      owasp="A03:2021 Injection", cvss=7.4,
-                      remed='Use textContent, not innerHTML/document.write, for data from URLs; sanitize with DOMPurify.',
-                      confidence="probable", location=pth))
+                if dom_probe is None:
+                    dom_probe = _dom_reflection_probe(ctx, pth)
+                marker, reflected = dom_probe
+                if reflected:
+                    add(F("HIGH", f"DOM-based XSS indication in inline script: {pth}",
+                          f"An inline <script> block on this page (extracted from the parsed DOM) reads user-controlled input ({srcs_hit[0]}) and writes to a dangerous sink ({sinks_hit[0]}). The runtime reflection probe confirmed the marker value is reflected in the response HTML — the data path is live at runtime; manual browser verification is still recommended.",
+                          evidence=f"inline script: source={srcs_hit[0]} sink={sinks_hit[0]}; reflection probe: marker {marker} reflected in response HTML", cwe="CWE-79",
+                          owasp="A03:2021 Injection", cvss=7.4,
+                          remed='Use textContent, not innerHTML/document.write, for data from URLs; sanitize with DOMPurify.',
+                          confidence="probable", location=pth,
+                          verification="differential"))
+                else:
+                    add(F("HIGH", f"DOM-based XSS indication in inline script: {pth}",
+                          f"An inline <script> block on this page (extracted from the parsed DOM) reads user-controlled input ({srcs_hit[0]}) and writes to a dangerous sink ({sinks_hit[0]}) — a classic DOM XSS combination. Static analysis does not prove the data flow is connected; manual verification in a browser is still required.",
+                          evidence=f"inline script: source={srcs_hit[0]} sink={sinks_hit[0]}", cwe="CWE-79",
+                          owasp="A03:2021 Injection", cvss=7.4,
+                          remed='Use textContent, not innerHTML/document.write, for data from URLs; sanitize with DOMPurify.',
+                          confidence="probable", location=pth,
+                          verification="static-analysis",
+                          verification_note='Static source-to-sink pattern only — value reflection unconfirmed at runtime. Manual verification required.'))
+                dom_n += 1
                 break
 
 
@@ -4090,7 +4473,7 @@ def c_stored_xss(ctx, add):
                       'A payload planted through a form is stored by the application and rendered on a later, separate page view in an executable position in the parsed DOM ('
                       + ", ".join(res["kinds"]) + ') — any visitor of that page executes attacker script in the application origin. Credited only because the payload count rose above the pre-plant baseline (baseline diff) — a page that already contained the payload would prove nothing.',
                       evidence=f"payload planted via POST form at {action}; occurrences on GET {pg}: {before} (baseline) -> {after} (after plant); {res['detail']}",
-                      cwe="CWE-79", owasp="A03:2021", cvss=6.5,
+                      cwe="CWE-79", owasp="A03:2021", cvss=7.5,
                       remed='Encode all user-supplied content on output (context-aware) and validate input; deploy a restrictive Content-Security-Policy as defense in depth.',
                       confidence="confirmed", location=pg, param=first_input))
                 credited = True
@@ -4108,6 +4491,48 @@ def c_stored_xss(ctx, add):
             ctx.L(f"  [stored] payload via {action}: no credited rendering "
                   "(not stored, encoded on output, or already present in "
                   "the pre-plant baseline)")
+    # ---- v1.2.3: second-order echo re-check (reuses the same form and
+    # crawl plumbing; bounded 3 inject URLs x 5 echo URLs, cancelled-aware).
+    c_second_order(ctx, add)
+
+
+def c_second_order(ctx, add):
+    """Second-order injection sink (v1.2.3): plant marker-only values
+    through POST form inputs, then re-check echo candidate URLs collected
+    during the crawl. A finding requires the quote variant to surface
+    UNESCAPED on a DIFFERENT page (stored then rendered without output
+    encoding) — a stored-but-escaped marker is logged, never reported.
+    Bounded: max 3 inject URLs x 5 echo URLs per scan, cancelled-aware."""
+    import secondorder
+    surf = ctx.surface(full=True)
+    injects = []
+    for form in (surf.forms or []):
+        if (form.get("method") or "GET").upper() != "POST":
+            continue
+        action = form.get("action") or form.get("page") or "/"
+        low = action.lower()
+        if any(k in low for k in ("login", "signin", "sign-in", "auth",
+                                  "logout", "register", "signup",
+                                  "password")):
+            continue
+        inputs = [i for i in (form.get("inputs") or [])
+                  if isinstance(i, str) and i
+                  and not any(k in i.lower() for k in
+                              ("pass", "email", "token", "csrf", "file"))]
+        if inputs:
+            injects.append((action, inputs[0]))
+    echo = [p for p in (list(surf.pages) + list(getattr(surf, "param_urls", []) or []))
+            if isinstance(p, str) and p][:10]
+    if not injects or not echo:
+        return
+    ctx.L(f"  [second-order] probing {min(3, len(injects))} inject URLs x "
+          f"{min(5, len(echo))} echo URLs")
+    for action, param in injects[:3]:
+        if ctx.cancelled():
+            return
+        for fnd in secondorder.second_order_probe(
+                ctx, action, param, echo[:5], log=ctx.L):
+            add(fnd)
 
 
 def c_prototype_pollution(ctx, add):
@@ -4477,7 +4902,7 @@ def c_graphql_deep(ctx, add):
                       f'A single query carrying {len(_aliases)} aliases of the same field was fully resolved — no alias/complexity cap is enforced, so one HTTP request can multiply resolver work (and batch credential or object probes) far beyond per-request rate limits.',
                       evidence=f"{resolved}/{len(_aliases)} aliases resolved in one response",
                       cwe="CWE-770", owasp="API4:2023 Unrestricted Resource Consumption",
-                      cvss=5.3,
+                      cvss=3.7,
                       remed='Enforce query complexity and alias limits (cost analysis) at the GraphQL layer.',
                       confidence="probable", location=ep))
             elif any(k in aerr for k in ("alias", "complexity",
@@ -4523,7 +4948,7 @@ def c_graphql_deep(ctx, add):
                           'A nested query following the schema\'s own object fields was fully resolved, with data at the deepest level — no query depth/complexity limit is enforced (nested-query denial-of-service surface).',
                           evidence="depth chain resolved with data: "
                                    + " > ".join(f for _t, f, _n in chain),
-                          cwe="CWE-770", owasp="API4:2023", cvss=5.3,
+                          cwe="CWE-770", owasp="API4:2023", cvss=3.7,
                           remed='Enforce a maximum query depth and a complexity budget at the GraphQL layer.',
                           confidence="probable", location=ep))
         except Exception:
@@ -4635,7 +5060,7 @@ def c_oauth_sso(ctx, add):
                   'The authorization flow advances to the redirect_uri without any state parameter — the callback cannot be bound to the initiating session (login CSRF on the OAuth flow).',
                   evidence="authorize redirect issued with no state in the request",
                   cwe="CWE-352", owasp="A01:2021 Broken Access Control",
-                  cvss=4.3,
+                  cvss=3.7,
                   remed='Require a high-entropy state value and verify it on the callback.',
                   confidence="candidate", location=parsed.path))
         else:
@@ -4654,7 +5079,7 @@ def c_oauth_sso(ctx, add):
             add(F("LOW", f"OAuth code flow observed without PKCE: {parsed.path}",
                   'The authorization code flow advances without a code_challenge — intercepted codes are redeemable by whoever holds them (no PKCE binding).',
                   evidence="authorize redirect issued with response_type=code and no code_challenge",
-                  cwe="CWE-347", owasp="A07:2021", cvss=4.3,
+                  cwe="CWE-347", owasp="A07:2021", cvss=3.7,
                   remed='Require PKCE (S256) for all clients, including confidential ones.',
                   confidence="candidate", location=parsed.path))
         evil = "https://vanthex-probe.invalid/oauth-cb"
@@ -6168,11 +6593,21 @@ _ADVANCED = ["c_host_header", "c_web_injection", "c_crlf_injection", "c_ssrf",
              "c_hidden_params", "c_dns_axfr", "c_cloud_buckets",
              "c_dir_bruteforce",
              "c_js_bundle_mine", "c_session_entropy", "c_custom_templates"]
+# auth annihilation pack (2026-11): alias modul baru — operator-gated,
+# no-op tanpa env PTK_AUTHATTACK/PTK_JWTRED/PTK_AUTHZ atau opts terkait.
+import authattack as _aa
+import jwtred as _jr
+import authzmatrix as _az
+c_auth_attack = _aa.c_auth_attack
+c_jwt_attack = _jr.c_jwt_attack
+c_bola_audit = _az.c_authz_matrix
+c_spa_mine = _az.c_spa_mine
+
 PROFILES = {
     "passive-quick": ["c_version_disclosure", "c_security_headers", "c_tls"],
     "passive-full": _PASSIVE_BASE + ["c_email_security"],
     "active-standard": _PASSIVE_BASE + _ACTIVE_BASE,
-    "active-deep": _PASSIVE_BASE + ["c_services"] + _ACTIVE_BASE + _ADVANCED,
+    "active-deep": _PASSIVE_BASE + ["c_services"] + _ACTIVE_BASE + _ADVANCED + ["c_spa_mine"],
     # v1.2.2: profil exploit — standar penuh + modul verifikasi eksploit
     # (SQLi/CMDi/traversal/SSRF/replay). Tetap non-destruktif; untuk target
     # milik sendiri atau dengan otorisasi tertulis.
@@ -6192,7 +6627,12 @@ PROFILES = {
                         # intrusif (banyak attempt), hanya scope tertulis.
                         "c_otp_brute", "c_ratelimit_bypass",
                         # v1.7.0: spray mini + reuse lintas service — intrusif.
-                        "c_cred_reuse"],
+                        "c_cred_reuse",
+        # auth annihilation pack: login/JWT/BOLA attack — no-op tanpa gate.
+        "c_auth_attack", "c_jwt_attack", "c_bola_audit"],
+    # auth-assault: fokus tembus login & sesi (operator-gated penuh).
+    "auth-assault": _PASSIVE_BASE + ["c_services"] + _ACTIVE_BASE + _ADVANCED +
+                    ["c_spa_mine", "c_auth_attack", "c_jwt_attack", "c_bola_audit"],
 }
 PASSIVE_PROFILES = ("passive-quick", "passive-full")
 
@@ -6205,6 +6645,122 @@ def risk_score(findings):
     raw = sum(SEV_WEIGHT.get(f["severity"], 0) * CONF_FACTOR.get(f.get("confidence", "probable"), 0.7)
               for f in findings)
     return min(100, round(raw))
+
+
+def _attack_graph_for(findings, log=None):
+    """Build the attack graph for a findings list, honoring the
+    PTK_ATTACKGRAPH env gate (default ON; =0 disables). Returns the graph
+    dict or None when disabled. Pure local computation, never raises."""
+    if os.environ.get("PTK_ATTACKGRAPH", "1") == "0":
+        return None
+    try:
+        import attackgraph as _ag
+        g = _ag.build_attack_graph(findings)
+        if g["chains"] and log:
+            log(f"[attackgraph] {len(g['chains'])} chains, "
+                f"top impact {g['top_impact']}/100")
+        return g
+    except Exception as e:
+        if log:
+            log(f"[attackgraph] skipped ({e})")
+        return None
+
+
+WAF_CHALLENGE_MARKERS = (
+    # distinctive challenge-page strings only — bare vendor names ("akamai",
+    # "captcha") also occur in ordinary page content and would misclassify
+    # a healthy response as a WAF block (battery regression).
+    "just a moment", "attention required", "checking your browser",
+    "cf-chl", "cf_chl", "captcha-delivery", "incapsula", "imperva",
+    "sucuri website firewall", "access denied",
+)
+
+
+def _waf_block_reason(resp):
+    """Classify a response as scanner-blocking (WAF/challenge/rate-limit).
+    Returns a short reason string or None."""
+    try:
+        status = int(getattr(resp, "status", 0) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    body = (getattr(resp, "body", "") or "")[:4000].lower()
+    if status in (403, 429, 503):
+        return f"HTTP {status}"
+    for m in WAF_CHALLENGE_MARKERS:
+        if m in body:
+            return f"body marker '{m}'"
+    return None
+
+
+def _preflight_attempt(client, path):
+    """One preflight request, retried up to 3 times with short backoff
+    (2s, 4s). Returns (resp_or_None, attempts) where attempts is a list of
+    (scheme, error_type, elapsed_s) evidence tuples."""
+    attempts = []
+    resp = None
+    for i in range(3):
+        r = client.get(path)
+        if r.status:
+            err = f"HTTP {r.status}"
+            if _waf_block_reason(r):
+                err = f"HTTP {r.status} (WAF/challenge)"
+            attempts.append((client.scheme, err, round(getattr(r, "elapsed", 0.0) or 0.0, 2)))
+            return r, attempts
+        attempts.append((client.scheme,
+                         (r.error or "no response")[:80],
+                         round(getattr(r, "elapsed", 0.0) or 0.0, 2)))
+        resp = r
+        if i < 2:
+            time.sleep(2.0 if i == 0 else 4.0)
+    return None, attempts
+
+
+def _preflight_scan(ctx, eff_target):
+    """Preflight with scheme fallback and failure classification.
+
+    Returns (verdict, resp, attempts, eff_target) where verdict is one of
+    'ok' | 'blocked' | 'unreachable'. On a responding alternate scheme the
+    client on ctx is swapped and eff_target updated."""
+    path = ctx.client.base_path or "/"
+    resp, attempts = _preflight_attempt(ctx.client, path)
+    if resp is None and path != "/":
+        resp2, att2 = _preflight_attempt(ctx.client, "/")
+        attempts.extend(att2)
+        if resp2 is not None:
+            resp = resp2
+    if resp is not None:
+        if _waf_block_reason(resp):
+            return "blocked", resp, attempts, eff_target
+        return "ok", resp, attempts, eff_target
+    # ---- scheme fallback: the primary scheme never answered; try the
+    # other one (field case: https times out via egress proxy, http 301s).
+    other = "http" if ctx.client.scheme == "https" else "https"
+    host = ctx.client.host
+    port = ctx.client.port
+    portpart = f":{port}" if port not in (80, 443) else ""
+    alt_target = f"{other}://{host}{portpart}{ctx.client.base_path or ''}"
+    try:
+        alt_client = Client(alt_target,
+                            timeout=ctx.client.timeout,
+                            extra_headers=dict(ctx.client.extra_headers),
+                            proxy=(ctx.opts or {}).get("proxy", ""))
+    except Exception:
+        return "unreachable", None, attempts, eff_target
+    alt_client.should_continue = ctx.client.should_continue
+    ctx.L(f"[preflight] {ctx.client.scheme.upper()} did not respond — trying {other.upper()} fallback ...")
+    alt_resp, alt_att = _preflight_attempt(alt_client, alt_client.base_path or "/")
+    attempts.extend(alt_att)
+    if alt_resp is None and alt_client.base_path and alt_client.base_path != "/":
+        alt_resp, alt_att = _preflight_attempt(alt_client, "/")
+        attempts.extend(alt_att)
+    if alt_resp is not None:
+        ctx.client = alt_client
+        eff_target = alt_client.origin + (alt_client.base_path or "")
+        ctx.L(f"[preflight] {other.upper()} responded — continuing scan against {eff_target}")
+        if _waf_block_reason(alt_resp):
+            return "blocked", alt_resp, attempts, eff_target
+        return "ok", alt_resp, attempts, eff_target
+    return "unreachable", None, attempts, eff_target
 
 
 def run_vulnscan(target, profile="active-deep", log=None, opts=None, cancelled=None):
@@ -6231,26 +6787,50 @@ def run_vulnscan(target, profile="active-deep", log=None, opts=None, cancelled=N
         L('[warn] DNS failed — scan still attempted (target may be a local IP/host)')
 
     aborted = False
+    preflight_verdict = "ok"
     if profile not in PASSIVE_PROFILES:
-        _pre = ctx.client.get(ctx.client.base_path or "/")
-        if _pre.status == 0:
-            _pre = ctx.client.get("/")
-        if _pre.status == 0:
+        preflight_verdict, _pre, _pf_attempts, eff_target = _preflight_scan(
+            ctx, eff_target)
+        if preflight_verdict == "ok":
+            L(f"[init] effective scheme: {ctx.client.scheme} "
+              f"(target: {eff_target})")
+        else:
             aborted = True
-            L(f"[abort] preflight failed: target did not respond to a single request ({eff_target})")
-            _abort_finding = F(
-                "INFO", "Target unreachable — scan aborted early",
-                "The target did not respond to any HTTP request during "
-                "preflight (every attempt failed or timed out), so the scan "
-                "was aborted instead of running all checks against an "
-                "unresponsive target. This result is INCONCLUSIVE — it is "
-                "not evidence that the target is secure.",
-                evidence=(f"target={eff_target} "
-                          f"attempts={ctx.client.stats.get('attempts')} "
-                          f"responses={ctx.client.stats.get('total')}"),
-                remed="Verify the URL (including the http/https scheme) and "
-                      "that the target is reachable from the scanner, then "
-                      "re-run the scan.")
+            _pf_ev = " | ".join(
+                f"{sch}://{eff_target.split('://', 1)[-1]} {err} after {el}s"
+                for sch, err, el in _pf_attempts)
+            if preflight_verdict == "blocked":
+                L("[abort] preflight: target blocked the scanner (WAF/challenge)")
+                _abort_finding = F(
+                    "INFO", "Target blocked the scanner (WAF/challenge) — INCONCLUSIVE",
+                    "During preflight the target answered every request with a "
+                    "block response or a bot-challenge page, so the scan was "
+                    "aborted instead of running all checks against filtered "
+                    "responses. This result is INCONCLUSIVE — it is neither "
+                    "evidence of vulnerabilities nor of a secure target.",
+                    evidence=_pf_ev,
+                    remed="Re-run from an allow-listed scanner IP or with the "
+                          "operator's written authorization, then review the "
+                          "result manually.",
+                    verification="manual-required",
+                    verification_note="Blocked by WAF/challenge during preflight — "
+                                      "findings could not be collected.")
+            else:
+                L(f"[abort] preflight failed: target did not respond to a single request ({eff_target})")
+                _abort_finding = F(
+                    "INFO", "Target unreachable — scan aborted early",
+                    "The target did not respond to any HTTP request during "
+                    "preflight (every attempt failed or timed out), so the scan "
+                    "was aborted instead of running all checks against an "
+                    "unresponsive target. This result is INCONCLUSIVE — it is "
+                    "not evidence that the target is secure.",
+                    evidence=_pf_ev,
+                    remed="Verify the URL (including the http/https scheme) and "
+                          "that the target is reachable from the scanner, then "
+                          "re-run the scan.",
+                    verification="manual-required",
+                    verification_note="Unreachable during preflight — no scan "
+                                      "evidence was collected.")
 
     headless_note = None
     if opts.get("headless"):
@@ -6429,9 +7009,14 @@ def run_vulnscan(target, profile="active-deep", log=None, opts=None, cancelled=N
     # ---- scan health: rasio blokir tinggi = hasil mungkin tertekan WAF/rate-limit
     warnings = []
     if aborted:
-        warnings.append("Target unreachable during preflight — scan aborted "
-                        "early; results are inconclusive, not a clean bill "
-                        "of health.")
+        if preflight_verdict == "blocked":
+            warnings.append("Target blocked the scanner during preflight "
+                            "(WAF/challenge) — scan aborted early; results are "
+                            "inconclusive, not a clean bill of health.")
+        else:
+            warnings.append("Target unreachable during preflight — scan aborted "
+                            "early; results are inconclusive, not a clean bill "
+                            "of health.")
     if headless_note:
         warnings.append(headless_note)
     if canary_result["tokens_planted"] and not canary_result["callbacks_received"]:
@@ -6444,6 +7029,62 @@ def run_vulnscan(target, profile="active-deep", log=None, opts=None, cancelled=N
         warnings.append(f"Adaptive backoff engaged {st['throttled_events']} time(s), {st['throttled_seconds']}s total — the target is rate-limiting; the scan slowed down to preserve coverage.")
         L(f"[warn] {warnings[-1]}")
 
+    # ---- threat intelligence prioritization (v1.3): EPSS + CISA KEV.
+    # Default ON; PTK_THREATPRIOR=0 untuk menonaktifkan. Timeout keseluruhan
+    # pendek — threat intel gagal tidak boleh memperlambat/m merusak scan.
+    if os.environ.get("PTK_THREATPRIOR", "1") != "0":
+        _tp_res = {}
+
+        def _tp_run():
+            import threatprior as _tp
+            _tp_res["findings"] = _tp.enrich(
+                findings, cancelled=cancelled, log=L)
+
+        _tp_th = threading.Thread(target=_tp_run, daemon=True)
+        _tp_th.start()
+        _tp_th.join(timeout=float(os.environ.get("PTK_THREATPRIOR_TIMEOUT", "45")))
+        if _tp_th.is_alive():
+            L("[threatprior] timeout — enrichment skipped (scan results kept as-is)")
+        elif "findings" in _tp_res:
+            findings = _tp_res["findings"]
+
+    # ---- attack graph (v1.2.3): rule-based exploitation chains over the
+    # enriched findings. Default ON; PTK_ATTACKGRAPH=0 untuk menonaktifkan.
+    # Murni komputasi lokal (offline-safe), dibatasi 40 node / 60 edge.
+    attack_graph = None
+    if not ctx.cancelled():
+        attack_graph = _attack_graph_for(findings, L)
+
+    # ---- PoC Sandbox Validation (operator-gated, opt-in): when
+    # opts['poc_validate'] is set, re-test the top 5 probable findings
+    # of supported kinds with ONE safe non-persistent probe each,
+    # bounded to 30s total (PTK_POCBOX_TIMEOUT) and cancellable.
+    if opts.get("poc_validate") and not aborted and not ctx.cancelled():
+        try:
+            import pocbox as _poc
+            findings, _poc_n = _poc.validate_top(
+                findings, ctx, opts=opts, limit=5,
+                budget_s=30.0, cancelled=ctx.cancelled, log=L)
+            if _poc_n:
+                L(f"[pocbox] {_poc_n} finding(s) confirmed by PoC sandbox")
+        except Exception as e:
+            L(f"[pocbox] skipped ({str(e)[:100]})")
+
+    # ---- Post-Exploit Lateral Map (v1.2.3): pure offline graph over the
+    # findings text (credentials -> panels/services/hosts). Default ON;
+    # PTK_LATERALMAP=0 disables. Never raises, capped at 40 nodes.
+    lateral_map = None
+    if os.environ.get("PTK_LATERALMAP", "1") != "0":
+        try:
+            import lateralmap as _lm
+            lateral_map = _lm.lateral_map(findings)
+            if lateral_map["nodes"] and log is not None:
+                L(f"[lateralmap] {lateral_map['node_count']} nodes, "
+                  f"{lateral_map['edge_count']} edges")
+        except Exception as e:
+            if log is not None:
+                log(f"[lateralmap] skipped ({e})")
+
     findings.sort(key=lambda f: (-SEV_ORDER[f["severity"]], -f["cvss"]))
     summary = {}
     by_conf = {}
@@ -6455,8 +7096,21 @@ def run_vulnscan(target, profile="active-deep", log=None, opts=None, cancelled=N
     L(f"[done] total {len(findings)} findings | confirmed={by_conf.get('confirmed',0)} probable={by_conf.get('probable',0)} candidate={by_conf.get('candidate',0)} | overall risk: {risk} | {dur} dtk | check jalan {ran}/{len(checks)}")
     score = risk_score(findings)
     L(f"[done] risk score: {score}/100")
+    # ---- notification dispatch (optional): summary to configured
+    # channels when the scan produced a P1/CRITICAL finding. Default ON
+    # when any channel is configured; PTK_NOTIFY=0 disables entirely.
+    # Never slows down or breaks the scan result.
+    try:
+        import notify as _notify
+        if os.environ.get("PTK_NOTIFY", "1") != "0" \
+                and _notify.channels_configured():
+            _notify.notify(findings, log=L)
+    except Exception:
+        pass
+
     return {"type": "vulnscan", "target": eff_target,
             "effective_target": eff_target, "target_as_given": target,
+            "effective_scheme": ctx.client.scheme,
             "profile": profile,
             "method": method, "scan_id_ref": ctx.marker,
             "technologies": ctx.technologies,
@@ -6468,6 +7122,8 @@ def run_vulnscan(target, profile="active-deep", log=None, opts=None, cancelled=N
             "checks_run": ran, "checks_total": len(checks),
             "checks_detail": checks_detail,
             "canary": canary_result,
+            "attack_graph": attack_graph,
+            "lateral_map": lateral_map,
             "chains": chains,
             "bfla_matrix": ctx.check_meta.get("bfla_matrix", []),
             "meta": ctx.check_meta,
