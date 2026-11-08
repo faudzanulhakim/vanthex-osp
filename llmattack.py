@@ -97,7 +97,7 @@ def c_llm_prompt_injection(ctx, add):
            "tool-calls — OWASP LLM01 classification.",
            evidence=f"endpoint={ep}; successful injections: {[t for t, _ in real]}; "
                     f"sample: {real[0][1][:100]}",
-           cwe="CWE-1427", owasp="A03:2021 Injection", cvss=8.8,
+           cwe="CWE-1427", owasp="A03:2021 Injection", cvss=9.8,
            location=ep, param="message",
            remed="Separate the system prompt from user input (strict role "
                  "delimiters), validate output before execution, "

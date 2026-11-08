@@ -153,7 +153,7 @@ def test_battery_matrix():
         #  openapi-stateful, custom-templates)). Selalu sinkron dgn
         #  len(PROFILES['enterprise-full']).
         det = res.get("checks_detail") or []
-        assert len(det) == res["checks_total"] == 115, \
+        assert len(det) == res["checks_total"] == 118, \
             f"checks_detail {len(det)} != total {res['checks_total']}"
         # Kontrol v1.3 (Secrets Engine v2): pasangan kredensial AWS dari
         # riwayat .git terkonfirmasi paparannya; secret source-map dan

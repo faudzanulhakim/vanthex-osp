@@ -1747,7 +1747,7 @@ def analyze_apk(path, filename="app.apk", log=None, baseline=None):
         add(F("HIGH", 'App is debuggable (android:debuggable=true)',
               'The release APK carries the debuggable flag, so anyone can attach a debugger, read process memory, and bypass many runtime controls.',
               evidence="android:debuggable=\"true\" on <application>",
-              cwe="CWE-489", owasp="MASVS-RESILIENCE", cvss=5.5,
+              cwe="CWE-489", owasp="MASVS-RESILIENCE", cvss=7.5,
               remed='Set android:debuggable="false" (default for release builds) and make sure the CI pipeline never ships debug builds.',
               confidence="confirmed", location=M))
     # ---- 2. allowBackup
@@ -2881,7 +2881,7 @@ def analyze_ipa(path, filename="app.ipa", log=None, baseline=None):
             add(F("HIGH", "Development build: get-task-allow entitlement is enabled",
                   'This IPA can be debugged by anyone (get-task-allow=true) — it is a development build whose process can be attached, dumped, and instrumented.',
                   evidence="Entitlements.get-task-allow = true in embedded.mobileprovision",
-                  cwe="CWE-489", owasp="MASVS-RESILIENCE", cvss=5.5,
+                  cwe="CWE-489", owasp="MASVS-RESILIENCE", cvss=7.5,
                   remed='Distribute only App Store/enterprise builds signed without get-task-allow.',
                   confidence="confirmed", location="embedded.mobileprovision"))
         if prov["distribution"] == "enterprise":

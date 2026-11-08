@@ -43,12 +43,23 @@ and its evidence is inspectable.
   enumeration, directory discovery, TLS/SSL audit, security-header audit,
   passive recon, UDP scan, virtual-host enumeration, SYN scan, hybrid
   (passive + active), and mobile app analysis (APK/IPA)
-- **54 vulnerability checks** in the `enterprise-full` profile, mapped to
+- **118 vulnerability checks** in the `enterprise-full` profile, mapped to
   OWASP Top 10 2021 + API Security Top 10 — injection (SQLi, NoSQL, XXE,
   LDAP, **XPath**, SSTI, command), XSS (incl. stored, verified by re-render),
   prototype pollution, JWT attacks (incl. `kid` injection), GraphQL deep
   checks, SSRF with an out-of-band canary, BOLA/IDOR dual-account matrix,
   auth & session, TLS, CORS, sensitive files, and more
+- **Auth Annihilation Pack** — login attack engine: credential
+  stuffing with mutations, rate-limit evasion (IP-spoof headers, path
+  variants), OTP/MFA brute & tampering, JWT forgery (alg:none, weak-secret
+  crack, `kid`/`jwk`/`jku` injection, RS256→HS256 confusion), password
+  reset poisoning, OAuth code replay, IDOR/BOLA matrix, and privilege
+  escalation via mass assignment. Gated by `PTK_AUTHATTACK`, `PTK_JWTRED`,
+  `PTK_AUTHZ` (or the `auth-assault` profile)
+- **Threat intelligence enrichment** — EPSS (api.first.org) + CISA KEV
+  cache give every CVE-bearing finding a real-world priority (P1–P3);
+  attack-graph chains findings into attack paths; results export as SARIF
+  2.1.0; P1 findings can push to Telegram/Slack/webhook
 - **Secrets Engine v2** — **72 provider detectors** with local structural validation for tokens and keys across cloud/SCM/LLM providers.
   CRC checksums, real private-key parsing, JWT structure decoding, AWS
   credential pairing) instead of provider logins — findings are never
@@ -133,7 +144,8 @@ VANTHEX is designed to *not cry wolf*:
 | `passive-full` | Full passive surface mapping |
 | `active-standard` | Active checks, standard depth |
 | `active-deep` | Active checks, deep crawling & fuzzing |
-| `enterprise-full` | All 53 checks, maximum coverage |
+| `enterprise-full` | All 118 checks, maximum coverage |
+| `auth-assault` | 64 checks focused on authentication attacks (login brute/stuffing, rate-limit evasion, OTP/MFA brute, JWT forgery, IDOR/BOLA, privilege escalation) — operator-gated modules that stay idle unless enabled |
 
 ## Deployment
 
@@ -243,6 +255,17 @@ All configuration is via environment variables:
 | `PTK_CANARY_BASE` | Public base URL of the OOB canary listener | — |
 | `PTK_CANARY_PORT` | Canary listener port | `8977` |
 | `PTK_COOKIE_SECURE` | Set `1` to mark session cookies `Secure` (HTTPS deployments) | — |
+| `PTK_AUTHATTACK` | Set `1` to enable the login attack engine (brute/stuff, rate-limit evasion, OTP/MFA) | — |
+| `PTK_JWTRED` | Set `1` to enable JWT forgery & auth-flow attacks (`VANTHEX_JWTRED` also accepted) | — |
+| `PTK_AUTHZ` | Set `1` to enable the IDOR/BOLA matrix & privilege-escalation probes | — |
+| `PTK_DISABLE_RBAC` | Set `1` to disable role enforcement (admin/operator/viewer) | — |
+| `PTK_THREATPRIOR` | Set `0` to disable EPSS/KEV enrichment | on |
+| `PTK_ATTACKGRAPH` | Set `0` to disable attack-graph chaining | on |
+| `PTK_LATERALMAP` | Set `0` to disable the lateral movement map | on |
+| `PTK_NOTIFY_TELEGRAM_BOT_TOKEN` / `PTK_NOTIFY_TELEGRAM_CHAT_ID` | Telegram notifications for P1 findings | — |
+| `PTK_NOTIFY_SLACK_WEBHOOK` | Slack webhook for P1 findings | — |
+| `PTK_NOTIFY_WEBHOOK_URL` | Generic JSON webhook for P1 findings | — |
+| `PTK_KEV_PATH` | Cache file for the CISA KEV feed (TTL 24h) | state dir |
 | `GHCR_OWNER` / `VANTHEX_TAG` | Image owner/tag for `docker-compose.deploy.yml` | — / `latest` |
 
 ## CI/CD — GitHub Actions → GHCR

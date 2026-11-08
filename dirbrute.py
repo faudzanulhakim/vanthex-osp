@@ -55,9 +55,30 @@ def c_dir_bruteforce(ctx, add):
     # fingerprint baseline soft-404 (marker unik per-scan, tak mungkin ada)
     rb = ctx.client.get(f"/vhx-noexist-{ctx.marker}-{ctx.num_a}")
     bl_body = rb.body or ""
+    # WordSmith (v1.2.3): contextual wordlist merged at the FRONT of the
+    # candidate list. Default ON when no explicit wordlist is supplied via
+    # opts; opt-out with opts['context_wordlist']=False.
+    use_ctx = ctx.opts.get("context_wordlist")
+    if use_ctx is None:
+        use_ctx = not bool(ctx.opts.get("wordlist"))
     tried = 0
     hits = []
-    for cand in _candidates():
+    cands = []
+    if use_ctx:
+        try:
+            from wordsmith import contextual_wordlist
+            wl = contextual_wordlist(
+                ctx.target, list(getattr(ctx, "technologies", []) or []))
+            # only fetchable path entries go in front of the probe order;
+            # keep the merged slice bounded so the engine's own candidates
+            # below still get request budget.
+            ctx_paths = [e for e in wl if e.startswith("/")][:60]
+            cands.extend(ctx_paths)
+            ctx.L(f"[wordsmith] {len(ctx_paths)} contextual entries")
+        except Exception:
+            pass
+    cands.extend(_candidates())
+    for cand in cands:
         if ctx.cancelled() or tried >= MAX_REQUESTS:
             break
         tried += 1

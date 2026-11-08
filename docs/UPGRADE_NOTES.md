@@ -513,3 +513,21 @@ Pelajaran: anchor "trap/vendors" dobel (do_GET & do_POST) → handler POST /api/
 - diff baseline kosong TIDAK menghasilkan alert (by design — snapshot pertama = baseline); uji severity harus pakai baseline non-kosong.
 - API app2: routes POST baru WAJIB diletakkan SETELAH gerbang sesi _do_POST (if not sess → 401); GET baru setelah gerbang sesi do_GET (else 302).
 - crt.sh rows: kolom name bisa common_name/name_value/name.
+
+## Addendum — Auth Annihilation Pack + platform upgrades (2026-11-06, masih versi produk 1.2.2)
+
+### Engine baru (semua operator-gated, no-op tanpa gate)
+- `authattack.py` (`c_auth_attack`; gate `PTK_AUTHATTACK=1` atau opts `auth_attack`): login brute/stuffing (wordlist 983 entri + mutasi deterministik, maks 60 attempt), rate-limit evasion (rotasi X-Forwarded-For/X-Real-IP + varian path), deteksi "No Rate Limit on Login", mass assignment di login/registrasi, SQLi/noSQLi bypass login (CONFIRMED hanya bila marker authenticated terbukti), OTP/MFA brute + tampering (maks 40 attempt).
+- `jwtred.py` (`c_jwt_attack`; gate `PTK_JWTRED=1` / `VANTHEX_JWTRED=1`): JWT toolkit stdlib + cracker 3k secret; attack alg:none, weak HMAC secret + eskalasi klaim, kid injection (traversal/SQLi), jwk/jku header injection, RS256→HS256 key confusion, claim tampering; password reset poisoning (Host header, token prediktabel, kebocoran Referer); OAuth: redirect_uri code leak, code replay, implicit fragment.
+- `authzmatrix.py` (`c_authz_matrix` gate `PTK_AUTHZ=1`; `c_spa_mine` default-on): matriks authz dua sesi → IDOR/BOLA CONFIRMED (maks 30 objek × 2 request), privilege escalation via mass assignment (CONFIRMED hanya bila refleksi terverifikasi setelah update), SPA endpoint miner (regex JS bundle → merge ke surface, INFO ringkas).
+
+### Integrasi profil
+- `c_auth_attack`, `c_jwt_attack`, `c_bola_matrix` masuk `enterprise-full` + profil baru **`auth-assault` (64 checks)**; `c_spa_mine` masuk `active-deep`, `enterprise-full`, `auth-assault`.
+- **`enterprise-full` 115 → 118**, `active-deep` 60 → **61**. Battery tripwire + semua test-lock pin di-update (test_battery, test_v13, test_v1100, test_offensive_v6/v7).
+
+### Platform (gelombang sebelumnya, hari yang sama)
+- `threatprior.py` (EPSS api.first.org tanpa key + CISA KEV cache TTL 24h → priority P1–P3), `attackgraph.py` (attack paths + impact score, seksi report HTML/DOCX), `notify.py` (Telegram/Slack/webhook, P1-gated), `sarif_export.py` (action `sarifExport`), `pocbox.py` (validasi PoC → confirmed + poc_proof), `lateralmap.py`, `sessionreplay.py` (actions `importHar`/`replayCapture`), `wafbank.py` (bypass per-WAF), `secondorder.py`, `wordsmith.py` (wordlist kontekstual), self-healing `heal_path` (varian path saat 404/410), scheduler window + catchup + auto-diff, `rbac.py` (viewer/operator/admin + audit, `PTK_DISABLE_RBAC=1` escape hatch).
+- CVSS audit AST seluruh modul: 24 pelanggaran band severity/CVSS difix; invariant permanen `test_cvss_consistency.py`.
+- **Actions 50 → 54** (`sarifExport`, `importHar`, `replayCapture`, `pocboxRun`); test lock di-update.
+- Fix lingkungan: request internal loopback (127.0.0.1:5000) di actions.py di-bypass dari egress proxy — gejala "service unreachable" palsu di dashboard.
+- Scan uji: crowllm.com (active-deep) → MEDIUM 23/100, 9 temuan (CSP + 4 security header), Cloudflare terdeteksi.

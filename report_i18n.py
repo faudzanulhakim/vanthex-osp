@@ -186,6 +186,7 @@ T["en"] = {
     "lbl_weakness": "Weakness",
     "lbl_conf_status": "Confidence / Status",
     "lbl_origin": "Origin",
+    "lbl_priority": "Threat priority",
     "origin_suffix": " — how this finding was obtained (footprint)",
     "lbl_location": "Location",
     "lbl_assigned_to": "Assigned to",

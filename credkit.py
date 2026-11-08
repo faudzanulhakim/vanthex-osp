@@ -110,7 +110,7 @@ def c_password_spray(ctx, add):
                        evidence=f"{len(hits)} accounts accepted '{p}' "
                                 f"(e.g. {u} -> HTTP {st})",
                        cwe="CWE-307", owasp="A07:2021 Identification & Authentication Failures",
-                       cvss=8.8,
+                       cvss=9.8,
                        remed="Per-IP+per-account rate-limit, progressive lockout, "
                              "strong password policy, MFA, spraying detection.",
                        confidence=conf, location=ep, param="username/password"))

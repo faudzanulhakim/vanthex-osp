@@ -105,6 +105,10 @@ If the package is private, authenticate first:
 | `PTK_ALLOWED_TARGETS` | Comma-separated scan-target allowlist (extra guard) | — |
 | `PTK_CANARY_BASE` | Public base URL of the out-of-band canary listener | — |
 | `PTK_CANARY_PORT` | Canary listener port | `8977` |
+| `PTK_AUTHATTACK` / `PTK_JWTRED` / `PTK_AUTHZ` | Set `1` to enable the gated Auth Annihilation Pack modules (login attacks / JWT forgery / IDOR-BOLA). Or scan with the `auth-assault` profile | — |
+| `PTK_DISABLE_RBAC` | Set `1` to disable role enforcement (admin/operator/viewer) | — |
+| `PTK_THREATPRIOR` / `PTK_ATTACKGRAPH` / `PTK_LATERALMAP` | Set `0` to disable EPSS-KEV enrichment / attack graph / lateral map | on |
+| `PTK_NOTIFY_SLACK_WEBHOOK` / `PTK_NOTIFY_WEBHOOK_URL` (+ Telegram bot token & chat id) | P1 notification channels | — |
 | `PTK_COOKIE_SECURE` | `1` marks session cookies `Secure` (HTTPS deployments) | — |
 | `GHCR_OWNER` / `GHCR_REPO` | Image coordinates for the deploy compose file | — / `vanthex-osp` |
 | `VANTHEX_TAG` | Image tag for the deploy compose file | `latest` |

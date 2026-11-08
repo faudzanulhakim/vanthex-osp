@@ -244,8 +244,8 @@ def test_profiles_counts_v13():
     assert len(v.PROFILES["passive-quick"]) == 3
     assert len(v.PROFILES["passive-full"]) == 7
     assert len(v.PROFILES["active-standard"]) == 25
-    assert len(v.PROFILES["active-deep"]) == 60
-    assert len(v.PROFILES["enterprise-full"]) == 115
+    assert len(v.PROFILES["active-deep"]) == 61
+    assert len(v.PROFILES["enterprise-full"]) == 118
     assert "c_git_secrets" in v.PROFILES["enterprise-full"]
 
 

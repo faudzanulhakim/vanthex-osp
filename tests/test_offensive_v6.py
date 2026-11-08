@@ -126,7 +126,7 @@ def test_sentinel_diff():
 
 
 def test_registry_v18():
-    assert len(v.PROFILES["enterprise-full"]) == 115
+    assert len(v.PROFILES["enterprise-full"]) == 118
     for c in ("c_pivot_internal_map", "c_cloud_container_recon",
               "c_grammar_fuzz"):
         assert callable(getattr(v, c, None)), c

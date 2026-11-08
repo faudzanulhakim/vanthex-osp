@@ -90,4 +90,4 @@ def test_archive_docs_under_docs():
 def test_actions_count_65():
     # OSINT intelligence actions removed with the OSINT feature.
     import actions
-    assert len(actions._ACTIONS) == 50
+    assert len(actions._ACTIONS) == 54

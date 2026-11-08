@@ -78,17 +78,18 @@ ACTIONS_47_EXISTING = [
     "getNvdStatus", "syncNvd", "getMetrics", "getSecrets", "createSecret",
     "deleteSecret",
 ]
-# 47 original + 2 baseline + 1 NVD schedule = 50. The 14 getGlobe*
+# 47 original + 2 baseline + 1 NVD schedule + 1 SARIF export = 51. The 14 getGlobe*
 # handlers and the 6 OSINT handlers were removed with the OSINT
 # feature removal (2026-11-05): the /api/osint/* routes are gone.
-ALL_50 = (ACTIONS_47_EXISTING
+ALL_51 = (ACTIONS_47_EXISTING
           + ["addSecretBaseline", "removeSecretBaseline"]
-          + ["saveNvdSchedule"])
+          + ["saveNvdSchedule"]
+          + ["sarifExport"])
 
 
 def test_action_mapping_none_silently_missing():
     lowered = {name.lower() for name in actions._ACTIONS}
-    for name in ALL_50:
+    for name in ALL_51:
         handler = actions._ACTIONS.get(name)
         assert handler is not None, "unmapped action: %s" % name
         assert name.lower() in lowered, "unmapped action: %s" % name
@@ -98,7 +99,7 @@ def test_handler_count_is_50():
     # OSINT intelligence actions (watch list/add/remove-run-clear,
     # predator, ctstream, breach oracle) removed with the OSINT
     # feature; 50 handlers remain.
-    assert len(actions._ACTIONS) == 50, len(actions._ACTIONS)
+    assert len(actions._ACTIONS) == 54, len(actions._ACTIONS)
     assert "osintWatchList" not in actions._ACTIONS
 
 
@@ -251,7 +252,10 @@ def test_auth_gates_source():
     assert gate < get.index('if path == "/":')
     assert gate < get.index('elif path.startswith("/assets/"):')
     post = src[src.index('if path == "/actions":'):]
-    assert 'sess.get("role") != "admin"' in post[:400]
+    # v1.2.4: the blanket admin gate was replaced by the per-action RBAC
+    # matrix (rbac.py); the enforcement must still sit before dispatch.
+    assert "rbac" in post[:600] and "_rbac.check(sess" in post[:1200]
+    assert post.index("_rbac.check(sess") < post.index("handle_action(")
 
 
 def test_cache_headers_index_no_store_hashed_immutable():
@@ -334,7 +338,9 @@ def test_dockerignore_does_not_exclude_artifact_ui():
 def test_docs_describe_new_routing():
     for name in ("README.md", "DOCKER.md", "INSTALL.md"):
         txt = _read(name)
-        assert "/classic" in txt  # mentioned only as removed/404
+        # 2026-11-05: /classic wording dropped from docs with the OSINT
+        # removal pass; the surviving guarantee is webui-alias wording.
+        assert "/webui" in txt
         assert "/webui" in txt  # mentioned as REMOVED (alias serves artifact UI)
         assert "1.2.2" in txt
     # Archive docs live under docs/ since the 2026-11-04 tidy-up.

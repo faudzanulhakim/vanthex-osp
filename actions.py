@@ -93,6 +93,26 @@ import uuid
 
 import requests
 
+# internal loopback calls must bypass the egress proxy (rotating cred)
+_orig_post = requests.post
+_orig_get = requests.get
+def _post(url, *a, **k):
+    if url.startswith("http://127.0.0.1") or url.startswith("http://localhost"):
+        k.setdefault("proxies", {"http": None, "https": None})
+    return _orig_post(url, *a, **k)
+def _get(url, *a, **k):
+    if url.startswith("http://127.0.0.1") or url.startswith("http://localhost"):
+        k.setdefault("proxies", {"http": None, "https": None})
+    return _orig_get(url, *a, **k)
+requests.post = _post
+requests.get = _get
+_orig_request = requests.request
+def _request(method, url, *a, **k):
+    if url.startswith("http://127.0.0.1") or url.startswith("http://localhost"):
+        k.setdefault("proxies", {"http": None, "https": None})
+    return _orig_request(method, url, *a, **k)
+requests.request = _request
+
 # --- Service access ---------------------------------------------------------
 
 # The error strings below keep the literal port 5000 exactly as the
@@ -1030,6 +1050,32 @@ def _a_export_scan(args: dict, port: int) -> dict:
     }
 
 
+def _a_sarif_export(args: dict, port: int) -> dict:
+    """SARIF 2.1.0 export: accepts explicit findings or a scanId whose
+    findings are fetched from the local store (same data the service
+    exposes at /api/findings)."""
+    import sarif_export as _sarif
+    findings = args.get("findings")
+    meta = args.get("meta") if isinstance(args.get("meta"), dict) else {}
+    if not isinstance(findings, list):
+        findings = None
+        scan_id = args.get("scanId") or args.get("scan_id")
+        if scan_id:
+            try:
+                import store as _store
+                findings = _store.get_findings(scan_id)
+            except Exception:
+                findings = None
+        if findings is None:
+            res = call_service(port, "GET", "/api/findings?limit=200")
+            if res["down"] or not isinstance(res["json"], list):
+                return {"sarif": None, "error": res["error"]
+                        or "Failed to fetch findings for SARIF export."}
+            findings = [map_finding(f) for f in res["json"]]
+    sarif = _sarif.findings_to_sarif(findings, meta)
+    return {"sarif": sarif, "sarif_export": True, "error": ""}
+
+
 def _a_analyze_mobile(args: dict, port: int) -> dict:
     # Legacy single-shot upload, kept for small packages only. Real
     # APKs/IPAs exceed the action transport's payload limit when sent
@@ -1318,23 +1364,29 @@ def _a_get_schedules(args: dict, port: int) -> dict:
                 "nextRun": as_num(rec.get("next_run")),
                 "enabled": as_num(rec.get("enabled")) == 1,
                 "createdBy": as_str(rec.get("created_by")),
+                "window": rec.get("window")
+                if isinstance(rec.get("window"), dict) else None,
+                "diffMode": rec.get("diff_mode") is True
+                or as_num(rec.get("diff_mode")) == 1,
             }
         )
     return {"schedules": schedules, "serviceDown": False, "error": ""}
 
 
 def _a_create_schedule(args: dict, port: int) -> dict:
-    res = call_service(
-        port,
-        "POST",
-        "/api/schedules",
-        {
-            "target": args.get("target"),
-            "profile": args.get("profile"),
-            "interval_h": args.get("intervalH"),
-            "authorized": args.get("authorized"),
-        },
-    )
+    body = {
+        "target": args.get("target"),
+        "profile": args.get("profile"),
+        "interval_h": args.get("intervalH"),
+        "authorized": args.get("authorized"),
+    }
+    # v1.2.3: optional scan window ({days: [0-6], start, end}, server local
+    # time) and diff_mode — both backward compatible, absent by default.
+    if args.get("window") is not None:
+        body["window"] = args.get("window")
+    if args.get("diffMode") is not None:
+        body["diff_mode"] = args.get("diffMode") is True
+    res = call_service(port, "POST", "/api/schedules", body)
     return _service_error_result(res)
 
 
@@ -1400,7 +1452,8 @@ def _a_create_user(args: dict, port: int) -> dict:
         port,
         "POST",
         "/api/users",
-        {"username": args.get("username"), "password": args.get("password")},
+        {"username": args.get("username"), "password": args.get("password"),
+         "role": args.get("role", "operator")},
     )
     return _service_error_result(res)
 
@@ -1711,6 +1764,56 @@ def _a_update_finding(args: dict, port: int) -> dict:
         body["due_date"] = args.get("dueDate")
     res = call_service(port, "POST", "/api/finding/update", body)
     return _service_error_result(res)
+
+
+def _a_pocbox_run(args: dict, port: int) -> dict:
+    """PoC Sandbox Validation (v1.2.3, operator-gated): fire ONE safe,
+    non-persistent probe against a single finding (scanId + findingIndex)
+    and persist the confirmation via the same /api/finding/update path
+    the updateFinding handler uses. Explicit invocation IS the operator
+    opt-in; nothing runs unless this action is called."""
+    scan_id = args.get("scanId") or args.get("scan_id")
+    idx = int(args.get("findingIndex") or args.get("finding_index") or 0)
+    res = call_service(port, "GET", f"/api/scan/{_enc(scan_id)}")
+    if res["down"]:
+        return {"validated": False, "proof": "", "serviceDown": True,
+                "error": res["error"] or "Service unreachable."}
+    j = res["json"] if isinstance(res["json"], dict) else {}
+    scan = j.get("scan") if isinstance(j.get("scan"), dict) else {}
+    findings = j.get("findings") if isinstance(j.get("findings"), list) else []
+    if not scan or idx < 0 or idx >= len(findings):
+        return {"validated": False, "proof": "",
+                "error": "scan or finding index not found"}
+    row = findings[idx] if isinstance(findings[idx], dict) else {}
+    target = str(scan.get("target") or "")
+    if not target:
+        return {"validated": False, "proof": "",
+                "error": "scan has no target"}
+    import netclient
+    import pocbox
+    finding = {
+        "title": row.get("title", ""),
+        "description": row.get("description", ""),
+        "evidence": row.get("evidence", ""),
+        "location": row.get("location", ""),
+        "param": row.get("param", ""),
+        "confidence": row.get("confidence", "probable"),
+    }
+    out = pocbox.validate_finding(
+        netclient.Client(target), finding, {"poc_validate": True})
+    result = {k: out.get(k) for k in
+              ("validated", "proof", "kind", "attempts", "gated")}
+    if out.get("validated"):
+        upd = call_service(port, "POST", "/api/finding/update", {
+            "finding_id": row.get("id"),
+            "confidence": "confirmed",
+            "poc_proof": out.get("proof", ""),
+        })
+        result["persisted"] = (not upd.get("down")
+                               and upd.get("status") == 200)
+    result["serviceDown"] = False
+    result["error"] = ""
+    return result
 
 
 def _a_set_asset_meta(args: dict, port: int) -> dict:
@@ -2100,6 +2203,21 @@ def _a_save_nvd_schedule(args: dict, port: int) -> dict:
     return _service_error_result(res)
 
 
+# --- Session replay (HAR import + replay, sessionreplay.py) ----------------
+# Runs behind the same /actions session + admin gate as every sibling
+# handler. Captures live only in the process (HAR files carry live
+# session cookies and must never touch disk).
+
+def _a_import_har(args: dict, port: int) -> dict:
+    import sessionreplay as _sr
+    return _sr._a_import_har(args, port)
+
+
+def _a_replay_capture(args: dict, port: int) -> dict:
+    import sessionreplay as _sr
+    return _sr._a_replay_capture(args, port)
+
+
 # --- Dispatch -------------------------------------------------------------------
 
 _ACTIONS = {
@@ -2109,6 +2227,7 @@ _ACTIONS = {
     "getScanDetail": _a_get_scan_detail,
     "getScanDiff": _a_get_scan_diff,
     "exportScan": _a_export_scan,
+    "sarifExport": _a_sarif_export,
     "analyzeMobile": _a_analyze_mobile,
     "startMobileUpload": _a_start_mobile_upload,
     "uploadMobileChunk": _a_upload_mobile_chunk,
@@ -2132,6 +2251,7 @@ _ACTIONS = {
     "getReportHtml": _a_get_report_html,
     "getInsights": _a_get_insights,
     "updateFinding": _a_update_finding,
+    "pocboxRun": _a_pocbox_run,
     "setAssetMeta": _a_set_asset_meta,
     "deleteAsset": _a_delete_asset,
     "getMe": _a_get_me,
@@ -2156,12 +2276,22 @@ _ACTIONS = {
     "addSecretBaseline": _a_add_secret_baseline,
     "removeSecretBaseline": _a_remove_secret_baseline,
     "saveNvdSchedule": _a_save_nvd_schedule,
+    # Session Replay (v1.2.3): HAR import + authenticated replay.
+    "importHar": _a_import_har,
+    "replayCapture": _a_replay_capture,
 }
 
 
-def handle_action(name: str, args: dict, port: int) -> tuple[int, dict]:
+def handle_action(name: str, args: dict, port: int,
+                  user: str | None = None) -> tuple[int, dict]:
     """Entry point for the client wire contract:
-    POST {"action": name, "args": {...}} -> (status, envelope)."""
+    POST {"action": name, "args": {...}} -> (status, envelope).
+
+    v1.2.4 RBAC: when `user` is provided (app2 passes the session user),
+    the action is checked against the rbac.py matrix. A denial returns the
+    standard error envelope with HTTP 403 and is written to the audit log.
+    Omitting `user` keeps the old behavior (internal callers unaffected).
+    """
     handler = _ACTIONS.get(name)
     if handler is None and isinstance(name, str):
         # 2026-10-26 artifact-UI port: the platform normalizes action
@@ -2173,6 +2303,18 @@ def handle_action(name: str, args: dict, port: int) -> tuple[int, dict]:
         handler = lowered.get(name.lower())
     if handler is None:
         return (404, {"error": "unknown action"})
+    # v1.2.4 RBAC enforcement point (matrix in rbac.py). Denials share the
+    # standard error envelope shape and are audited.
+    if user is not None:
+        import rbac as _rbac
+        _denying_role = _rbac.check(user, name)
+        if _denying_role is not None:
+            try:
+                import store
+                store.audit(str(user)[:60], "rbac_denied", str(name)[:80])
+            except Exception:
+                pass
+            return (403, {"error": f"forbidden: role {_denying_role}"})
     try:
         result = handler(args if isinstance(args, dict) else {}, port)
     except Exception as exc:  # noqa: BLE001 - mirrors the spec contract

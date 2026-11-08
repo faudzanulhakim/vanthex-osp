@@ -706,16 +706,27 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/actions":
-            if sess.get("role") != "admin" or not ACTIONS_OK:
+            # v1.2.4 RBAC: per-action matrix (rbac.py) instead of a blanket
+            # admin-only gate. Legacy sessions/tokens keep working: the role
+            # is resolved from the store, api:* principals stay admin, and
+            # PTK_DISABLE_RBAC=1 restores the old open-to-any-session mode.
+            import rbac as _rbac
+            if not ACTIONS_OK:
                 self._json(403, {"error": "forbidden"})
                 return
             name = str(payload.get("action", ""))
+            _deny_role = _rbac.check(sess.get("user"), name)
+            if _deny_role is not None:
+                store.audit(str(sess.get("user", ""))[:60], "rbac_denied", name[:80])
+                self._json(403, {"error": f"forbidden: role {_deny_role}"})
+                return
             aargs = payload.get("args")
             if not isinstance(aargs, dict):
                 aargs = {}
             try:
                 code, envelope = actions_mod.handle_action(
-                    name, aargs, self.server.server_address[1])
+                    name, aargs, self.server.server_address[1],
+                    user=sess.get("user"))
             except Exception:
                 # Detail pengecualian (path internal, dsb.) hanya ke
                 # log server; klien menerima pesan generik.
@@ -724,6 +735,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": "internal error"})
                 return
             extra = []
+            if name == "sarifExport":
+                # SARIF consumers expect the proper media type; the
+                # envelope's data member IS the SARIF log in this case.
+                extra = [("Content-Type", "application/sarif+json")]
+                envelope = {"data": envelope.get("data")}
             if name == "logout":
                 # A real sign-out: invalidate the caller's own browser
                 # session as well, not only the actions layer's internal
@@ -946,7 +962,9 @@ class Handler(BaseHTTPRequestHandler):
                     int(payload.get("finding_id", 0)),
                     status=payload.get("status"),
                     assignee=payload.get("assignee"),
-                    due_date=payload.get("due_date"))
+                    due_date=payload.get("due_date"),
+                    confidence=payload.get("confidence"),
+                    poc_proof=payload.get("poc_proof"))
                 if not ok:
                     self._json(404, {"error": "finding not found"})
                 else:
@@ -1134,8 +1152,20 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self._json(400, {"error": "interval_h must be a number"})
                 return
-            sid = store.create_schedule(target, profile, interval, sess["user"])
-            store.audit(sess["user"], "schedule_create", f"{target} {profile} every {interval} h")
+            # v1.2.3: optional scan window {days:[0-6], start, end} + diff_mode
+            window = None
+            if payload.get("window") is not None:
+                window = store.parse_schedule_window(payload.get("window"))
+                if window is None:
+                    self._json(400, {"error": 'invalid window (expected {days: [0-6], start: "HH:MM", end: "HH:MM"} in server local time)'})
+                    return
+            diff_mode = payload.get("diff_mode") is True
+            sid = store.create_schedule(target, profile, interval, sess["user"],
+                                        window=window, diff_mode=diff_mode)
+            store.audit(sess["user"], "schedule_create",
+                        f"{target} {profile} every {interval} h"
+                        + (f" window {window['start']}-{window['end']} days={window['days']}" if window else "")
+                        + (" diff" if diff_mode else ""))
             self._json(200, {"ok": True, "schedule_id": sid})
         elif path == "/api/schedules/delete":
             store.delete_schedule(str(payload.get("schedule_id", ""))[:20])
@@ -1151,8 +1181,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 store.create_user(str(payload.get("username", ""))[:60],
-                                  str(payload.get("password", ""))[:128])
-                store.audit(sess["user"], "user_create", str(payload.get("username", ""))[:60])
+                                  str(payload.get("password", ""))[:128],
+                                  str(payload.get("role", "operator"))[:20])
+                store.audit(sess["user"], "user_create",
+                            f"{str(payload.get('username', ''))[:60]} "
+                            f"role={str(payload.get('role', 'operator'))[:20]}")
                 self._json(200, {"ok": True})
             except Exception as e:
                 self._json(400, {"error": str(e)[:200]})
@@ -1664,7 +1697,16 @@ def scheduler_loop():
         time.sleep(45)
         try:
             for sch in store.due_schedules():
-                def run_one(sch=sch):
+                # v1.2.3: window gating + catchup. No window -> always fire.
+                win_raw = sch.get("window")
+                try:
+                    win = json.loads(win_raw) if win_raw else None
+                except Exception:
+                    win = None
+                fire, catchup = store.window_fire(win, sch["next_run"])
+                if not fire:
+                    continue
+                def run_one(sch=sch, catchup=catchup):
                     job = {"status": "running", "log": [], "result": None,
                            "started": time.time(), "cancel": False}
                     payload = {"type": "vulnscan", "profile": sch["profile"],
@@ -1673,11 +1715,23 @@ def scheduler_loop():
                         result = run_tool_scan(payload, sch["target"], "vulnscan",
                                                sch["profile"], job)
                         if result is not None:
+                            if catchup:
+                                result["catchup"] = True
                             sid = store.save_scan(sch["target"], "vulnscan",
                                                   sch["profile"], result)
+                            if sch.get("diff_mode"):
+                                summary = store.scan_diff_summary(sid)
+                                if summary:
+                                    result["diff_summary"] = summary
+                                    line = ('[scheduler] diff: '
+                                            f"+{summary['new']} new, "
+                                            f"-{summary['resolved']} resolved")
+                                    print(line)
+                                    job["log"].append(line)
                             _fire_webhook(sid, sch["target"], result)
                         store.audit("scheduler", "scheduled_scan",
-                                    f"{sch['target']} {sch['profile']}")
+                                    f"{sch['target']} {sch['profile']}"
+                                    + (" catchup" if catchup else ""))
                     except Exception as e:
                         store.audit("scheduler", "scheduled_scan_error", str(e)[:150])
                     finally:

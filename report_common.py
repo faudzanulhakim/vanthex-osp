@@ -97,6 +97,22 @@ def _cwe_id(f):
     return f"CWE-{m.group(1)}" if m else ""
 
 
+def priority_line(f):
+    """'EPSS 94% · KEV LISTED · P1' — hanya bagian yang tersedia; hasil
+    dari threatprior bila tersedia (import aman, tak pernah raise)."""
+    try:
+        import threatprior
+        return threatprior.priority_line(f)
+    except Exception:
+        parts = []
+        if isinstance(f.get("epss"), (int, float)):
+            parts.append(f"EPSS {round(float(f['epss']) * 100)}%")
+        if f.get("kev"):
+            parts.append("KEV LISTED")
+        parts.append(str(f.get("priority") or "P3"))
+        return " · ".join(parts)
+
+
 def cvss_vector(f):
     """Vektor CVSS v3.1 representatif per kelas kelemahan temuan."""
     return CVSS_BY_CWE.get(_cwe_id(f)) or CVSS_BY_SEV.get(f.get("severity"), CVSS_BY_SEV["INFO"])

@@ -122,6 +122,10 @@ python -m pytest tests/ -q                 # full verification suite (143 tests)
 | `PTK_CANARY_PORT` | Canary listener port | `8977` |
 | `PTK_COOKIE_SECURE` | `1` marks session cookies `Secure` (use behind HTTPS) | — |
 | `PTK_COMPANY` | Company name printed on reports | — |
+| `PTK_AUTHATTACK` / `PTK_JWTRED` / `PTK_AUTHZ` | Set `1` to enable the gated Auth Annihilation Pack modules (login attacks / JWT forgery / IDOR-BOLA matrix). The `auth-assault` profile enables all three for a single scan | — |
+| `PTK_DISABLE_RBAC` | Set `1` to disable role enforcement (admin/operator/viewer) | — |
+| `PTK_THREATPRIOR` / `PTK_ATTACKGRAPH` / `PTK_LATERALMAP` / `PTK_HEAL` | Set `0` to disable EPSS-KEV enrichment / attack graph / lateral map / self-healing probes | on |
+| `PTK_NOTIFY_TELEGRAM_BOT_TOKEN` + `PTK_NOTIFY_TELEGRAM_CHAT_ID`, `PTK_NOTIFY_SLACK_WEBHOOK`, `PTK_NOTIFY_WEBHOOK_URL` | Notification channels — send a summary when a P1 finding exists (`PTK_NOTIFY_ALWAYS=1` sends every scan) | — |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (or `PTK_PROXY`) | Egress proxy for the web layer | — |
 
 ---

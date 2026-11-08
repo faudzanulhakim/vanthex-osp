@@ -105,7 +105,7 @@ def c_pivot_internal_map(ctx, add):
            "lateral movement without internal scanning.",
            evidence=f"sources: {[a['source'] for a in arts]}; "
                     f"host: {sample}; port: {ports}",
-           cwe="CWE-200", owasp="A01:2021 Broken Access Control", cvss=8.6,
+           cwe="CWE-200", owasp="A01:2021 Broken Access Control", cvss=9.1,
            remed="Netmap/hosts endpoints require auth + allowlist; do not "
                  "reflect internal IPs in public responses; segmentation.",
            confidence="confirmed", location="/internal/netmap",

@@ -91,7 +91,7 @@ def c_ai_supply_recon(ctx, add):
                    evidence=f"key={k[:8]}...; /ai/validate -> 200 aktif",
                    cwe="CWE-798", owasp="A07:2021 Identification and "
                                         "Authentication Failures",
-                   cvss=8.9, location="/static/config.js", param="api_key",
+                   cvss=9.8, location="/static/config.js", param="api_key",
                    remed="API key TIDAK PERNAH di front-end; proxy via "
                          "backend, rotasi key, restrict domain + quota.",
                    confidence="confirmed"))
