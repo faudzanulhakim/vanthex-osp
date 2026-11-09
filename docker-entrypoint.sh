@@ -7,9 +7,8 @@ set -e
 mkdir -p /data
 
 for f in toolkit.db secrets.key; do
-    if [ ! -e "/app/$f" ]; then
-        ln -s "/data/$f" "/app/$f"
-    fi
+    [ -e "/data/$f" ] || : > "/data/$f"
+    ln -sfn "/data/$f" "/app/$f"
 done
 
 exec "$@"
