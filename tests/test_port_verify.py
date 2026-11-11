@@ -1,5 +1,5 @@
-"""Test verifikasi layanan port (v3.2.2) — signature murni + integrasi socket lokal.
-Dua cara jalan: pytest (fungsi test_*) atau langsung: python3 tests/test_port_verify.py"""
+"""Port service verification test (v3.2.2) — pure signatures + local socket integration.
+Two ways to run: pytest (test_* functions) or directly: python3 tests/test_port_verify.py"""
 import socket
 import sys
 import threading
@@ -93,8 +93,8 @@ def test_local_protocol_servers():
 
 
 def test_local_probe_servers():
-    """Jalur probe AKTIF (kirim payload -> verifikasi respons) untuk PostgreSQL,
-    Memcached, dan HTTP generik di port non-standar (fallback v3.2.2)."""
+    """ACTIVE probe path (send payload -> verify response) for PostgreSQL,
+    Memcached, and generic HTTP on non-standard ports (v3.2.2 fallback)."""
     def serve(port, handler):
         srv = socket.socket()
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -143,10 +143,10 @@ def test_local_probe_servers():
         for s in srvs:
             s.close()
     by = {r["port"]: r for r in det["open"]}
-    # Port non-standar untuk protokol dikenal: probe dikirim berdasar port —
-    # 15432/21211 bukan port baku PG/MC, jadi verifikasi di sini mengandalkan
-    # pemetaan port->probe hanya untuk port baku; yang WAJIB terbukti adalah
-    # HTTP generik di port arbitrer (kasus fixture 8899 v3.2.2).
+    # Non-standard ports for known protocols: the probe is sent based on the port —
+    # 15432/21211 are not the canonical PG/MC ports, so verification here relies on
+    # the port->probe mapping only for canonical ports; what MUST be proven is
+    # generic HTTP on an arbitrary port (fixture 8899 case, v3.2.2).
     assert by[18899]["verified"] and by[18899]["service"] == "http"
     assert not det["intercepted"]
 
@@ -156,4 +156,4 @@ if __name__ == "__main__":
     for fn in fns:
         fn()
         print("PASS", fn.__name__)
-    print("\nSEMUA LULUS")
+    print("\nALL PASSED")

@@ -25,7 +25,7 @@ def _boot(port):
         except Exception:
             time.sleep(0.25)
     p.terminate()
-    raise AssertionError("fixture tidak start")
+    raise AssertionError("fixture did not start")
 
 
 def _run(check, port):
@@ -43,7 +43,7 @@ def _run(check, port):
 def _assert_one(found, frag, loc=None):
     assert any(frag in f["title"] for f in found), [f["title"] for f in found]
     conf = [f for f in found if f["confidence"] == "confirmed"]
-    assert conf, "tidak ada temuan confirmed"
+    assert conf, "no confirmed findings"
     if loc:
         assert all(str(f["location"]) == loc for f in conf)
 
@@ -102,13 +102,13 @@ def test_chainrun_gated():
     res2 = chainrun.run_chain(plan, approver=lambda s: True,
                               executor=lambda s: (_ for _ in ()).throw(RuntimeError("boom")))
     assert res2["failed"] and res2["failed"]["error"] == "boom"
-    # tanpa approver -> ditolak keras
+    # without an approver -> hard rejected
     try:
         chainrun.run_chain(plan, None, lambda s: {})
-        assert False, "harus menolak approver None"
+        assert False, "must reject approver None"
     except ValueError:
         pass
-    assert "dieksekusi" in chainrun.summarize(res)
+    assert "executed" in chainrun.summarize(res)
 
 
 def test_impact_assessment():
@@ -127,7 +127,7 @@ def test_impact_assessment():
 
 def test_evolver_genetic():
     import evolver
-    # WAF stub: blokir payload yang mengandung 'union select' literal
+    # WAF stub: block payloads containing a literal 'union select'
     def send(p):
         low = p.lower()
         blocked = "union select" in low or "or 1=1" in low
@@ -137,7 +137,7 @@ def test_evolver_genetic():
     assert res["best_score"] == 1.0, res
     assert "union select" not in res["best"].lower()
     assert res["generations"] >= 1 and res["history"]
-    # tanpa send_fn -> ditolak (operator-gated)
+    # without send_fn -> rejected (operator-gated)
     try:
         evolver.evolve("x", None)
         assert False
@@ -153,7 +153,7 @@ def test_subtakeover_fingerprint():
     svc2, conf2 = st.fingerprint("x.azurewebsites.net", 200, "404 Web Site not found")
     assert svc2 == "azure-cdn" and conf2 == "probable"
     assert st.fingerprint("normal.example.com", 200, "welcome") == (None, "")
-    # verify end-to-end dengan stub fetcher/dns
+    # verify end-to-end with stub fetcher/dns
     r = st.verify("dead.example.com", "site.github.io",
                   fetcher=lambda s: (404, "There isn't a GitHub Pages site here."),
                   dns_lookup=lambda s: "site.github.io")

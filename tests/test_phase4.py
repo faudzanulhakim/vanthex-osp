@@ -1,10 +1,10 @@
-"""Test Fase 4 (v3.19): OOB canary wiring, adaptive backoff, JSON fuzzing
-terstruktur, BOLA dua akun, headless opsional.
+"""Phase 4 test (v3.19): OOB canary wiring, adaptive backoff, structured
+JSON fuzzing, two-account BOLA, optional headless.
 
-Integrasi memakai fixture yang sama dengan battery: satu scan active-deep
-dengan canary + dua akun (alice/bob) harus menghasilkan Blind SSRF,
-BOLA, Mass assignment, dan injeksi JSON bersarang — dan NOL temuan di
-kontrol /safe/*.
+The integration uses the same fixture as the battery: one active-deep scan
+with a canary + two accounts (alice/bob) must yield Blind SSRF,
+BOLA, Mass assignment, and nested JSON injection — and ZERO findings on
+the /safe/* controls.
 """
 import json
 import os
@@ -36,7 +36,7 @@ def _ensure_fixture():
             stderr=subprocess.DEVNULL)
         import atexit
         atexit.register(lambda: _PROC and _PROC.terminate())
-        assert _wait_up(BASE + "/"), "fixture tidak bangun"
+        assert _wait_up(BASE + "/"), "fixture did not come up"
     return _PROC
 
 
@@ -62,7 +62,7 @@ def test_backoff_retry_after_dan_stats():
     t0 = time.time()
     c.get("/trap/ratelimit")
     dt = time.time() - t0
-    assert dt >= 0.9, f"Retry-After tidak dihormati (dt={dt:.2f})"
+    assert dt >= 0.9, f"Retry-After not honored (dt={dt:.2f})"
     assert c.stats["throttled_events"] >= 1
     assert c.stats["throttled_seconds"] >= 0.9
 
@@ -89,7 +89,7 @@ def test_backoff_streak_403():
         t0 = time.time()
         c.get("/x")
         dt = time.time() - t0
-        assert dt >= 0.45, f"streak 403 tidak memicu backoff (dt={dt:.2f})"
+        assert dt >= 0.45, f"403 streak did not trigger backoff (dt={dt:.2f})"
         assert c.stats["throttled_events"] >= 1
     finally:
         srv.shutdown()
@@ -108,9 +108,9 @@ def test_headless_extractor_murni():
     eps = headless.extract_endpoints_from_dom(html, "/")
     assert "/dashboard" in eps
     assert "/api/submit" in eps
-    assert "/api/hidden/users" in eps          # literal fetch inline
-    assert "/api/internal/stats" in eps        # literal path inline
-    assert not any("other.example.com" in e for e in eps)   # host lain dibuang
+    assert "/api/hidden/users" in eps          # inline literal fetch
+    assert "/api/internal/stats" in eps        # inline literal path
+    assert not any("other.example.com" in e for e in eps)   # foreign host dropped
     assert not any(e.endswith(".png") or e.endswith(".js") for e in eps)
 
 
@@ -146,22 +146,22 @@ def test_fase4_scan_penuh():
                 "auth_b": {"headers": {"Authorization": "Bearer fixture-bob-token"}},
             })
         titles = [f["title"] for f in res["findings"]]
-        # P1a: blind SSRF terbukti lewat callback canary sungguhan
+        # P1a: blind SSRF proven via a real canary callback
         assert any(t.startswith("Blind SSRF confirmed") for t in titles), \
             [t for t in titles if "Blind" in t or "SSRF" in t]
-        # P2: BOLA lintas akun di endpoint rentan, BUKAN di kontrol safe
+        # P2: cross-account BOLA on the vulnerable endpoint, NOT on the safe control
         bola = [f for f in res["findings"] if f["title"].startswith("BOLA:")]
         assert any(f["location"] == "/api/acct/profile/1001" for f in bola)
         assert not any("/safe/" in f["location"] for f in bola)
-        # P3b: mass assignment + injeksi JSON bersarang
+        # P3b: mass assignment + nested JSON injection
         assert any(t.startswith("Mass assignment in JSON API: /api/json/echo")
                    for t in titles)
         assert any("JSON nested SQLi" in t and "/api/json/search" in t
                    for t in titles)
-        # anti-FP: tidak ada temuan fuzz/BOLA di kontrol safe
+        # anti-FP: no fuzz/BOLA findings on the safe controls
         assert not any(f["location"].startswith("/safe/json")
                        for f in res["findings"])
-        # ketiga check baru tercatat jalan
+        # all three new checks recorded as run
         names = {d["name"]: d["status"] for d in res["checks_detail"]}
         for chk in ("c_blind_oob", "c_bola_matrix", "c_json_fuzz"):
             assert names.get(chk) == "ok", (chk, names.get(chk))

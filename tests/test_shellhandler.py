@@ -1,8 +1,8 @@
 """Test ShellHandler + postex — integration via fake TCP shell server.
 
-Fake server melayani banyak koneksi (accept loop + thread per koneksi),
-meniru shell target yang mengeksekusi perintah dan mengembalikan output
-lalu menandai selesai dengan marker __VHX_DONE__.
+The fake server serves many connections (accept loop + thread per
+connection), mimicking a target shell that executes commands and returns
+output, then marks completion with the __VHX_DONE__ marker.
 """
 import base64
 import os
@@ -99,7 +99,7 @@ class _FakeShell:
 
 
 def _open_h(port):
-    """Buka koneksi dari sisi handler (seolah mode reverse sudah accept)."""
+    """Open the connection from the handler side (as if reverse mode already accepted)."""
     s = socket.create_connection(("127.0.0.1", port), timeout=5)
     s.settimeout(3)
     h = ShellHandler(host="127.0.0.1", port=port, mode="reverse")
@@ -167,7 +167,7 @@ class TestShellHandler(unittest.TestCase):
 
 class TestPostexCLI(unittest.TestCase):
     def test_help_shows_subcommands(self):
-        # jalankan lewat modul agar path absolut (pytest cwd bisa beda)
+        # run via the module so paths are absolute (pytest cwd may differ)
         r = subprocess.run(
             [sys.executable, "postex.py", "--help"],
             cwd=ROOT, capture_output=True, text=True, timeout=10)

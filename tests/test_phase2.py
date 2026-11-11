@@ -1,8 +1,8 @@
-"""Test Fase 2 (v3.17): active pack (UDP probe, cipher TLS, SYN graceful,
-vhost enum), job gate, NVD parse, suppression store, fingerprint laporan.
+"""Phase 2 test (v3.17): active pack (UDP probe, TLS cipher, graceful SYN,
+vhost enum), job gate, NVD parse, suppression store, report fingerprint.
 
-Server uji semuanya lokal & nyata (UDP responder, TLS server, HTTP vhost)
-— bukan mock: engine harus membuktikan perilakunya terhadap protokol asli.
+All test servers are local & real (UDP responder, TLS server, HTTP vhost)
+— not mocks: the engine must prove its behavior against real protocols.
 """
 import json
 import os
@@ -36,9 +36,9 @@ def _udp_responder(ip, port, mode, stop):
             continue
         except OSError:
             break
-        # balas lewat socket connected: sandbox VM memblokir sendto UDP
-        # tak-terhubung ke port ephemeral (EPERM) — server nyata membalas
-        # dalam flow yang sama.
+        # Reply via a connected socket: the sandbox VM blocks unconnected UDP
+        # sendto to ephemeral ports (EPERM) — real servers reply within
+        # the same flow.
         try:
             sk.connect(addr)
         except OSError:
@@ -65,7 +65,7 @@ def test_udp_probes():
     except OSError:
         stop.set()
         import pytest
-        pytest.skip("tidak bisa bind UDP 53/161 di environment uji")
+        pytest.skip("cannot bind UDP 53/161 in the test environment")
     try:
         time.sleep(0.2)
         res = scanners.udp_scan("127.0.0.1", ports=[53, 161, 59998],
@@ -75,10 +75,10 @@ def test_udp_probes():
         assert by_port[53]["service"] == "dns"
         assert by_port[161]["state"] == "open"
         assert by_port[161]["service"] == "snmp"
-        # port mati di localhost: ICMP unreachable -> closed, atau diam ->
-        # open|filtered; yang DILARANG adalah klaim 'open'
+        # Dead port on localhost: ICMP unreachable -> closed, or silence ->
+        # open|filtered; what is FORBIDDEN is claiming 'open'
         assert by_port[59998]["state"] in ("closed", "open|filtered")
-        assert res["ambiguous"] is False        # host lokal: tidak ambigu
+        assert res["ambiguous"] is False        # local host: not ambiguous
     finally:
         stop.set()
 
@@ -171,8 +171,8 @@ def test_syn_graceful():
         if res["available"]:
             assert port in res["open"]
         else:
-            # environment memblokir raw (mis. EPERM sandbox): alasan wajib
-            # dinyatakan — tidak boleh pura-pura semua filtered
+            # The environment blocks raw sockets (e.g. sandbox EPERM): a reason MUST
+            # be given — must not pretend everything is filtered
             assert res["reason"]
     finally:
         srv.close()
@@ -215,7 +215,7 @@ def test_vhost_enum():
 
 def test_job_gate_priority_and_cancel():
     gate = jobgate.JobGate(global_limit=1, user_limit=5)
-    assert gate.acquire(user="a") is True          # slot pertama
+    assert gate.acquire(user="a") is True          # first slot
     granted = []
 
     def waiter(prio, tag, cancelled=None):
@@ -232,13 +232,13 @@ def test_job_gate_priority_and_cancel():
     gate.release("a")
     t_high.join(timeout=3)
     t_low.join(timeout=0.3)
-    # prioritas high harus menang walau datang belakangan
+    # the high priority must win even though it arrived later
     assert granted[0] == ("high", True)
     gate.release("b")
     t_low.join(timeout=3)
     assert granted[1] == ("low", True)
     gate.release("b")
-    # jalur cancel: job yang dibatalkan saat menunggu tidak dapat slot
+    # cancel path: a job cancelled while waiting must not get a slot
     assert gate.acquire(user="a") is True
     flag = {"c": False}
     t_c = threading.Thread(
@@ -331,4 +331,4 @@ def test_nvd_sync_with_stub_fetcher():
         return 0, [], b""
 
     res2 = nvd.sync(keywords=["demo"], fetcher=failing)
-    assert res2["fetched"] == 0 and res2["errors"]   # gagal = dilaporkan
+    assert res2["fetched"] == 0 and res2["errors"]   # failure = reported

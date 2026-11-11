@@ -293,8 +293,8 @@ def test_ws4_curated_ranges(name, ver, hit, miss):
 
 
 def test_profile_check_counts_after_ws2():
-    assert len(V.PROFILES["enterprise-full"]) == 118
-    assert len(V.PROFILES["active-deep"]) == 61
+    assert len(V.PROFILES["enterprise-full"]) == 141
+    assert len(V.PROFILES["active-deep"]) == 62
     assert "c_dependency_versions" in V.PROFILES["active-standard"]
 
 
@@ -423,10 +423,10 @@ def test_integration_app_fixture():
 
 @pytest.mark.serial
 def test_integration_spa_catchall_no_manifest_claims():
-    """Jebakan catch-all: SPA mengembalikan 200 HTML untuk SEMUA path
-    (termasuk /package-lock.json) — tidak boleh ada klaim manifest,
-    versi depfile, atau kandidat CVE dari 'manifest' itu. /actuator/
-    info ada tetapi /actuator TIDAK terbuka -> WS5 diam (K1)."""
+    """Trap catch-all: SPA returns 200 HTML for EVERY path
+    (including /package-lock.json) — no manifest claims, dependency
+    versions, or CVE candidates may be inferred from that 'manifest'.
+    /actuator/info exists but /actuator is NOT open -> WS5 stays quiet (K1)."""
     srv, port = _serve("spa")
     V.PROFILES["v1100-mini"] = list(_MINI)
     try:

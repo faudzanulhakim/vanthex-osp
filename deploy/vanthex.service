@@ -8,7 +8,8 @@ Type=simple
 User=root
 WorkingDirectory=/home/hatch/workspace/vanthex
 EnvironmentFile=/home/hatch/workspace/pentest-toolkit-service/env
-ExecStart=/home/hatch/workspace/vanthex/.venv/bin/python app2.py 5000
+Environment=PYTHONPATH=/home/hatch/workspace/vanthex:/home/hatch/workspace/vanthex/webapp:/home/hatch/workspace/vanthex/engine:/home/hatch/workspace/vanthex/tools:/home/hatch/workspace/vanthex/offensive:/home/hatch/workspace/vanthex/scripts
+ExecStart=/home/hatch/workspace/vanthex/.venv/bin/python webapp/app2.py 5000
 Restart=always
 RestartSec=3
 # Hardening (kept compatible with the app's own sandbox subprocesses):

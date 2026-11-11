@@ -1,6 +1,6 @@
-"""Test regresi audit v3.18.1: gerbang admin untuk suppressions &
-NVD sync, dan kepemilikan job (user lain tidak bisa membaca/membatalkan
-job yang bukan miliknya). Server uji terisolasi, pola sama test_security.
+"""Audit regression test v3.18.1: admin gate for suppressions &
+NVD sync, and job ownership (other users cannot read/cancel
+a job that is not theirs). Isolated test server, same pattern as test_security.
 """
 import http.client
 import json
@@ -18,8 +18,8 @@ def _boot(tmp_path, monkeypatch):
     monkeypatch.setenv("PTK_ADMIN_PW", "test-admin-pw-123")
     store.init_db()
     import app2
-    app2.LOGIN_FAILS.clear()  # bucket throttle per-IP global: reset antar
-    # test file agar urutan subset tidak saling mengunci login (429)
+    app2.LOGIN_FAILS.clear()  # global per-IP throttle bucket: reset across
+    # test files so subset ordering does not lock out logins (429)
     from http.server import ThreadingHTTPServer
     srv = ThreadingHTTPServer(("127.0.0.1", 0), app2.Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -59,10 +59,10 @@ def test_suppressions_dan_nvd_hanya_admin(tmp_path, monkeypatch):
     try:
         admin = _login(port, "admin", "test-admin-pw-123")
         analyst = _setup_users(port, admin)
-        # gerbang yang sudah ada (kontrol): secrets memang admin-only
+        # pre-existing gate (control): secrets are indeed admin-only
         st, _, _ = _req(port, "GET", "/api/secrets", cookie=analyst)
         assert st == 403
-        # gerbang BARU v3.18.1: suppressions POST/delete + nvd sync
+        # NEW v3.18.1 gate: suppressions POST/delete + nvd sync
         st, _, _ = _req(port, "POST", "/api/suppressions",
                         {"host": "x.test", "title": "Header"}, cookie=analyst)
         assert st == 403, st
@@ -92,26 +92,26 @@ def test_job_hanya_pemilik_atau_admin(tmp_path, monkeypatch):
                             "authorized": True}, cookie=admin)
         assert st == 200, (st, body)
         jid = json.loads(body)["job_id"]
-        # analis tidak boleh membaca / membatalkan job milik admin
+        # the analyst must not read / cancel the admin's job
         st, _, _ = _req(port, "GET", f"/api/job/{jid}", cookie=analyst)
         assert st == 403, st
         st, _, _ = _req(port, "POST", f"/api/job/{jid}/cancel", {},
                         cookie=analyst)
         assert st == 403, st
-        # pemilik (admin) tetap bisa
+        # the owner (admin) still can
         st, _, _ = _req(port, "GET", f"/api/job/{jid}", cookie=admin)
         assert st == 200
-        # tanpa sesi sama sekali: ditolak handler sesi (401/302)
+        # with no session at all: rejected by the session handler (401/302)
         st, _, _ = _req(port, "GET", f"/api/job/{jid}")
         assert st in (401, 302)
     finally:
         srv.shutdown()
 
 
-def test_findings_dan_nvd_status_tidak_crash(tmp_path, monkeypatch):
-    """Regresi v3.18.1: import lokal parse_qs di cabang nvd/status pernah
-    membuat /api/findings crash (UnboundLocalError) — kedua route harus
-    menjawab 200."""
+def test_findings_and_nvd_status_no_crash(tmp_path, monkeypatch):
+    """Regression v3.18.1: a local parse_qs import in the nvd/status branch once
+    made /api/findings crash (UnboundLocalError) — both routes must
+    answer 200."""
     srv, port = _boot(tmp_path, monkeypatch)
     try:
         admin = _login(port, "admin", "test-admin-pw-123")
@@ -125,9 +125,9 @@ def test_findings_dan_nvd_status_tidak_crash(tmp_path, monkeypatch):
 
 
 def test_origin_tersimpan_dan_masuk_laporan(tmp_path, monkeypatch):
-    """Regresi v3.18.1: kolom origin di tabel findings — sebelumnya origin
-    dari F() hilang saat save_scan sehingga laporan & export untuk scan
-    pasif/hybrid salah label. Kini harus round-trip utuh."""
+    """Regression v3.18.1: the origin column in the findings table — previously
+    the origin from F() was lost during save_scan so reports & exports for
+    passive/hybrid scans were mislabeled. It must now round-trip intact."""
     srv, port = _boot(tmp_path, monkeypatch)
     try:
         result = {"type": "passive", "target": "example.test",
@@ -146,7 +146,7 @@ def test_origin_tersimpan_dan_masuk_laporan(tmp_path, monkeypatch):
             "Passive thing": "passive", "Active thing": "active"}
         glob = store.list_findings_global()
         assert {r["title"]: r["origin"] for r in glob}["Passive thing"] == "passive"
-        # laporan HTML dari server uji harus menampilkan origin pasif
+        # the HTML report from the test server must show the passive origin
         admin = _login(port, "admin", "test-admin-pw-123")
         st, _, body = _req(port, "GET", f"/report/{sid}?fmt=html", cookie=admin)
         assert st == 200
@@ -156,9 +156,9 @@ def test_origin_tersimpan_dan_masuk_laporan(tmp_path, monkeypatch):
 
 
 def test_cli_passive_dan_scan_jalan(tmp_path):
-    """Regresi v3.18.1: CLI pernah crash 'function object has no attribute
-    append' karena protokol log callable vs list tidak cocok. Kedua
-    subcommand harus mengeluarkan JSON valid dengan exit 0."""
+    """Regression v3.18.1: the CLI once crashed with 'function object has no attribute
+    append' because the callable vs list log protocol did not match. Both
+    subcommands must emit valid JSON with exit 0."""
     import subprocess
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 

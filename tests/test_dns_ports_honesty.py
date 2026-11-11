@@ -1,7 +1,7 @@
-"""Kejujuran akurasi DNS & port (insiden ADE 2026-10-18): resolver sistem VM
-ini sintetis (IP fake 198.18.x.x untuk nama apa pun) dan egress TCP
-terintercept gateway — scan TIDAK boleh menyajikan jawaban gateway/resolver
-sintetis sebagai fakta target."""
+"""DNS & port accuracy honesty (ADE incident 2026-10-18): the VM system
+resolver is synthetic (fake 198.18.x.x IPs for any name) and TCP egress
+is gateway-intercepted — scans MUST NOT present gateway/resolver answers
+as target facts."""
 import scanners
 import app2
 

@@ -1,9 +1,8 @@
-"""Reliability v1.8.0 — regresi untuk tiga keluhan ADE (2026-10-17 malam):
-1) scan 2067s tanpa hasil karena target ditulis tanpa skema -> parser lama
-   menebak http:// ke aplikasi yang hanya hidup di https;
-2) hasil scan ulang berbeda (cakupan jadi lotre timeout);
-3) framework tidak terdeteksi (konsekuensi #1: tidak ada halaman yang
-   pernah termuat).
+"""Reliability v1.8.0 — regression for three ADE complaints (night of 2026-10-17):
+1) a 2067s scan with no results because the target was written schemeless -> the old
+   parser guessed http:// for an app that only lives on https;
+2) rescans gave different results (coverage became a timeout lottery);
+3) the framework was not detected (consequence of #1: no page ever loaded).
 """
 import os
 import subprocess
@@ -35,7 +34,7 @@ def _boot():
     p = subprocess.Popen(
         [sys.executable, "tests/fixture_vuln_server.py", str(PORT)],
         cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    assert _wait(PORT), "fixture reliability tidak start"
+    assert _wait(PORT), "reliability fixture did not start"
     return p
 
 
@@ -43,14 +42,14 @@ def test_schemeless_target_resolves_and_detects():
     p = _boot()
     try:
         t0 = time.time()
-        # ditulis persis seperti user mengetik: tanpa skema
+        # written exactly as a user would type it: schemeless
         r = vulnscan2.run_vulnscan(f"127.0.0.1:{PORT}", "active-standard",
                                    log=[])
         dur = time.time() - t0
         assert r["effective_target"].startswith("http://"), r["effective_target"]
         names = [t["name"] for t in r["tech_profile"]]
-        assert names, "fingerprint kosong pada target yang terbukti hidup"
-        assert dur < 600, f"scan fixture terlalu lama: {dur:.0f}s"
+        assert names, "empty fingerprint on a proven-alive target"
+        assert dur < 600, f"fixture scan took too long: {dur:.0f}s"
     finally:
         p.terminate()
 
@@ -59,7 +58,7 @@ def test_unreachable_target_aborts_fast():
     t0 = time.time()
     r = vulnscan2.run_vulnscan("127.0.0.1:9", "active-standard", log=[])
     dur = time.time() - t0
-    assert dur < 30, f"abort preflight lambat: {dur:.1f}s"
+    assert dur < 30, f"preflight abort too slow: {dur:.1f}s"
     titles = [f["title"] for f in r["findings"]]
     assert titles == ["Target unreachable — scan aborted early"], titles
     assert all(d["status"] == "skipped" for d in r["checks_detail"])
@@ -89,20 +88,20 @@ def test_determinism_two_runs_identical():
         t1 = sorted(f["title"] for f in r1["findings"])
         t2 = sorted(f["title"] for f in r2["findings"])
         assert t1 == t2, (
-            "hasil dua scan identik berbeda:\n"
-            f"hanya run1: {sorted(set(t1) - set(t2))}\n"
-            f"hanya run2: {sorted(set(t2) - set(t1))}")
+            "two identical scans gave different results:\n"
+            f"only in run1: {sorted(set(t1) - set(t2))}\n"
+            f"only in run2: {sorted(set(t2) - set(t1))}")
         n1 = sorted(t["name"] for t in r1["tech_profile"])
         n2 = sorted(t["name"] for t in r2["tech_profile"])
-        assert n1 == n2, f"tech beda: {n1} vs {n2}"
+        assert n1 == n2, f"tech profile differs: {n1} vs {n2}"
     finally:
         p.terminate()
 
 
 def test_header_variant_taints_cache():
-    """URL yang pernah diminta dengan header khusus tidak boleh dilayani
-    dari cache lagi — verifikasi cache-poisoning membaca respons jarum
-    dari jaringan, bukan snapshot sebelum diracuni."""
+    """A URL once requested with a special header must never again be served
+    from the cache — the cache-poisoning verification reads the probe
+    response from the network, not the pre-poisoning snapshot."""
     p = _boot()
     try:
         c = netclient.Client(f"http://127.0.0.1:{PORT}", timeout=4)
@@ -112,7 +111,7 @@ def test_header_variant_taints_cache():
         hits_after_header = c.stats.get("cache_hits", 0)
         r = c.get("/")
         assert r.status == 200
-        # GET ketiga WAJIB kena jaringan: cache_hits tidak bertambah
+        # the third GET MUST hit the network: cache_hits must not increase
         assert c.stats.get("cache_hits", 0) == hits_after_header
     finally:
         p.terminate()

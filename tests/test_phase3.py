@@ -1,9 +1,9 @@
-"""Test Fase 3 (v3.18): sandbox subprocess untuk analisis paket +
-secrets management terenkripsi (Fernet) di store.
+"""Phase 3 test (v3.18): subprocess sandbox for package analysis +
+encrypted (Fernet) secrets management in the store.
 
-Sandbox diuji terhadap APK fixture asli dan worker palsu (tidur/crash/
-output rusak) — timeout & kegagalan harus jadi SandboxError yang jelas,
-bukan fallback diam-diam.
+The sandbox is tested against the real fixture APK and fake workers (sleep/
+crash/garbage output) — timeouts & failures must surface as a clear
+SandboxError, not a silent fallback.
 """
 import os
 import sys
@@ -37,7 +37,7 @@ def test_sandbox_timeout_kills_worker(tmp_path):
     with pytest.raises(sandbox.SandboxError) as ei:
         sandbox.run_worker(str(fake), [], timeout=1)
     assert "exceeded" in str(ei.value)
-    assert time.time() - t0 < 8          # proses benar-benar dibunuh
+    assert time.time() - t0 < 8          # the process was really killed
 
 
 def test_sandbox_crash_and_garbage(tmp_path):
@@ -46,7 +46,7 @@ def test_sandbox_crash_and_garbage(tmp_path):
     with pytest.raises(sandbox.SandboxError):
         sandbox.run_worker(str(crash), [], timeout=10)
     junk = tmp_path / "junk_worker.py"
-    junk.write_text("print('bukan json')\n")
+    junk.write_text("print('not json')\n")
     with pytest.raises(sandbox.SandboxError):
         sandbox.run_worker(str(junk), [], timeout=10)
 
@@ -66,7 +66,7 @@ def test_secrets_roundtrip_and_keyfile(vault):
     assert secretsmgr.decrypt(tok) == "s3cret-value-123"
     kf = vault / "k.key"
     assert kf.exists()
-    assert (kf.stat().st_mode & 0o777) == 0o600     # kunci privat
+    assert (kf.stat().st_mode & 0o777) == 0o600     # private key
 
 
 def test_secrets_tamper_and_wrong_key(vault, tmp_path, monkeypatch):
@@ -75,7 +75,7 @@ def test_secrets_tamper_and_wrong_key(vault, tmp_path, monkeypatch):
     bad = tok[:-2] + ("AA" if not tok.endswith("AA") else "BB")
     with pytest.raises(InvalidToken):
         secretsmgr.decrypt(bad)
-    # kunci lain tidak bisa membuka token
+    # a different key must not open the token
     monkeypatch.setattr(secretsmgr, "KEY_FILE", str(tmp_path / "lain.key"))
     with pytest.raises(InvalidToken):
         secretsmgr.decrypt(tok)
@@ -91,9 +91,9 @@ def test_store_secrets_metadata_only(tmp_path):
                                   "", enc, "admin")
         rows = store.secret_list()
         assert len(rows) == 1 and rows[0]["name"] == "staging"
-        assert "secret_enc" not in rows[0]          # API tidak bocor
+        assert "secret_enc" not in rows[0]          # no leak via the API
         full = store.secret_get(sid)
-        assert full["secret_enc"] == enc            # internal saja
+        assert full["secret_enc"] == enc            # internal only
         assert secretsmgr.decrypt(full["secret_enc"]) == "token-rahasia"
         store.secret_delete(sid)
         assert store.secret_list() == []

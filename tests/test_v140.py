@@ -217,7 +217,7 @@ def test_waf_dataset_benign_content_names_no_vendor():
                ' — blog membahas akamai, barracuda, dan f5.</footer>')
     assert vulnscan2._waf_match([("Server", "nginx")], genexus) is None
     article = ("Perbandingan WAF populer: cloudflare, akamai, imperva, "
-               "sucuri, barracuda, dan f5 big-ip dibahas sebagai produk. "
+               "sucuri, barracuda, and f5 big-ip are discussed as products. "
                "Token sesi: 38ff6460ffff59ffff06ff6bffff3644f5f5f5aabbcc. "
                "Checksum f5f5f5f5ffff.")
     assert vulnscan2._waf_match([("Server", "nginx")], article) is None
@@ -235,7 +235,7 @@ def test_waf_scored_merge_boost_and_evidence():
     assert "score" in ev and "CF-RAY" in ev and "blocking status 403" in ev
     # max-merge: two weak-ish views never sum past the max signal
     s2 = wafscore.merge_scored(
-        wafscore.score_waf([], "kami memakai akamai untuk cdn gambar"),
+        wafscore.score_waf([], "our blog mentions akamai for the image cdn"),
         wafscore.score_waf([("X-Akamai-Transformed", "9 - 0")], ""))
     v2 = wafscore.best_vendor(s2)
     assert v2["vendor"] == "Akamai" and v2["score"] == 0.90, s2

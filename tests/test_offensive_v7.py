@@ -113,7 +113,7 @@ def test_browserkit():
 
 
 def test_registry_v19():
-    assert len(v.PROFILES["enterprise-full"]) == 118
+    assert len(v.PROFILES["enterprise-full"]) == 141
     for c in ("c_llm_prompt_injection", "c_mcp_audit", "c_ai_supply_recon",
               "c_identity_graph", "c_cache_poisoning_v2"):
         assert callable(getattr(v, c, None)), c

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Smoke/integration test engine v3 melawan fixture rentan lokal.
-Jalankan: python3 tests/test_smoke.py   (dari root toolkit)
-Syarat lulus:
-- active-deep di fixture menemukan kategori injeksi & exposure utama dengan confidence.
-- active-standard di fixture mode SPA (catch-all 200) TIDAK melaporkan file sensitif (anti-FP).
-- report HTML tidak crash (regresi bug `sev` v2) & store round-trip confidence/location.
+Smoke/integration test of engine v3 against a local vulnerable fixture.
+Run: python3 tests/test_smoke.py   (from the toolkit root)
+Pass criteria:
+- active-deep on the fixture finds the main injection & exposure categories with confidence.
+- active-standard on the SPA fixture (catch-all 200) does NOT report sensitive files (anti-FP).
+- HTML report does not crash (regression for the v2 `sev` bug) & store round-trip confidence/location.
 """
 import os
 import subprocess
@@ -15,6 +15,8 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+for _sub in ("webapp", "engine", "tools", "offensive", "scripts"):
+    sys.path.insert(0, os.path.join(ROOT, _sub))
 os.chdir(ROOT)
 
 
@@ -42,7 +44,7 @@ def main():
         p2 = subprocess.Popen([sys.executable, "tests/fixture_vuln_server.py", "18081"],
                               env=env2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         procs = [p1, p2]
-        assert wait_port(18080, p1) and wait_port(18081, p2), "fixture tidak start"
+        assert wait_port(18080, p1) and wait_port(18081, p2), "fixture did not start"
 
         import vulnscan2
         log = []
@@ -52,7 +54,7 @@ def main():
         dur = time.time() - t0
         titles = [f["title"] for f in res["findings"]]
         blob = " | ".join(titles)
-        print(f"[engine] {len(titles)} findings dalam {dur:.0f} dtk; risk={res['overall_risk']}")
+        print(f"[engine] {len(titles)} findings in {dur:.0f}s; risk={res['overall_risk']}")
         for t in titles:
             print("   -", t)
         expect = {
@@ -72,7 +74,7 @@ def main():
             "Cookie 'session'": "cookie flags detected",
             "TRACE enabled": "TRACE/XST detected",
             "Apache 2.4.49": "fingerprint/kandidat CVE Apache",
-            # --- kategori enterprise v3.1 ---
+            # --- enterprise v3.1 categories ---
             "XML External Entity": "XXE detected",
             "IDOR/BOLA indication": "IDOR/BOLA detected",
             "NoSQL Injection in API": "NoSQL API detected",
@@ -90,7 +92,7 @@ def main():
             "Unauthenticated API leaks sensitive fields": "API sensitive data detected",
             "Serialized data detected": "deserialization surface detected",
             "without Subresource Integrity": "SRI absen detected",
-            # --- kategori advanced v3.2 ---
+            # --- advanced v3.2 categories ---
             "SQL Injection (UNION-based": "UNION SQLi detected",
             "DOM-based XSS": "DOM XSS detected",
             "WordPress plugin detected: wp-file-manager 6.8": "WP plugin enum detected",
@@ -99,35 +101,35 @@ def main():
             "Session fixation": "session fixation detected",
             "Web Cache Poisoning confirmed": "cache poisoning detected",
         }
-        assert "WAF detected" not in blob, "WAF FP di fixture bersih"
-        # Regresi FP v3.2.0 (kasus nyata ADE): fragmen JS minified TIDAK boleh
-        # menjadi target parameter / temuan Command Injection sampah.
-        assert "appendChild" not in blob, "fragmen JS bocor menjadi temuan (FP v3.2.0)"
-        assert "t.head" not in blob, "param sampah JS bocor (FP v3.2.0)"
+        assert "WAF detected" not in blob, "WAF FP on clean fixture"
+        # FP regression v3.2.0 (real ADE case): minified JS fragments must NOT
+        # become parameter targets / junk Command Injection findings.
+        assert "appendChild" not in blob, "leaked JS fragment became a finding (FP v3.2.0)"
+        assert "t.head" not in blob, "junk leaked JS param (FP v3.2.0)"
         missing = [v for k, v in expect.items() if k not in blob]
-        assert not missing, f"KATEGORI HILANG: {missing}"
-        assert any(f["confidence"] == "confirmed" for f in res["findings"]), "tidak ada confirmed"
-        assert any(f["confidence"] == "candidate" for f in res["findings"]), "tidak ada candidate (CVE)"
-        assert res["scan_id_ref"], "marker per-scan kosong"
-        assert res["risk_score"] >= 50, f"risk score terlalu rendah: {res['risk_score']}"
-        assert res["checks_total"] >= 40, f"check enterprise kurang: {res['checks_total']}"
+        assert not missing, f"MISSING CATEGORIES: {missing}"
+        assert any(f["confidence"] == "confirmed" for f in res["findings"]), "no confirmed findings"
+        assert any(f["confidence"] == "candidate" for f in res["findings"]), "no candidate findings (CVE)"
+        assert res["scan_id_ref"], "per-scan marker is empty"
+        assert res["risk_score"] >= 50, f"risk score too low: {res['risk_score']}"
+        assert res["checks_total"] >= 40, f"too few enterprise checks: {res['checks_total']}"
         print(f"[enterprise] risk_score={res['risk_score']}/100, checks={res['checks_run']}/{res['checks_total']}")
 
-        # --- anti-FP: SPA catch-all tidak boleh menghasilkan file sensitif
+        # --- anti-FP: SPA catch-all must not yield sensitive-file findings
         log2 = []
         res2 = vulnscan2.run_vulnscan("http://127.0.0.1:18081", "active-standard",
                                       log=log2, opts={"timeout": 5, "max_pages": 10})
         sens = [f["title"] for f in res2["findings"] if "Sensitive file" in f["title"]]
-        print(f"[spa] findings={len(res2['findings'])}, file sensitif={sens}")
-        assert not sens, f"FALSE POSITIVE di SPA: {sens}"
+        print(f"[spa] findings={len(res2['findings'])}, sensitive files={sens}")
+        assert not sens, f"FALSE POSITIVE on SPA: {sens}"
 
-        # --- regresi report HTML (bug sev v2)
+        # --- HTML report regression (sev v2 bug)
         from report import render_report
         scan = {"target": "http://x", "profile": "active-deep", "overall_risk": "HIGH",
                 "summary": {"HIGH": 1}, "id": "test123"}
         html = render_report(scan, res["findings"][:2])
         assert "HIGH" in html and "Penetration Test Report" in html and "CONFIDENTIAL" in html
-        print("[report] HTML OK (bug sev v2 tidak kambuh)")
+        print("[report] HTML OK (sev v2 bug did not recur)")
 
         # --- store round-trip confidence/location + diff
         import store, tempfile
@@ -139,7 +141,7 @@ def main():
         d = store.diff_scans(sid)
         assert d is not None and d["previous_scan_id"] is None
         print("[store] round-trip OK, diff OK")
-        print("\nSEMUA TEST LULUS ✅")
+        print("\nALL TESTS PASSED ✅")
         return 0
     finally:
         for p in procs:

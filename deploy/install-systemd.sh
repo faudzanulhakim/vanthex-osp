@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# OPSIONAL (Fase 3): pasang unit systemd untuk Pentest Toolkit.
-# Skrip ini HANYA menyalin unit + daemon-reload. Ia TIDAK menghentikan
-# supervisor Bash (run.sh) dan TIDAK mengaktifkan unit — dua supervisor
-# tidak boleh jalan bersamaan (berebut port 5000).
+# OPTIONAL (Phase 3): install the systemd unit for the Pentest Toolkit.
+# This script ONLY copies the unit + daemon-reload. It does NOT stop the
+# Bash supervisor (run.sh) and does NOT enable the unit — two supervisors
+# must never run at the same time (they fight over port 5000).
 set -eu
 SRC="$(cd "$(dirname "$0")" && pwd)"
 cp "$SRC/vanthex.service" /etc/systemd/system/vanthex.service
 systemctl daemon-reload
-echo "Unit terpasang (belum aktif). Untuk beralih dari supervisor Bash:"
-echo "  1) hentikan run.sh (stop.sh di folder service) dan pastikan watchdog"
-echo "     restore-all.sh TIDAK lagi menyalakan run.sh (seksi 9) — ganti isinya"
-echo "     menjadi 'systemctl start vanthex' agar tidak bentrok."
+echo "Unit installed (not active yet). To switch from the Bash supervisor:"
+echo "  1) stop run.sh (stop.sh in the service folder) and make sure the watchdog"
+echo "     restore-all.sh no longer starts run.sh (section 9) — replace its contents"
+echo "     with 'systemctl start vanthex' to avoid a clash."
 echo "  2) systemctl enable --now pentest-toolkit"
-echo "  3) verifikasi: systemctl status pentest-toolkit && curl -s localhost:5000/login"
+echo "  3) verify: systemctl status pentest-toolkit && curl -s localhost:5000/login"

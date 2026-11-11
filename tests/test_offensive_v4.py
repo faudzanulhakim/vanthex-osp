@@ -1,6 +1,6 @@
 """Tes paket v1.6.0 (credential takeover) — 7 check baru di takeover.py.
-Tiap test boot fixture di port unik (18170+N), jalankan satu check via Ctx.
-Semua temuan wajib confidence=confirmed (bukti akses, bukan indikasi).
+Each test boots the fixture on a unique port (18170+N) and runs one check via Ctx.
+Every finding must have confidence=confirmed (proof of access, not indication).
 """
 import os
 import sys
@@ -26,7 +26,7 @@ def _boot(port):
         except Exception:
             time.sleep(0.25)
     p.terminate()
-    raise AssertionError("fixture tidak start")
+    raise AssertionError("fixture did not start")
 
 
 def _run(check, port):
@@ -45,7 +45,7 @@ def _assert_one(found, frag, loc=None):
     assert any(frag in f["title"] for f in found), \
         [f["title"] for f in found]
     conf = [f for f in found if f["confidence"] == "confirmed"]
-    assert conf, "tidak ada temuan confirmed"
+    assert conf, "no confirmed findings"
     if loc:
         assert all(str(f["location"]) == loc for f in conf), \
             [f["location"] for f in conf]
@@ -106,7 +106,7 @@ def test_api_key_reuse():
 
 
 def test_wiring_and_no_false_fire_on_missing():
-    """Semua check ter-resolve di registry + endpoint tidak ada -> 0 temuan."""
+    """All checks resolve in the registry + missing endpoint -> 0 findings."""
     import vulnscan2
     for n in ("c_jwt_weak_secret_takeover", "c_reset_token_takeover",
               "c_oauth_token_theft", "c_otp_brute", "c_email_change_takeover",
@@ -116,12 +116,12 @@ def test_wiring_and_no_false_fire_on_missing():
     p = _boot(PORT + 7)
     try:
         ctx = vulnscan2.Ctx(f"http://127.0.0.1:{PORT + 7}/", {}, [])
-        # target yang tidak punya endpoint fixture v1.6.0 -> check jujur skip
-        # (simulasi: pakai path dasar beda)
+        # a target without the v1.6.0 fixture endpoint -> the check honestly skips
+        # (simulation: use a different base path)
         found = []
         takeover.c_reset_token_takeover(ctx, found.append)
-        # fixture memang punya endpoint -> tetap nembak; yang diuji di sini
-        # hanyalah bahwa check tidak crash dan mengembalikan list
+        # the fixture does have the endpoint -> still fire; all we test here
+        # is that the check does not crash and returns a list
         assert isinstance(found, list)
     finally:
         p.terminate()

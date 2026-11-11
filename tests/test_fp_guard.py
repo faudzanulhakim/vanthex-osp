@@ -258,9 +258,10 @@ def test_report_renders_verification_and_note():
              "verification_note": "Marker only reflected inside an echoed "
                                   "query string — NOT proof of execution."}
     html = report.render_report(scan, [new_f])
-    assert "Verification:" in html
-    assert "reflection-only" in html
-    assert "NOT proof of execution" in html
+    # verification moved to the web UI (operator-facing) — reports no
+    # longer carry the Verification rows; manual validation only shows
+    # for findings that carry a manual_check block
+    assert "Verification:" not in html
 
 
 def test_report_graceful_without_new_keys():
@@ -296,8 +297,7 @@ def test_docx_renders_verification_gracefully():
         import zipfile
         with zipfile.ZipFile(out) as zf:
             doc = zf.read("word/document.xml").decode("utf-8", "replace")
-        assert "Verification:" in doc
-        assert "reflection-only" in doc
+        assert "Verification:" not in doc
     finally:
         if os.path.exists(out):
             os.remove(out)

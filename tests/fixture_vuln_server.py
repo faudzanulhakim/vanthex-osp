@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Server target UJI yang sengaja rentan (fixture) — hanya untuk test lokal engine.
-BUKAN bagian dari toolkit produksi. Jalankan: python3 fixture_vuln_server.py [port]
-Mode SPA (soft-404 di semua path): FIXTURE_MODE=spa python3 fixture_vuln_server.py [port]
+INTENTIONALLY VULNERABLE target server (fixture) — for local engine tests only.
+NOT part of the production toolkit. Run: python3 fixture_vuln_server.py [port]
+SPA mode (soft-404 on every path): FIXTURE_MODE=spa python3 fixture_vuln_server.py [port]
 """
 import base64
 import hashlib
@@ -10,6 +10,7 @@ import html
 import hmac
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -17,6 +18,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 MODE = os.environ.get("FIXTURE_MODE", "vuln")
+
+# accuracy-v3 (round 2): seeded jitter so /fp/blind-noisy is deterministic
+# for the hermetic tests (uniform 0.2-0.4 s, elevated-but-not-scaling).
+random.seed(57)
 
 # --- v1.4.0 lab assets (WS1/WS2) -------------------------------------
 # lab14 mode serves a MINIMAL home (only the lab + a few standard
@@ -40,6 +45,12 @@ LAB14_HOME = """<!DOCTYPE html><html><head><title>Lab14</title></head><body>
 <form action="/xml" method="POST"><input name="data"><button>Send XML</button></form>
 </body></html>"""
 BLIND_XSS_STORE = []
+# blindxssapi lab (v1.9.x): stored comments (vuln renders RAW + victim-sim
+# fetches src= beacons; safe variant HTML-escapes) and beacon hits recorded
+# at /blx/beacon (canary.py-compatible token path) and listed at /blx/beacons.
+BLX_STORE = []
+BLX_SAFE_STORE = []
+BLX_BEACONS = []
 
 
 def weak_jwt():
@@ -110,7 +121,7 @@ HOME = """<!DOCTYPE html><html><head><title>FixtureMart Home</title>
 <form action="/xml" method="POST">
   <input name="data"><button>Send XML</button></form>
 <div id="gx" data-key="38ff6460ffff59ffff06ff6bffff3644" data-iv="8722e2ea52fd44f599d35d1534485d8e"></div>
-<footer>Powered by nginx — blog kami membahas akamai, barracuda, dan f5 secara umum.</footer>
+<footer>Powered by nginx — our blog discusses akamai, barracuda, and f5 in general terms.</footer>
 <input type="hidden" name="__VIEWSTATE" value="/wEPDwUJNDYxNjExMDAxZGQyb3JkZXItdGVzdA==">
 <input type="hidden" name="state" value='O:8:"stdClass":0:{}'>
 <script src="/static/app.v2.js"></script>
@@ -220,18 +231,26 @@ def _ldap_page(entries):
 
 
 STATE = {"cache_host": None,
-         # v1.6.0 — key live untuk kontrol API-key reuse (harus cocok dgn
-         # pattern vk_live_[0-9a-f]{16,} di takeover.py)
-         "bundled_key": "vk_live_" + "a3f9c2d17b40e5f8" * 2}
+         # v1.6.0 — live key for the API-key reuse control (must match the
+         # pattern vk_live_[0-9a-f]{16,} in takeover.py)
+         "bundled_key": "vk_live_" + "a3f9c2d17b40e5f8" * 2,
+         # protocolattacks fixture counters (race-condition emulator)
+         "proto_race": 0, "proto_race_safe": 0}
 
-# v1.9.0 — cache CDN simulasi (path -> (status, body))
+# v1.9.0 — simulated CDN cache (path -> (status, body))
 CDN_CACHE = {}
 
-WEAK_JWT_SECRET = b"supersecret"   # sengaja lemah — ada di wordlist takeover.py
+# protocolattacks (v1.11+) — cache-poisoning emulator: path -> body.
+# Only attacker-marked hosts (containing the scanner's 'ptk-<marker>' host)
+# populate it, mirroring the /cdn/cache pattern, so the pre-poison baseline
+# stays clean and the poison request alone populates the cache.
+PROTO_CACHE = {}
+
+WEAK_JWT_SECRET = b"supersecret"   # deliberately weak — in the takeover.py wordlist
 
 
 def _make_weak_jwt():
-    """Token HS256 role=user dengan secret lemah (fixture v1.6.0)."""
+    """HS256 role=user token with a weak secret (fixture v1.6.0)."""
     import base64 as _b
     def _e(b):
         return _b.urlsafe_b64encode(b).rstrip(b"=").decode()
@@ -243,7 +262,7 @@ def _make_weak_jwt():
 
 
 def _verify_weak_jwt(tok):
-    """Verifikasi token bearer dgn secret lemah. Returns claims atau None."""
+    """Verify a bearer token with the weak secret. Returns claims or None."""
     import base64 as _b
     try:
         h, p, s = tok.split(".")
@@ -267,8 +286,8 @@ RACE_VULN_USED = {"used": False}
 RACE_SAFE_USED = {"used": False}
 RACE_LOCK = _thr.Lock()
 SMUGGLE_MARKER = ""
-# Publik key PEM untuk uji JWT key-confusion (RS256 -> HS256 pakai publik key).
-# Fixture /api/jwt_rs salah memakai publik key sebagai HMAC secret.
+# Public PEM key for the JWT key-confusion test (RS256 -> HS256 using the public key).
+# The fixture /api/jwt_rs wrongly uses the public key as the HMAC secret.
 JWT_PUB_PEM = (
     "-----BEGIN PUBLIC KEY-----\n"
     "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC/qPXIZBICJ1MaJ7j8u5mW0g1Z\n"
@@ -398,14 +417,14 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def _waf_block(self):
-        """Mode waf: blokir payload khas serangan ala Cloudflare (kontrol positif
-        untuk c_waf_detection) — di mode lain tidak aktif."""
+        """WAF mode: block Cloudflare-style attack payloads (positive control
+        for c_waf_detection) — inactive in other modes."""
         if MODE != "waf":
             return False
         raw = self.path.lower()
-        # Pola serangan SPESIFIK saja (WAF sungguhan tidak memblokir tanda baca
-        # tunggal) — kontrol jinak scanner, termasuk %27 tunggal, harus LOLOS
-        # agar uji perilaku WAF v3.5 dapat membedakan blocking diferensial.
+        # SPECIFIC attack patterns only (a real WAF does not block lone
+        # punctuation) — benign scanner controls, including a lone %27, must PASS
+        # so the v3.5 WAF behavior test can tell differential blocking apart.
         if any(t in raw for t in ("%3cscript", "union", "../", "..%2f", "%0d%0a",
                                   "or%20%271%27%3d%271", "alert%28", "sleep%28")):
             self._send(403, "<html><title>Attention Required! | Cloudflare</title>"
@@ -422,7 +441,7 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Server", "cloudflare")
             self.send_header("CF-RAY", "8f00abcd-SIN")
         origin = self.headers.get("Origin")
-        if origin:  # CORS buruk yang disengaja: echo origin + credentials
+        if origin:  # deliberate bad CORS: echo origin + credentials
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Credentials", "true")
         for k, v in (extra or []):
@@ -440,13 +459,152 @@ class H(BaseHTTPRequestHandler):
         if "sleep(3)" in blob or "sleep 3" in blob or "pg_sleep" in blob or "waitfor delay" in blob:
             time.sleep(3)
 
+    # ---- graphqlsuite (GraphQL emulator) kontrol routes ----------------
+    GQL_FIELDS = {
+        "Query": {"hello": "String", "user": "User", "posts": "[Post]"},
+        "User": {"id": "String", "name": "String", "posts": "[Post]"},
+        "Post": {"id": "String", "title": "String", "author": "User"},
+        "Mutation": {"createUser": "User", "login": "String"},
+    }
+    GQL_OPEN = ("/gql/open",)  # endpoints where mutations run unauthenticated
+
+    def _gql_introspection(self):
+        def _t(n):
+            return {"kind": "OBJECT" if n in self.GQL_FIELDS else "SCALAR",
+                    "name": n,
+                    "ofType": {"kind": "LIST", "name": None,
+                               "ofType": {"kind": "OBJECT", "name": n,
+                                          "ofType": None}} if n in self.GQL_FIELDS else None}
+        types = []
+        for tname, fields in self.GQL_FIELDS.items():
+            types.append({
+                "name": tname, "kind": "OBJECT",
+                "fields": [{"name": f,
+                            "args": [{"name": "id", "defaultValue": None}],
+                            "type": _t(ftype.strip("[]!"))}
+                           for f, ftype in fields.items()]})
+        return {"queryType": {"name": "Query"},
+                "mutationType": {"name": "Mutation"}, "types": types}
+
+    def _gql_did_you_mean(self, bad, typename):
+        import difflib
+        names = list(self.GQL_FIELDS.get(typename, {}).keys())
+        close = difflib.get_close_matches(bad, names, n=3, cutoff=0.1)
+        hint = ", ".join(f"'{c}'" for c in close) if close else "'user'"
+        return [{"message": f"Cannot query field '{bad}' on type '{typename}'. "
+                            f"Did you mean {hint}?"}]
+
+    def _gql(self, path, raw=""):
+        """Tiny GraphQL emulator: introspection ON, field suggestions ON,
+        alias/depth uncapped. Mutations require 'Authorization: Bearer
+        admin-token' except on /gql/open (positive control for the
+        unauthenticated-mutation probe). Accepts GET ?query= (leakage)."""
+        ctype = (self.headers.get("Content-Type") or "").lower()
+        urlq = {k: v[0] for k, v in parse_qs(
+            urlparse(self.path).query).items()}
+        if ctype.startswith("application/graphql"):
+            query = raw
+        elif "query" in urlq:  # GET ?query= — query-in-URL
+            query = urlq["query"]
+        else:
+            try:
+                query = str(json.loads(raw or "{}").get("query") or "")
+            except Exception:
+                query = ""
+        qtext = query or ""
+        stripped = qtext.lstrip()
+
+        # --- mutations ---------------------------------------------------
+        if stripped.startswith("mutation"):
+            m = re.search(r"mutation\s*\{?\s*(\w+)\s*(?:\(([^)]*)\))?", stripped)
+            if not m:
+                self._send(200, json.dumps({"errors": [{"message": "syntax"}]}),
+                           "application/json")
+                return
+            mname, margs = m.group(1), m.group(2) or ""
+            nm = re.search(r'name:\s*"([^"]*)"', margs)
+            name = nm.group(1) if nm else "ptk"
+            authorized = (self.headers.get("Authorization") or "") == "Bearer admin-token"
+            if path in self.GQL_OPEN or authorized:
+                if mname == "createUser":
+                    data = {"createUser": {"__typename": "User", "id": "42",
+                                           "name": name}}
+                elif mname == "login":
+                    data = {"login": "TOK-open"}
+                else:
+                    self._send(200, json.dumps({"errors": [{"message":
+                        f"Cannot query field '{mname}' on type 'Mutation'. "
+                        "Did you mean 'createUser' or 'login'?"}]}),
+                        "application/json")
+                    return
+                self._send(200, json.dumps({"data": data}), "application/json")
+            else:
+                self._send(200, json.dumps({"errors": [{"message":
+                    "Unauthorized: must be authenticated to run mutations"}]}),
+                    "application/json")
+            return
+
+        # --- alias batch: name:__typename ----------------------------------
+        aliases = re.findall(r"(\w+)\s*:\s*__typename", qtext)
+        if aliases:
+            self._send(200, json.dumps({"data": {a: "Query" for a in aliases}}),
+                       "application/json")
+            return
+
+        # --- introspection -------------------------------------------------
+        if "__schema" in qtext or "__type" in qtext.replace("__typename", ""):
+            self._send(200, json.dumps({"data": {"__schema":
+                                                 self._gql_introspection()}}),
+                       "application/json")
+            return
+
+        # --- plain query: nested user{posts{author{...}}} resolution -------
+        m = re.search(r"Cannot|invalid|(\w+)\s*\{", qtext)
+        bad = re.search(r"\{\s*([a-zA-Z_]\w*)\s*\}?$|\{\s*([a-zA-Z_]\w*)\s*\}",
+                        qtext)
+        if "user" in qtext or "posts" in qtext or "author" in qtext:
+            data = {"user": {"id": "u1", "name": "alice"}}
+            node = data["user"]
+            for _ in range(60):  # depth cycle, uncapped for scanners
+                if "posts" not in qtext:
+                    break
+                node["posts"] = [{"id": "p1", "title": "t1"}]
+                if "author" in qtext:
+                    node["posts"][0]["author"] = {"id": "u1", "name": "alice"}
+                    node = node["posts"][0]["author"]
+                else:
+                    break
+            if "__typename" in qtext:
+                data["__typename"] = "Query"
+            self._send(200, json.dumps({"data": data}), "application/json")
+            return
+        # unknown top-level field -> Did-you-mean suggestion
+        fb = re.search(r"\{\s*([a-zA-Z_]\w*)", qtext)
+        if fb and not fb.group(1).startswith("__") \
+                and fb.group(1) not in self.GQL_FIELDS["Query"]:
+            self._send(200, json.dumps(
+                {"errors": self._gql_did_you_mean(fb.group(1), "Query")}),
+                "application/json")
+            return
+        self._send(200, json.dumps({"data": {"__typename": "Query",
+                                             "hello": "world"}}),
+                   "application/json")
+
     def do_GET(self):
         if self._waf_block():
             return
         path, q = self._all_params()
         self._maybe_sleep(list(q.values()))
         if MODE == "spa" and path not in ("/",):
-            self._send(200, HOME)  # catch-all 200: jebakan soft-404 untuk scanner
+            self._send(200, HOME)  # catch-all 200: soft-404 trap for scanners
+            return
+        if path in ("/gql", "/gql/open", "/api/graphql"):
+            # graphqlsuite control: tiny GraphQL emulator. /gql and /api/graphql:
+            # introspection ON, field suggestions ON, mutations REQUIRE auth.
+            # /gql/open: mutation createUser executes WITHOUT auth (positive
+            # control for the unauthenticated-mutation probe), mutations and
+            # queries are also accepted over GET (query-in-URL leakage).
+            self._gql(path)
             return
         if path == "/ws" and (self.headers.get("Upgrade", "").lower() == "websocket"):
             # Kontrol positif WebSocket: handshake valid, Origin apa pun diterima.
@@ -477,7 +635,7 @@ class H(BaseHTTPRequestHandler):
                                         "namespaces": ["wp/v2", "oembed/1.0"]}),
                        "application/json")
         elif path in ("/api/me", "/api/profile"):
-            # /api/me RENTAN (alg=none diterima + secret lemah) — kontrol positif
+            # /api/me VULNERABLE (alg=none accepted + weak secret) — positive control
             # JWT forgery. /api/profile KETAT (secret kuat) — kontrol negatif.
             import base64 as _b, hmac as _hm, hashlib as _hl
             auth = self.headers.get("Authorization", "")
@@ -494,8 +652,8 @@ class H(BaseHTTPRequestHandler):
             ok = False
             secret = b"secret" if path == "/api/me" else b"fixture-strong-secret-9f2c71"
             if path == "/api/me" and hdr.get("kid"):
-                # Simulasi kid injection (kontrol positif v1.10): kid dipakai
-                # sebagai path file kunci / fragmen SQL tanpa sanitasi.
+                # kid injection simulation (v1.10 positive control): the kid is used
+                # as a key file path / SQL fragment without sanitization.
                 _kid = str(hdr["kid"])
                 if "dev/null" in _kid:
                     secret = b""
@@ -568,6 +726,50 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             self._send(200, "<html>ping executed</html>")
+        elif path == "/blx/":
+            # blindxssapi lab: comment form (vuln store) + link to the
+            # render page and a SAFE (escaped) variant.
+            self._send(200, "<html><title>Comment Board</title>"
+                            "<a href='/blx/comments'>comments</a>"
+                            "<form method='POST' action='/blx/comment'>"
+                            "<input name='name'><input name='comment'>"
+                            "<button>Post</button></form>"
+                            "<form method='POST' action='/blx/safe/comment'>"
+                            "<input name='name'><input name='comment'>"
+                            "<button>Post safe</button></form></html>")
+        elif path == "/blx/comments":
+            # blindxssapi: vuln board — stored entries rendered RAW; the
+            # render simulates a privileged victim viewer by fetching
+            # any http(s) src= beacon found in stored entries.
+            import urllib.request as _u
+            _entries = ""
+            for _e in BLX_STORE:
+                _entries += f"<div class='entry'>{_e}</div>"
+                for _src in re.findall(r'src="(https?://[^"]+)"', _e):
+                    try:
+                        _u.urlopen(_src, timeout=3).read(64)
+                    except Exception:
+                        pass
+            self._send(200, "<html><title>Comments</title>"
+                            f"{_entries}</html>")
+        elif path == "/blx/safe/comments":
+            _entries = "".join(
+                f"<div class='entry'>{html.escape(str(_e))}</div>"
+                for _e in BLX_SAFE_STORE)
+            self._send(200, "<html><title>Comments (safe)</title>"
+                            f"{_entries}</html>")
+        elif path == "/blx/beacons":
+            self._send(200, json.dumps(BLX_BEACONS), "application/json")
+        elif path.startswith("/blx/beacon"):
+            # canary.py-compatible beacon recorder: token = last path
+            # segment (any method), like canary._handle expects.
+            _parts = [p for p in path.split("?")[0].split("/") if p]
+            _tok = _parts[-1] if len(_parts) > 1 else ""
+            if _tok and _tok != "beacon":
+                BLX_BEACONS.append({"token": _tok, "ts": time.time(),
+                                    "method": self.command,
+                                    "ua": self.headers.get("User-Agent", "")[:120]})
+            self._send(200, "ok", "text/plain")
         elif path == "/blind/xss":
             # WS1 lab: stored board rendered RAW; rendering simulates a
             # victim browser by fetching any http(s) src= beacon found
@@ -634,7 +836,7 @@ class H(BaseHTTPRequestHandler):
             import urllib.request as _u
             target = q.get("url", "")
             if target.startswith("http://169.254.169.254"):
-                # Simulasi endpoint metadata cloud (kontrol positif SSRF metadata).
+                # Cloud metadata endpoint simulation (SSRF metadata positive control).
                 self._send(200, "<html><title>Fetch Result</title>"
                                 "ami-id: ami-0fixture123\ninstance-id: i-0fixture456\n"
                                 "instance-type: t3.micro</html>")
@@ -644,7 +846,7 @@ class H(BaseHTTPRequestHandler):
                     data = resp.read(4096).decode("utf-8", "replace")
                 self._send(200, f"<html><title>Fetch Result</title>{data}</html>")
             except Exception as e:
-                self._send(200, f"<html>fetch gagal: {type(e).__name__}</html>")
+                self._send(200, f"<html>fetch failed: {type(e).__name__}</html>")
         elif path == "/echohdr":
             # Kontrol positif CRLF: nilai param masuk header respons mentah.
             self._send(200, "<html>echo</html>", extra=[("X-Echo-Loc", q.get("to", ""))])
@@ -653,7 +855,7 @@ class H(BaseHTTPRequestHandler):
                 <input name="user"><input name="pass" type="password"><button>Sign in</button></form></html>""")
         elif path == "/safe/search":
             import html as _h
-            self._send(200, f"<html><title>Safe Search</title>Results for {_h.escape(q.get('q', ''))} — aman dan ter-escape.</html>")
+            self._send(200, f"<html><title>Safe Search</title>Results for {_h.escape(q.get('q', ''))} — safe and escaped.</html>")
         elif path == "/safe/item":
             self._send(200, "<html>Safe Item #2 Fixture Shoes - data statis dari query berparameter (prepared statement).</html>")
         elif path == "/safe/redirect":
@@ -661,18 +863,18 @@ class H(BaseHTTPRequestHandler):
             if nxt.startswith("/") and not nxt.startswith("//"):
                 self._send(302, "", extra=[("Location", nxt)])
             else:
-                self._send(400, "redirect eksternal ditolak")
+                self._send(400, "external redirect rejected")
         elif path == "/safe/slow":
             # Jebakan timing: endpoint jinak yang UNIFORM lambat. Baseline
             # sama lambatnya, jadi klaim SQLi time-based di sini = FP.
             time.sleep(1.6)
-            self._send(200, "<html>Safe Slow — halaman berat yang sah (render 1.6 detik untuk semua request).</html>")
+            self._send(200, "<html>Safe Slow — a heavy but legitimate page (renders in 1.6 seconds for every request).</html>")
         elif path in ("/xpath/search", "/xpath/blind", "/safe/xpath/search"):
             # Kontrol Priority 1: /xpath/search membangun ekspresi XPath
-            # dengan konkatenasi string (RENTAN, error verbose);
-            # /xpath/blind sama rentannya tapi error digenerikkan (hanya
+            # with string concatenation (VULNERABLE, verbose error);
+            # /xpath/blind is equally vulnerable but the error is genericized (only
             # boolean yang bisa membuktikan); versi /safe melakukan
-            # lookup terparameter tanpa membangun query dari input.
+            # parameterized lookup without building the query from input.
             _name = q.get("name", "")
             if path.startswith("/safe"):
                 import xml.etree.ElementTree as _ET
@@ -704,8 +906,8 @@ class H(BaseHTTPRequestHandler):
             else:
                 self._send(200, "<html><title>XPath Directory</title>no results</html>")
         elif path in ("/hidden", "/safe/hidden"):
-            # Kontrol Priority 1: hanya parameter debug & preview yang
-            # mengubah respons di /hidden; /safe/hidden mengabaikan semua.
+            # Priority 1 control: only the debug & preview parameters change
+            # the /hidden response; /safe/hidden ignores them all.
             _extra = ""
             if not path.startswith("/safe"):
                 if "debug" in q:
@@ -724,19 +926,19 @@ class H(BaseHTTPRequestHandler):
                             "hidden parameter laboratory page used in engine "
                             f"tests.</p>{_extra}</html>")
         elif path == "/trap/dynamic":
-            # Jebakan stabilitas: konten berubah SETIAP request — gerbang
-            # stabilitas hidden-params & XPath boolean wajib melewatinya.
+            # Stability trap: content changes on EVERY request — the hidden-params
+            # & XPath boolean stability gate must skip it.
             import random as _rnd
             self._send(200, f"<html><title>Dynamic</title>rotating banner "
                             f"#{_rnd.randint(0, 10**9)} served at {time.time()} "
                             "— content rotates every request.</html>")
         elif path == "/vuln/search_bool":
-            # Positif SQLi boolean-blind MURNI: tanpa error SQL sama sekali.
-            # v1.7.0: evaluator boolean sungguhan (bukan hanya literal
-            # 1=2) — kondisi aritmetika angka dinilai seperti backend SQL
-            # asli, supaya Arithmetic Proof Battery diuji terhadap
-            # semantik yang benar; operator boolean dengan kondisi yang
-            # tidak bisa diparse = halaman error generik (500).
+            # PURE boolean-blind SQLi positive: no SQL error at all.
+            # v1.7.0: a real boolean evaluator (not just literal
+            # 1=2) — numeric arithmetic conditions are evaluated like a real
+            # SQL backend, so the Arithmetic Proof Battery tests against
+            # correct semantics; boolean operators with unparseable conditions
+            # yield a generic error page (500).
             term = q.get("q", "")
             low = term.lower()
             verdict = None
@@ -756,10 +958,10 @@ class H(BaseHTTPRequestHandler):
             elif verdict is False:
                 self._send(200, "<html>no results</html>")
             else:
-                self._send(200, "<html><title>BoolSearch</title>Daftar produk lengkap: sepatu lari, sepatu bola, sepatu gunung, sandal, topi — teks hasil yang panjang dan stabil untuk perbandingan boolean.</html>")
+                self._send(200, "<html><title>BoolSearch</title>Full product list: running shoes, football boots, hiking boots, sandals, hats — long stable result text for boolean comparison.</html>")
         elif path == "/login":
-            # Simulasi konsol Jenkins (v1.1): header produk + judul sign-in
-            # + footer versi — tiga artefak khas Jenkins asli.
+            # Jenkins console simulation (v1.1): product header + sign-in title
+            # + version footer — the three artifacts typical of a real Jenkins.
             self._send(200, "<html><head><title>Sign in [Jenkins]</title></head>"
                             "<body><h1>Sign in to Jenkins</h1>"
                             "<footer>Jenkins ver. 2.319.1</footer></body></html>",
@@ -783,7 +985,7 @@ class H(BaseHTTPRequestHandler):
                        ctype="application/json")
         elif path == "/static/app.v2.js":
             # v1.5.0 — bundle SPA v2: endpoint legacy TIDAK ter-link di HTML
-            # mana pun, hanya hidup di dalam JS bundle (target bundle-miner).
+            # anywhere; it only lives inside the JS bundle (bundle-miner target).
             self._send(200,
                        'const routes={admin:"/admin/users",export:"/api/legacy/admin-export",'
                        'dead:"/api/legacy/dead-export",ship:"/api/shipments/3"};\n'
@@ -791,8 +993,8 @@ class H(BaseHTTPRequestHandler):
                        'fetch("/api/legacy/dead-export");\n'
                        'fetch("/api/shipments/3");\n', "application/javascript")
         elif path == "/api/legacy/admin-export":
-            # v1.5.0 — kontrol bundle-miner: endpoint legacy hidup & bocor
-            # data (tidak ter-link, hanya ada di bundle).
+            # v1.5.0 — bundle-miner control: the legacy endpoint is live & leaks
+            # data (not linked, only present in the bundle).
             self._send(200, json.dumps({"rows": [{"user": "ade", "role": "admin",
                                                   "ssn_masked": "***-**-1001"},
                                                  {"user": "sari", "role": "user"}]}),
@@ -809,7 +1011,7 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"session": tok}), "application/json",
                        extra=[("Set-Cookie", f"session={tok}; Path=/")])
         elif path == "/admin/users":
-            # v1.5.0 — ACL role ber-cookie (aplikasi naif): hanya role=admin.
+            # v1.5.0 — cookie-based role ACL (naive app): role=admin only.
             role = ""
             for part in (self.headers.get("Cookie") or "").split(";"):
                 if part.strip().startswith("role="):
@@ -819,9 +1021,9 @@ class H(BaseHTTPRequestHandler):
             else:
                 self._send(403, "<html>Forbidden — admin only</html>")
         elif path == "/admin/export":
-            # v1.5.0 — kontrol authz matrix RENTAN: seharusnya admin-only,
-            # tapi role=user diterima (verifikasi role di COOKIE, bukan
-            # server-side session).
+            # v1.5.0 — vulnerable authz matrix control: should be admin-only,
+            # but role=user is accepted (role verified from the COOKIE, not
+            # the server-side session).
             role = ""
             for part in (self.headers.get("Cookie") or "").split(";"):
                 if part.strip().startswith("role="):
@@ -836,7 +1038,7 @@ class H(BaseHTTPRequestHandler):
         elif path == "/safe/admin/export":
             self._send(403, "<html>Forbidden</html>")
         elif path == "/openapi.json":
-            # v1.5.0 — spec diperkaya: path stateful utk fuzzer (harvest ID
+            # v1.5.0 — enriched spec: stateful paths for the fuzzer (harvest IDs
             # dari /api/users lalu probe /api/shipments/{sid}).
             self._send(200, json.dumps({
                 "openapi": "3.1.0",
@@ -850,8 +1052,8 @@ class H(BaseHTTPRequestHandler):
                         "responses": {"200": {}}}},
                 }}), "application/json")
         elif path.startswith("/api/shipments/"):
-            # v1.5.0 — kontrol openapi stateful: endpoint dari spec TIDAK
-            # punya ACL; ID valid 1-9 mengembalikan data (IDOR by spec).
+            # v1.5.0 — openapi stateful control: the spec endpoint has NO
+            # ACL; valid IDs 1-9 return data (IDOR by spec).
             try:
                 sid = int(path.rsplit("/", 1)[-1])
             except Exception:
@@ -864,13 +1066,13 @@ class H(BaseHTTPRequestHandler):
         elif path.startswith("/safe/api/shipments/"):
             self._send(403, "<html>Forbidden</html>")
         elif path == "/api/session/jwt":
-            # v1.6.0 — kontrol JWT takeover: token HS256 dengan SECRET LEMAH
-            # ('supersecret' ada di wordlist brute), claim role=user.
+            # v1.6.0 — JWT takeover control: HS256 token with a WEAK SECRET
+            # ('supersecret' is in the brute wordlist), role=user claim.
             tok = _make_weak_jwt()
             self._send(200, json.dumps({"token": tok}), "application/json")
         elif path == "/admin/me":
-            # v1.6.0 — endpoint admin ber-bearer JWT: verifikasi dgn secret
-            # lemah yang sama (token tempaan role=admin diterima).
+            # v1.6.0 — admin endpoint with bearer JWT: verified with the same
+            # weak secret (a forged role=admin token is accepted).
             auth = self.headers.get("Authorization", "")
             tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
             claims = _verify_weak_jwt(tok)
@@ -880,23 +1082,23 @@ class H(BaseHTTPRequestHandler):
             else:
                 self._send(401, json.dumps({"ok": False, "error": "admin only"}), "application/json")
         elif path == "/safe/admin/me":
-            # negatif: verifikasi dengan secret KUAT (token tempaan ditolak)
+            # negative: verification with a STRONG secret (forged token rejected)
             auth = self.headers.get("Authorization", "")
             tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
             self._send(401, json.dumps({"ok": False, "error": "signature invalid"}), "application/json")
         elif path == "/safe/oauth/authorize":
-            # v1.6.0 — negatif token theft: hanya allowlist fixture.local
+            # v1.6.0 — token theft negative: fixture.local allowlist only
             redir = str(q.get("redirect_uri", ""))
             if redir.startswith(("http://fixture.local/", "https://fixture.local/")):
                 self._send(302, "", "text/html",
                            extra=[("Location", redir + "?code=vhx-ok")])
             else:
                 self._send(400, json.dumps({"ok": False,
-                                            "error": "redirect_uri tidak di allowlist"}), "application/json")
+                                            "error": "redirect_uri not in allowlist"}), "application/json")
         elif path == "/profile":
-            # v1.6.0 — profil akun (untuk bukti email berubah)
+            # v1.6.0 — account profile (evidence for the email change)
             email = STATE.get("account_email", "admin@fixture.local")
-            self._send(200, f"<html>Profil: admin@fixture.local | email: {email}</html>")
+            self._send(200, f"<html>Profile: admin@fixture.local | email: {email}</html>")
         elif path == "/static/config.js":
             # v1.6.0 — API key live tertanam di bundle (divalidasi /api/key/check)
             # v1.9.0 — + kredensial LLM (sk-...) + email admin + IdP hint
@@ -921,12 +1123,12 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, "<html>Vault: kunci API produksi, "
                                 "backup DB, catatan gaji</html>")
             else:
-                self._send(401, "<html>Forbidden — butuh sesi</html>")
+                self._send(401, "<html>Forbidden — session required</html>")
         elif path == "/safe/admin/vault":
             self._send(401, "<html>Forbidden</html>")
         elif path == "/admin/panel":
-            # v1.7.0 — kontrol shadow admin: 403 langsung, tapi X-Original-URL
-            # dipercaya (reverse-proxy misconfiguration klasik).
+            # v1.7.0 — shadow admin control: direct 403, but X-Original-URL
+            # is trusted (classic reverse-proxy misconfiguration).
             xo = self.headers.get("X-Original-URL", "")
             if xo == "/admin/panel":
                 self._send(200, "<html>Admin Panel — dashboard internal, "
@@ -936,8 +1138,8 @@ class H(BaseHTTPRequestHandler):
         elif path == "/safe/admin/panel":
             self._send(403, "<html>Forbidden</html>")
         elif path == "/blind/sleep":
-            # v1.7.0 — kontrol blind timing: nilai dengan 'sleep N' membuat
-            # respons lambat (simulasi eksekusi server-side). /safe abaikan.
+            # v1.7.0 — blind timing control: a value with 'sleep N' makes the
+            # response slow (simulated server-side execution). /safe ignores it.
             import time as _t
             v = str(q.get("host", ""))
             if not path.startswith("/safe") and "sleep" in v.lower():
@@ -945,11 +1147,11 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "echo_len": len(v)}),
                        "application/json")
         elif path == "/safe/ws":
-            # v1.7.0 — negatif CSWSH: Origin asing ditolak.
+            # v1.7.0 — CSWSH negative: foreign Origin rejected.
             self._send(403, "origin not allowed", "text/plain")
         elif path in ("/internal/netmap", "/safe/internal/netmap"):
-            # v1.8.0 — pivot: endpoint netmap internal bocor TANPA auth
-            # (topologi + kredensial internal) ; /safe menolak.
+            # v1.8.0 — pivot: the internal netmap endpoint leaks WITHOUT auth
+            # (topology + internal credentials); /safe refuses.
             if path.startswith("/safe"):
                 self._send(403, json.dumps({"error": "forbidden"}),
                            "application/json")
@@ -963,8 +1165,8 @@ class H(BaseHTTPRequestHandler):
                         "postgres://appuser:FixN3t_2024@10.0.5.10:5432/appdb"],
                 }), "application/json")
         elif path in ("/cloud/metadata", "/safe/cloud/metadata"):
-            # v1.8.0 — IMDSv1: kredensial instance tanpa token IMDSv2;
-            # /safe mensimulasikan IMDSv2 (token wajib → 401).
+            # v1.8.0 — IMDSv1: instance credentials without an IMDSv2 token;
+            # /safe simulates IMDSv2 (token required → 401).
             if path.startswith("/safe"):
                 self._send(401, json.dumps(
                     {"error": "IMDSv2 token required"}), "application/json")
@@ -974,10 +1176,10 @@ class H(BaseHTTPRequestHandler):
                     "SecretAccessKey": "FixCloudS3cret2024",
                     "Token": "FixToken==", "Expiration": "2026-12-31"}))
         elif path == "/cloud/validate":
-            # (GET tidak valid) — ditangani do_POST
+            # (GET is invalid) — handled by do_POST
             self._send(405, "use POST", "text/plain")
         elif path in ("/docker/api", "/safe/docker/api"):
-            # v1.8.0 — Docker daemon API exposed tanpa TLS/auth.
+            # v1.8.0 — Docker daemon API exposed without TLS/auth.
             if path.startswith("/safe"):
                 self._send(403, "client certificates required", "text/plain")
             else:
@@ -1004,8 +1206,8 @@ class H(BaseHTTPRequestHandler):
                         {"metadata": {"name": "worker-1", "namespace":
                                       "prod"}}]}))
         elif path in ("/mcp/tools", "/safe/mcp/tools"):
-            # v1.9.0 — MCP server: listing tool TANPA auth, termasuk
-            # tool destruktif; /safe 403.
+            # v1.9.0 — MCP server: tool listing WITHOUT auth, including
+            # destructive tools; /safe 403.
             if path.startswith("/safe"):
                 self._send(403, json.dumps({"error": "unauthorized"}),
                            "application/json")
@@ -1021,16 +1223,16 @@ class H(BaseHTTPRequestHandler):
                      "description": "run SQL on prod database",
                      "token": "mcp-fix-token-2024"}]}))
         elif path in ("/ai/models", "/safe/ai/models"):
-            # v1.9.0 — model endpoint (Ollama-style) tanpa auth; /safe 403.
+            # v1.9.0 — model endpoint (Ollama-style) without auth; /safe 403.
             if path.startswith("/safe"):
                 self._send(403, "authentication required", "text/plain")
             else:
                 self._send(200, json.dumps({"models": [
                     "llama3:8b", "mistral:7b", "internal-embed-v2"]}))
         elif path == "/cdn/cache":
-            # v1.9.0 — CDN cache: mengambil X-Forwarded-Host TERAKHIR
-            # (normalisasi salah) lalu MENG-CACHE-nya untuk request
-            # berikutnya (cache per-path, TTL simulasi).
+            # v1.9.0 — CDN cache: takes the LAST X-Forwarded-Host
+            # (wrong normalization) then CACHES it for subsequent
+            # requests (per-path cache, simulated TTL).
             hdrs = self.headers.get_all("X-Forwarded-Host") or []
             host = hdrs[-1].split(",")[-1].strip() if hdrs else \
                 "cdn.fixture.local"
@@ -1043,29 +1245,83 @@ class H(BaseHTTPRequestHandler):
             else:
                 self._send(200, "Host: " + host +
                            "<html>origin page</html>", "text/html")
+        elif path == "/proto/xfh":
+            # protocolattacks: echoes X-Forwarded-Host into a canonical link
+            # (host-header reflection positive control), honours
+            # X-Original-URL as a comment marker.
+            xfh = self.headers.get("X-Forwarded-Host", "")
+            xou = self.headers.get("X-Original-URL", "")
+            host = xfh or self.headers.get("Host", "proto.fixture.local")
+            body = f"<html>canonical: http://{host}/account</html>"
+            if xou:
+                body += f"<!-- original-url: {xou} -->"
+            self._send(200, body,
+                       extra=[("Cache-Control", "public, max-age=60")])
+        elif path == "/proto/cache":
+            # protocolattacks: cache emulator. Poison requests carrying an
+            # attacker-marked X-Forwarded-Host populate the cache; every
+            # subsequent request is served from it (X-Cache: hit).
+            hdrs = self.headers.get_all("X-Forwarded-Host") or []
+            fwd = hdrs[-1].split(",")[-1].strip() if hdrs else ""
+            key = "proto:" + urlparse(self.path).path
+            if key in PROTO_CACHE:
+                self._send(200, PROTO_CACHE[key],
+                           extra=[("X-Cache", "hit")])
+            elif "ptk" in fwd:
+                page = f"<html>canonical: http://{fwd}/account</html>"
+                PROTO_CACHE[key] = page
+                self._send(200, page, extra=[("X-Cache", "miss")])
+            else:
+                host = fwd or "proto.fixture.local"
+                self._send(200, f"<html>canonical: http://{host}/account</html>",
+                           extra=[("X-Cache", "miss")])
+        elif path == "/proto/cache/safe":
+            # negative control: forwarded host ignored, nothing cached
+            self._send(200, "<html>canonical: http://proto.fixture.local/account</html>",
+                       extra=[("X-Cache", "bypass")])
+        elif path == "/proto/h2":
+            # protocolattacks: h2 Content-Length inconsistency emulator —
+            # a duplicate, differing Content-Length header pair is reported.
+            cls = self.headers.get_all("Content-Length") or []
+            if len({c.strip() for c in cls}) > 1:
+                self._send(200, "PROTO-H2-CL-CONFLICT", "text/plain")
+            else:
+                self._send(200, "ok", "text/plain")
+        elif path == "/proto/race":
+            # protocolattacks: readable race-condition state counter
+            # (?which=safe reads the idempotent counter for negative tests)
+            which = q.get("which", "main")
+            val = STATE["proto_race_safe"] if which == "safe" \
+                else STATE["proto_race"]
+            self._send(200, json.dumps({"redeemed": val}),
+                       "application/json")
+        elif path == "/proto/smuggle":
+            self._send(200, "smuggle origin ok", "text/plain")
+        elif path == "/proto/smuggle-clean":
+            self._send(200, "clean origin ok", "text/plain")
         elif path == "/safe/cdn/cache":
-            # v1.9.0 — kontrol cache: host KANONIK selalu, header diabaikan.
+            # v1.9.0 — cache control: canonical host always, header ignored.
             self._send(200, "Host: cdn.fixture.local<html>safe page</html>",
                        "text/html")
         elif path == "/trap/vendors":
-            # Jebakan vendor (regresi v3.4.1): token hex mengandung 'f5' +
-            # nama-nama vendor WAF sebagai TEKS artikel biasa.
+            # Vendor trap (v3.4.1 regression): the hex token contains 'f5' +
+            # WAF vendor names as plain article TEXT.
             self._send(200, "<html><title>Artikel</title>Perbandingan WAF populer: "
-                            "cloudflare, akamai, imperva, sucuri, barracuda, dan f5 big-ip dibahas sebagai produk. "
-                            "Artikel ini juga menyebut Jenkins, GitLab, Docker, Kubernetes, "
-                            "Portainer, dan phpMyAdmin sebagai nama produk dalam teks biasa. "
+                            "cloudflare, akamai, imperva, sucuri, barracuda, and f5 big-ip are discussed as products. "
+                            "This article also mentions Jenkins, GitLab, Docker, Kubernetes, "
+                            "Portainer, and phpMyAdmin as product names in plain text. "
                             "Token sesi: 38ff6460ffff59ffff06ff6bffff3644f5f5f5aabbcc. "
                             "Checksum f5f5f5f5ffff.</html>",
                        extra=[("Set-Cookie", "tracker=9f5abcffff0000f5; Path=/")])
         elif path == "/trap/databases":
-            # Jebakan database (regresi v3.8): nama DB sebagai topik artikel,
-            # BUKAN frasa error — tidak boleh jadi deteksi Database.
-            self._send(200, "<html><title>Artikel DB</title>Banyak tim memakai MySQL, "
-                            "PostgreSQL, MongoDB, Oracle, atau SQLite untuk proyek mereka. "
-                            "Artikel ini membahas cara memilih database yang tepat.</html>")
+            # Database trap (v3.8 regression): DB names as the article topic,
+            # NOT error phrases — must not trigger Database detection.
+            self._send(200, "<html><title>DB Article</title>Many teams use MySQL, "
+                            "PostgreSQL, MongoDB, Oracle, or SQLite for their projects. "
+                            "This article covers how to choose the right database.</html>")
         elif path == "/trap/echo_raw_json":
-            # Jebakan konteks: refleksi ke JSON ter-escape dengan content-type
-            # JSON — bukan konteks HTML, tidak boleh jadi XSS.
+            # Context trap: reflection into escaped JSON with a JSON
+            # content-type — not an HTML context, must not become XSS.
             self._send(200, json.dumps({"echo": q.get("msg", "")}),
                        "application/json")
         elif path == "/safe/fetch":
@@ -1073,7 +1329,7 @@ class H(BaseHTTPRequestHandler):
             if host == "example.com":
                 self._send(200, "<html>Safe fetch OK (allowlist)</html>")
             else:
-                self._send(403, "host tidak di allowlist")
+                self._send(403, "host not in allowlist")
         elif path == "/cached":
             host_used = STATE["cache_host"] or self.headers.get("Host", "")
             if self.headers.get("X-Forwarded-Host"):
@@ -1082,7 +1338,7 @@ class H(BaseHTTPRequestHandler):
             self._send(200, f"<html>Cached page — host used: {host_used}</html>")
         elif path == "/forgot":
             self._send(200, """<html><title>Forgot</title><form action="/forgot" method="POST">
-                <input name="email"><button>Kirim tautan reset</button></form></html>""")
+                <input name="email"><button>Send reset link</button></form></html>""")
         elif path == "/fixation":
             self._send(200, """<html><title>Alt Login</title><form action="/fixation-login" method="POST">
                 <input name="username"><input name="password" type="password"><button>Login</button></form></html>""",
@@ -1159,7 +1415,7 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, f"<html>Hello {name}</html>")
         elif path == "/profile/view":
             # v1.4.0 — second-order: bio mentah dari /profile/save 'dieksekusi'
-            # sebagai query; quote tunggal -> error SQL (kelas second-order).
+            # as the query; a single quote -> SQL error (second-order class).
             u = q.get("user", "ptk")
             bio = STATE.get("profiles", {}).get(u, "")
             if "'" in bio:
@@ -1181,7 +1437,7 @@ class H(BaseHTTPRequestHandler):
             elif "UNION SELECT" in up:
                 self._send(500, "You have an error in your SQL syntax near 'UNION' (MySQL)")
             else:
-                self._send(200, "<html>Item #1 Fixture detail halaman stabil untuk baseline.</html>")
+                self._send(200, "<html>Item #1 Fixture stable detail page for the baseline.</html>")
         elif path == "/cgi-bin/status":
             # v1.4.0 — kontrol Shellshock: UA berpola bash func dieksekusi.
             ua = self.headers.get("User-Agent", "")
@@ -1216,7 +1472,7 @@ class H(BaseHTTPRequestHandler):
             self._send(200, f"<html>echo: {q.get('expr', '')}</html>")
         elif path in ("/pollute", "/safe/pollute"):
             # v1.4.0 — kontrol prototype pollution -> gadget: query
-            # __proto__[...] / JSON __proto__ memodifikasi runtime (rentan);
+            # __proto__[...] / JSON __proto__ modifies the runtime (vulnerable);
             # server naif men-echo X-Polluted + gadget gadgetX='exec' aktif.
             _safe = path.startswith("/safe")
             proto_keys = [k for k in q if "__proto__" in k.lower()] if q else []
@@ -1237,7 +1493,7 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({"ok": True, "gadget": "none"}), "application/json")
         elif path in ("/h2c", "/safe/h2c"):
             # v1.4.0 — kontrol h2c smuggling: upgrade diterima & body yang
-            # berisi request kedua 'dieksekusi' backend (rentan). Safe: tolak.
+            # containing a second request is 'executed' by the backend (vulnerable). Safe: reject.
             length = int(self.headers.get("Content-Length", 0) or 0)
             raw2 = self.rfile.read(length).decode("utf-8", "replace") if length else ""
             upgrade = self.headers.get("Upgrade", "").lower()
@@ -1248,9 +1504,9 @@ class H(BaseHTTPRequestHandler):
             else:
                 self._send(200, "<html>normal response (no upgrade)</html>")
         elif path in ("/admin/profile", "/admin/profile.css"):
-            # v1.4.0 — kontrol Web Cache Deception: /admin/profile 403 tanpa
-            # sesi; /admin/profile.css dilayani isi privat + cacheable (naif
-            # memutus ACL berdasarkan ekstensi statis).
+            # v1.4.0 — Web Cache Deception control: /admin/profile 403 without
+            # a session; /admin/profile.css serves private content + cacheable (naively
+            # making the ACL decision based on a static extension).
             if path.endswith(".css"):
                 self._send(200, "<html>Private: email admin@fixture.local, api_key sk_live_fixture</html>",
                            extra=[("Cache-Control", "public, max-age=3600")])
@@ -1265,8 +1521,8 @@ class H(BaseHTTPRequestHandler):
             self._send(200, "backup db password: fixture-vault-pw-777\napi_key = vhx-fixture-key\n",
                        "text/plain")
         elif path == "/wafgate/echo":
-            # v1.4.0 — gerbang WAF in-process (independen dari MODE): blokir
-            # pola serangan baku; loloskan bentuk termutasi. Untuk c_waf_bypass.
+            # v1.4.0 — in-process WAF gate (independent of MODE): blocks
+            # canonical attack patterns; mutated forms pass. For c_waf_bypass.
             qlow = (q.get("q", "") or "").lower()
             blocked = ("<script>alert(" in qlow or "union select" in qlow
                        or "../" in qlow)
@@ -1279,7 +1535,7 @@ class H(BaseHTTPRequestHandler):
             self._send(200, "<html>VHX-INTERNAL-OK</html>")
         elif path in ("/api/log", "/safe/api/log"):
             # v1.4.0 — Log4Shell via GET: UA JNDI dieksekusi (versi do_POST
-            # menerima body; versi ini menerima header).
+            # accepts a body; this version accepts a header).
             ua = self.headers.get("User-Agent", "")
             if path == "/api/log" and "${jndi:" in ua.lower():
                 tok = re.search(r"\$\{jndi:([^}]+)\}", ua)
@@ -1287,15 +1543,15 @@ class H(BaseHTTPRequestHandler):
                                             "resolved": f"vhx-dns-hit:{tok.group(1) if tok else '?'}"}),
                            "application/json")
             else:
-                self._send(200, "<html>log tersimpan</html>")
+                self._send(200, "<html>log saved</html>")
         elif path == "/robots.txt":
             self._send(200, "User-agent: *\nDisallow: /admin-secret\n", "text/plain")
         elif path in ("/admin/status", "/safe/admin/status"):
-            # Kontrol positif auth-bypass via header proxy (X-Original-URL).
-            # /admin/status — RENTAN: proxy naif, header X-Original-URL
-            #   mengelabui ACL (server terlihat manggil /admin/status padahal
-            #   path asli dieksekusi). Tanpa header = 403.
-            # /safe/admin/status — ketat: selalu 403.
+            # Auth-bypass-via-proxy-header positive control (X-Original-URL).
+            # /admin/status — VULNERABLE: naive proxy; the X-Original-URL header
+            #   fools the ACL (the server appears to call /admin/status when actually
+            #   the original path is executed). No header = 403.
+            # /safe/admin/status — strict: always 403.
             _safe = path.startswith("/safe")
             if _safe or ("X-Original-URL" not in self.headers
                          and "X-Rewrite-URL" not in self.headers):
@@ -1307,11 +1563,11 @@ class H(BaseHTTPRequestHandler):
                                                   "n": "qPXIZBICJ1Ma...", "e": "AQAB",
                                                   "pem": JWT_PUB_PEM}]}), "application/json")
         elif path in ("/api/jwt_rs", "/safe/jwt_rs"):
-            # /api/jwt_rs — RENTAN key-confusion: verifikasi HS256 dengan
-            # publik key PEM sebagai HMAC secret (bukan RS256 verify). Attacker
-            # yang tahu publik key (dari /api/jwks) bisa forge token.
-            # /safe/jwt_rs — benar: verifikasi RS256 dengan publik key (butuh
-            #   private key untuk tanda tangan, tak bisa diforge HS256).
+            # /api/jwt_rs — VULNERABLE key-confusion: HS256 verification with
+            # the PEM public key as the HMAC secret (not RS256 verify). An attacker
+            # who knows the public key (from /api/jwks) can forge tokens.
+            # /safe/jwt_rs — correct: RS256 verification with the public key (requires
+            #   the private key to sign; cannot be forged to HS256).
             _safe = path.startswith("/safe")
             import base64 as _bb, hmac as _hh, hashlib as _h2, json as _jj
             auth = self.headers.get("Authorization", "")
@@ -1325,10 +1581,10 @@ class H(BaseHTTPRequestHandler):
             ok = False
             if hh.get("alg") == "HS256" and len(seg) == 3:
                 if _safe:
-                    # benar: HS256 seharusnya ditolak untuk token RS256
+                    # correct: HS256 should be rejected for an RS256 token
                     ok = False
                 else:
-                    # salah (rentan): sign dengan publik key sebagai secret
+                    # wrong (vulnerable): sign with the public key as the secret
                     exp = _bb.urlsafe_b64encode(_hh.new(
                         JWT_PUB_PEM.encode(), f"{seg[0]}.{seg[1]}".encode(),
                         _h2.sha256).digest()).rstrip(b"=").decode()
@@ -1340,7 +1596,7 @@ class H(BaseHTTPRequestHandler):
                 self._send(401, "401 Unauthorized")
         elif path == "/search":
             term = q.get("q", "")
-            self._send(200, f"<html><title>Search</title>Results for {term} — 3 items found sepatu lari, sepatu bola, sepatu gunung dengan deskripsi panjang yang stabil.</html>")
+            self._send(200, f"<html><title>Search</title>Results for {term} — 3 items found: running shoes, football boots, hiking boots with a long stable description.</html>")
         elif path == "/item":
             i = q.get("id", "1")
             if "\x00" in i:
@@ -1358,7 +1614,7 @@ class H(BaseHTTPRequestHandler):
                 u = USERS[(n - 1) % len(USERS)]
                 self._send(200, f"<html>Item #{n} milik {u['name']} — kontak {u['email']} — "
                                 f"alamat pengiriman pelanggan nomor {n} jalan fixture raya blok {n} — "
-                                f"telepon 0800-000-{n:04d} — status pesanan pelanggan {n} selesai.</html>")
+                                f"phone 0800-000-{n:04d} — customer order {n} status completed.</html>")
         elif path == "/view":
             f = q.get("file", "")
             if "etc/passwd" in f or "passwd" in f:
@@ -1380,8 +1636,8 @@ class H(BaseHTTPRequestHandler):
         elif path == "/static/js/bundle.js":
             self._send(200, 'a.src=t.head.appendChild(r),o=!n&&[],i=N.exec(e);var u="/static/media/logo.svg";', "application/javascript")
         elif path.startswith("/static/"):
-            # SPA catch-all trap: semua path /static/* menjawab shell yang sama
-            # dan MEMANTULKAN request URI mentah (URL-encoded) — jebakan FP v3.2.0.
+            # SPA catch-all trap: every /static/* path answers the same shell
+            # and REFLECTS the raw request URI (URL-encoded) — the v3.2.0 FP trap.
             self._send(200, f"<html><title>SPA</title><!-- uri: {self.path} -->app shell</html>")
         elif path == "/redirect":
             self._send(302, "", extra=[("Location", q.get("url", "/"))])
@@ -1436,7 +1692,7 @@ class H(BaseHTTPRequestHandler):
             elif path.startswith("/safe/") and me != want:
                 self._send(403, json.dumps({"error": "forbidden"}), "application/json")
             elif want in profiles:
-                # versi /api/ RENTAN BOLA: token valid mana pun membaca profil siapa pun
+                # the /api/ version is WIDE-OPEN VULNERABLE: any valid token reads any profile
                 self._send(200, json.dumps(profiles[want]), "application/json")
             else:
                 self._send(404, json.dumps({"error": "no such user"}), "application/json")
@@ -1691,16 +1947,16 @@ class H(BaseHTTPRequestHandler):
                 self._send(403, json.dumps({"error": "admin only"}),
                            "application/json")
         elif path == "/api/user/me":
-            # v1.2.2 — authz matrix: profil sesi sendiri (id dipakai sebagai
-            # baseline 'own id' oleh cek IDOR).
+            # v1.2.2 — authz matrix: the session's own profile (the id serves as
+            # the 'own id' baseline for the IDOR check).
             who = self.headers.get("X-Test-User", "user1")
             self._send(200, json.dumps({
                 "id": 999 if who == "admin" else 1,
                 "role": "admin" if who == "admin" else "user",
                 "name": who}), "application/json")
         elif path.startswith("/api/user/") and path.endswith("/profile"):
-            # v1.2.2 — IDOR RENTAN: profil APAPUN dikembalikan TANPA cek auth
-            # (ganti id -> baca profil user lain / anon pun bisa).
+            # v1.2.2 — IDOR VULNERABLE: ANY profile is returned WITHOUT an auth check
+            # (change the id -> read another user's profile; even anonymous works).
             uid = path[len("/api/user/"):-len("/profile")]
             self._send(200, json.dumps({
                 "id": uid, "name": f"User {uid}",
@@ -1708,8 +1964,8 @@ class H(BaseHTTPRequestHandler):
                 "ssn_masked": f"***-**-{uid[-4:] if uid else '0000'}"}),
                 "application/json")
         elif path == "/app.js":
-            # v1.2.2 — bundle SPA mining: fetch endpoint tersembunyi yang
-            # tidak ter-link di HTML mana pun.
+            # v1.2.2 — SPA bundle mining: fetches hidden endpoints that
+            # are not linked anywhere in the HTML.
             self._send(200,
                        'fetch("/api/hidden/config").then(r=>r.json());\n'
                        'var me="/api/user/me";\n'
@@ -1754,6 +2010,22 @@ class H(BaseHTTPRequestHandler):
                     out = tok
                 break
             self._send(200, out + "\n", "text/plain")
+        elif path == "/fp/blind-cmdi":
+            # accuracy-v3 (round 2): true BLIND command execution — parse q
+            # for a 'sleep N' expression (float allowed) and sleep N before
+            # answering, so a real scaling differential (sleep 1 vs sleep 2)
+            # passes the round-2 blind_time_confirm rules.
+            import re as _re
+            v = str(q.get("q", ""))
+            mm = _re.search(r"(?<![a-z(])sleep\s+([0-9]+(?:\.[0-9]+)?)", v)
+            if mm:
+                time.sleep(min(float(mm.group(1)), 8.0))
+            self._send(200, "done\n", "text/plain")
+        elif path == "/fp/blind-noisy":
+            # accuracy-v3 (round 2): network-noise control — jitter 0.2-0.4 s
+            # regardless of q, so the sleep variants can never scale.
+            time.sleep(random.uniform(0.2, 0.4))
+            self._send(200, "done\n", "text/plain")
         elif path == "/fp/safe/cmdi":
             # Negative control: input never reaches a shell.
             self._send(200, "done\n", "text/plain")
@@ -1810,6 +2082,47 @@ class H(BaseHTTPRequestHandler):
         raw_bytes = self.rfile.read(length) if length else b""
         raw = raw_bytes.decode("utf-8", "replace")
         self._maybe_sleep([raw])
+        if path in ("/gql", "/gql/open", "/api/graphql"):
+            self._gql(path, raw)
+            return
+        if path == "/proto/h2":
+            # protocolattacks: h2 CL-inconsistency probe (POST variant)
+            cls = self.headers.get_all("Content-Length") or []
+            if len({c.strip() for c in cls}) > 1:
+                self._send(200, "PROTO-H2-CL-CONFLICT", "text/plain")
+            else:
+                self._send(200, "ok", "text/plain")
+        elif path == "/proto/smuggle-clean":
+            # negative control: single framing honored, keep-alive preserved
+            self._send(200, "clean origin ok", "text/plain")
+        if path == "/proto/smuggle":
+            # protocolattacks: simple smuggling emulator — when BOTH framing
+            # headers arrive, the server reports the desync explicitly
+            # (single-response emulator; the detector's pipelined probes
+            # treat this as the strong differential).
+            cls = self.headers.get_all("Content-Length") or []
+            te = self.headers.get("Transfer-Encoding", "")
+            if cls and te:
+                parsed = "TE" if "chunked" in te.lower() else "CL"
+                self._send(200, f"PROTO-DESYNC-DETECTED parsed={parsed}",
+                           "text/plain")
+            else:
+                self._send(200, "smuggle origin ok", "text/plain")
+        elif path == "/proto/race/redeem":
+            # protocolattacks: VULNERABLE — every duplicate POST increments
+            # the counter (no single-use enforcement).
+            STATE["proto_race"] += 1
+            self._send(200, json.dumps({"ok": True,
+                                        "redeemed": STATE["proto_race"]}),
+                       "application/json")
+        elif path == "/proto/race/safe/redeem":
+            # negative control: idempotent — only the first redeem counts.
+            STATE["proto_race_safe"] += 1 if not \
+                STATE.get("proto_race_safe_done") else 0
+            STATE["proto_race_safe_done"] = True
+            self._send(200, json.dumps({"ok": True,
+                                        "redeemed": STATE["proto_race_safe"]}),
+                       "application/json")
         if path == "/jwt/login":
             # jwtred: issues an HS256 token signed with the WEAK secret
             # 'vanthex-secret', role=user.
@@ -1864,31 +2177,31 @@ class H(BaseHTTPRequestHandler):
                            "application/json")
         elif path == "/forgot":
             host_used = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", "")
-            self._send(200, f"<html>Tautan reset dikirim: http://{host_used}/reset?token=abc123</html>")
+            self._send(200, f"<html>Reset link sent: http://{host_used}/reset?token=abc123</html>")
         elif path in ("/spray/login", "/safe/spray/login"):
             # v1.4.0 — kontrol password-spray & enum username.
-            # /spray/login RENTAN: (1) admin/test menerima "Password1!" tanpa
-            # rate-limit (spray); (2) pesan beda utk user sah vs tidak (enum).
-            # /safe/spray/login — selalu 401 seragam (negatif).
+            # /spray/login VULNERABLE: (1) admin/test accepts "Password1!" without
+            # rate-limiting (spray); (2) different messages for valid vs invalid users (enum).
+            # /safe/spray/login — always a uniform 401 (negative).
             _safe = path.startswith("/safe")
             from urllib.parse import parse_qs as _pqs
             _form = _pqs(raw or "")
             _qv = lambda k: (_form.get(k) or [q.get(k, "")])[0]
             u, p = _qv("username"), _qv("password")
             if _safe:
-                self._send(401, json.dumps({"error": "kredensial tidak valid"}), "application/json")
+                self._send(401, json.dumps({"error": "invalid credentials"}), "application/json")
             elif p == "Password1!" and u in ("admin", "test"):
                 self._send(200, json.dumps({"ok": True, "user": u,
                                             "session": "SESS-vhx-spray"}), "application/json")
             elif u in ("admin", "test"):
-                self._send(401, json.dumps({"error": "password salah untuk user '" + u
-                                            + "', silakan coba lagi dengan password yang benar"}),
+                self._send(401, json.dumps({"error": "wrong password for user '" + u
+                                            + "', please try again with the correct password"}),
                            "application/json")
             else:
-                self._send(401, json.dumps({"error": "user tidak ditemukan"}), "application/json")
+                self._send(401, json.dumps({"error": "user not found"}), "application/json")
         elif path in ("/otp/verify", "/safe/otp/verify"):
-            # v1.4.0 — kontrol OTP bypass: /otp/verify RENTAN (null + kode lemah
-            # diterima, tanpa rate-limit). /safe/otp/verify selalu menolak.
+            # v1.4.0 — OTP bypass control: /otp/verify VULNERABLE (null + weak codes
+            # accepted, no rate-limit). /safe/otp/verify always rejects.
             _safe = path.startswith("/safe")
             try:
                 j = json.loads(raw or "{}")
@@ -1900,26 +2213,26 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({"ok": True, "status": "verified",
                                             "user": j.get("user", "admin")}), "application/json")
             else:
-                self._send(401, json.dumps({"ok": False, "error": "kode salah"}), "application/json")
+                self._send(401, json.dumps({"ok": False, "error": "wrong code"}), "application/json")
         elif path in ("/reset/request", "/safe/reset/request"):
-            # v1.6.0 — kontrol reset-token takeover: /reset/request RENTAN
-            # (token dikembalikan DI RESPONS + token prediktabel md5(email)).
+            # v1.6.0 — reset-token takeover control: /reset/request VULNERABLE
+            # (token returned IN THE RESPONSE + predictable md5(email) token).
             try:
                 j = json.loads(raw or "{}")
             except Exception:
                 j = {}
             email = str(j.get("email", ""))
             if path.startswith("/safe") or not email:
-                # safe: tidak pernah membocorkan token
+                # safe: never leaks the token
                 self._send(200, json.dumps({"ok": True,
-                                            "message": "tautan dikirim ke email"}), "application/json")
+                                            "message": "link sent to email"}), "application/json")
             else:
                 tok = hashlib.md5(email.encode()).hexdigest()
                 self._send(200, json.dumps({"ok": True, "email": email,
                                             "reset_token": tok}), "application/json")
         elif path in ("/reset/confirm", "/safe/reset/confirm"):
-            # v1.6.0 — konfirmasi reset: RENTAN menerima token prediktabel
-            # md5(email) dan 'mengganti password'; safe menolak.
+            # v1.6.0 — reset confirm: VULNERABLE, accepts the predictable md5(email)
+            # token and 'changes the password'; safe rejects.
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -1931,11 +2244,11 @@ class H(BaseHTTPRequestHandler):
                                             "status": "password updated"}), "application/json")
             else:
                 self._send(403, json.dumps({"ok": False,
-                                            "error": "token tidak valid / kedaluwarsa"}), "application/json")
+                                            "error": "invalid / expired token"}), "application/json")
         elif path in ("/login/limited", "/safe/login/limited"):
-            # v1.6.0 — kontrol rate-limit bypass: /login/limited menghitung
-            # kegagalan per X-Forwarded-For (client-controlled). /safe
-            # menghitung GLOBAL (XFF diabaikan) -> lockout nyata.
+            # v1.6.0 — rate-limit bypass control: /login/limited counts failures
+            # per X-Forwarded-For (client-controlled). /safe counts GLOBAL
+            # (XFF ignored) -> a real lockout.
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -1946,16 +2259,16 @@ class H(BaseHTTPRequestHandler):
             STATE.setdefault("login_fails", {})
             STATE["login_fails"][bucket] = STATE["login_fails"].get(bucket, 0)
             if STATE["login_fails"].get(bucket, 0) >= 5:
-                self._send(429, json.dumps({"ok": False, "error": "terlalu banyak percobaan",
+                self._send(429, json.dumps({"ok": False, "error": "too many attempts",
                                             "retry_after": 60}), "application/json")
             elif u == "admin@fixture.local" and p == "Summer2025!":
                 self._send(200, json.dumps({"ok": True, "user": u}), "application/json")
             else:
                 STATE["login_fails"][bucket] += 1
-                self._send(401, json.dumps({"ok": False, "error": "kredensial salah"}), "application/json")
+                self._send(401, json.dumps({"ok": False, "error": "invalid credentials"}), "application/json")
         elif path in ("/profile/email", "/safe/profile/email"):
-            # v1.6.0 — kontrol pre-hijack: /profile/email menerima ganti email
-            # TANPA re-auth; /safe menuntut reauth=yes di body.
+            # v1.6.0 — pre-hijack control: /profile/email accepts an email change
+            # WITHOUT re-auth; /safe requires reauth=yes in the body.
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -1963,15 +2276,15 @@ class H(BaseHTTPRequestHandler):
             email = str(j.get("email", ""))
             if path.startswith("/safe") and str(j.get("reauth", "")) != "yes":
                 self._send(403, json.dumps({"ok": False,
-                                            "error": "re-auth dibutuhkan"}), "application/json")
+                                            "error": "re-auth required"}), "application/json")
             elif not email or "@" not in email:
-                self._send(400, json.dumps({"ok": False, "error": "email tidak valid"}), "application/json")
+                self._send(400, json.dumps({"ok": False, "error": "invalid email"}), "application/json")
             else:
                 STATE["account_email"] = email
                 self._send(200, json.dumps({"ok": True, "email": email}), "application/json")
         elif path == "/api/key/check":
-            # v1.6.0 — validasi status API key (read-only): hanya key yang
-            # memang tertanam di fixture yang 'aktif'.
+            # v1.6.0 — API key status validation (read-only): only keys actually
+            # embedded in the fixture are 'active'.
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -1981,11 +2294,11 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({"active": True,
                                             "scope": "payments:write"}), "application/json")
             else:
-                self._send(401, json.dumps({"active": False, "error": "key tidak dikenal"}), "application/json")
+                self._send(401, json.dumps({"active": False, "error": "unknown key"}), "application/json")
         elif path == "/safe/api/key/check":
-            self._send(401, json.dumps({"active": False, "error": "tidak diizinkan"}), "application/json")
+            self._send(401, json.dumps({"active": False, "error": "not allowed"}), "application/json")
         elif path in ("/ai/validate", "/safe/ai/validate"):
-            # v1.9.0 — validasi API key LLM (read-only simulasi models.list)
+            # v1.9.0 — LLM API key validation (read-only models.list simulation)
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -2008,7 +2321,7 @@ class H(BaseHTTPRequestHandler):
             msg = str(j.get("message", ""))
             low = msg.lower()
             if path.startswith("/safe"):
-                # kontrol: model bersih menolak & tidak membocorkan
+                # control: the clean model refuses & does not leak
                 self._send(200, json.dumps(
                     {"reply": "Sorry, I can only answer normal questions."}),
                     "application/json")
@@ -2024,8 +2337,8 @@ class H(BaseHTTPRequestHandler):
             else:
                 self._send(200, json.dumps({"reply": "4"}), "application/json")
         elif path in ("/cloud/validate", "/safe/cloud/validate"):
-            # v1.8.0 — validasi kredensial IMDS (read-only simulasi STS):
-            # hanya key fixture yang dianggap aktif.
+            # v1.8.0 — IMDS credential validation (read-only STS simulation):
+            # only the fixture key counts as active.
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -2039,9 +2352,9 @@ class H(BaseHTTPRequestHandler):
                 self._send(403, json.dumps({"active": False}),
                            "application/json")
         elif path in ("/api/fuzz", "/safe/api/fuzz"):
-            # v1.8.0 — sasaran grammar fuzz: parser RAPUH terhadap
-            # mutasi struktur (tipe salah → 500 traceback); /safe
-            # mem-validasi dan selalu 200.
+            # v1.8.0 — grammar fuzz target: the parser is FRAGILE against
+            # structural mutations (wrong type → 500 traceback); /safe
+            # validates and always returns 200.
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -2065,8 +2378,8 @@ class H(BaseHTTPRequestHandler):
         elif path in ("/svc/smtp-login", "/svc/dbadmin", "/svc/panel",
                       "/safe/svc/smtp-login", "/safe/svc/dbadmin",
                       "/safe/svc/panel"):
-            # v1.7.0 — kontrol credential reuse: 3 service menerima
-            # kredensial web (admin/Password1!); /safe menolak.
+            # v1.7.0 — credential reuse control: 3 services accept the
+            # web credentials (admin/Password1!); /safe rejects.
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -2079,10 +2392,10 @@ class H(BaseHTTPRequestHandler):
                            "application/json")
             else:
                 self._send(401, json.dumps({"ok": False,
-                                            "error": "kredensial ditolak"}), "application/json")
+                                            "error": "credentials rejected"}), "application/json")
         elif path in ("/deser/java", "/safe/deser/java"):
             # v1.4.0 — kontrol gadget chain Java (CommonsCollections-style):
-            # RENTAN menerima gadget ber-marker dan memicu "DNS pingback".
+            # VULNERABLE: accepts a marker-carrying gadget and triggers a "DNS pingback".
             _safe = path.startswith("/safe")
             if not _safe and ("CommonsCollections" in raw or "ysoserial" in raw):
                 self._send(200, json.dumps({"ok": True,
@@ -2099,17 +2412,17 @@ class H(BaseHTTPRequestHandler):
             else:
                 self._send(500, "unserialize(): rejected", "text/plain")
         elif path in ("/profile/save", "/safe/profile/save"):
-            # v1.4.0 — kontrol second-order SQLi: bio disimpan mentah (rentan)
-            # atau dibersihkan (safe); /profile/view yang 'menjalankan' query.
+            # v1.4.0 — second-order SQLi control: the bio is stored raw (vulnerable)
+            # or sanitized (safe); /profile/view is what 'executes' the query.
             u = q.get("user", "ptk")
             bio = raw if "/safe/" in path else raw
             if "/safe/" in path:
                 bio = bio.replace("'", "''")
             STATE.setdefault("profiles", {})[u] = bio
-            self._send(200, "<html>profil tersimpan</html>")
+            self._send(200, "<html>profile saved</html>")
         elif path == "/api/log":
-            # v1.4.0 — kontrol Log4Shell: lookup JNDI dieksekusi dan token OOB
-            # 'sampai' (respons memuat resolusi vhx-dns).
+            # v1.4.0 — Log4Shell control: the JNDI lookup is executed and the OOB
+            # token 'arrives' (the response contains the vhx-dns resolution).
             ua = self.headers.get("User-Agent", "")
             if "${jndi:" in ua.lower() or "${jndi:" in raw.lower():
                 tok = re.search(r"\$\{jndi:([^}]+)\}", ua + raw)
@@ -2117,12 +2430,12 @@ class H(BaseHTTPRequestHandler):
                                             "resolved": f"vhx-dns-hit:{tok.group(1) if tok else '?'}"}),
                            "application/json")
             else:
-                self._send(200, "<html>log tersimpan</html>")
+                self._send(200, "<html>log saved</html>")
         elif path == "/safe/api/log":
-            self._send(200, "<html>log tersimpan</html>")
+            self._send(200, "<html>log saved</html>")
         elif path in ("/h2c", "/safe/h2c"):
-            # v1.4.0 — kontrol h2c smuggling via POST: upgrade diterima &
-            # body yang berisi request kedua 'dieksekusi' backend (rentan).
+            # v1.4.0 — h2c smuggling via POST control: the upgrade is accepted &
+            # body containing a second request is 'executed' by the backend (vulnerable).
             upgrade = self.headers.get("Upgrade", "").lower()
             if path == "/h2c" and upgrade == "h2c" and "/admin/internal" in raw:
                 self._send(200, "<html>HTTP/2 stream ok — internal: VHX-INTERNAL-OK</html>")
@@ -2131,9 +2444,9 @@ class H(BaseHTTPRequestHandler):
             else:
                 self._send(200, "<html>normal response (no upgrade)</html>")
         elif path == "/fixation-login":
-            self._send(200, "<html>welcome alt user (session tidak dirotasi)</html>")
+            self._send(200, "<html>welcome alt user (session not rotated)</html>")
         elif path == "/graphql" and raw.lstrip().startswith("["):
-            # Simulasi batching GraphQL (kontrol positif v1.10).
+            # GraphQL batching simulation (v1.10 positive control).
             self._send(200, json.dumps([{"data": {"__typename": "Query"}},
                                         {"data": {"__typename": "Query"}}]),
                        "application/json")
@@ -2146,19 +2459,19 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"data": data}),
                        "application/json")
         elif path == "/graphql" and "vxbadfield" in raw:
-            # Simulasi field suggestion GraphQL (kontrol positif v1.10).
+            # GraphQL field suggestion simulation (v1.10 positive control).
             self._send(200, json.dumps({"errors": [{"message":
                 "Cannot query field 'vxbadfield' on type 'Query'. "
                 "Did you mean 'user'?"}]}), "application/json")
         elif path == "/graphql" and "__typename" in raw:
-            # Simulasi endpoint GraphQL (v1.1): menjawab introspeksi minimal.
+            # GraphQL endpoint simulation (v1.1): answers minimal introspection.
             self._send(200, "{\"data\":{\"__typename\":\"Query\"}}",
                        ctype="application/json")
         elif path == "/xml" and "<!ENTITY" in raw and "&ptk;" in raw and "file:///etc/passwd" in raw:
-            # Simulasi XXE HANYA di endpoint /xml (parser XML naif). Dulu branch
-            # ini catch-all semua path — begitu fixture punya endpoint patched
-            # (/safe/*), mereka ikut tampak rentan XXE (artefak fixture, bukan
-            # bug engine). Battery v3.4 yang menangkapnya.
+            # XXE simulation ONLY on the /xml endpoint (naive XML parser). This branch
+            # used to be a catch-all for every path — once the fixture gained patched
+            # (/safe/*) endpoints, they too appeared XXE-vulnerable (a fixture artifact,
+            # not an engine bug). The v3.4 battery caught it.
             self._send(200, "root:x:0:0:root:/root:/bin/bash\n")
         elif path == "/api/search":
             if "$gt" in raw or "$ne" in raw:
@@ -2190,6 +2503,17 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             self._send(200, "<html>xml parsed</html>")
+        elif path == "/blx/comment":
+            # blindxssapi vuln store: raw comment kept verbatim.
+            _form = {k: v[0] for k, v in parse_qs(raw).items()}
+            BLX_STORE.append(
+                f"<b>{_form.get('name', '')}</b>: {_form.get('comment', '')}")
+            self._send(200, "<html>posted</html>")
+        elif path == "/blx/safe/comment":
+            _form = {k: v[0] for k, v in parse_qs(raw).items()}
+            BLX_SAFE_STORE.append(
+                f"<b>{_form.get('name', '')}</b>: {_form.get('comment', '')}")
+            self._send(200, "<html>posted</html>")
         elif path == "/blind/xss":
             _form = {k: v[0] for k, v in parse_qs(raw).items()}
             BLIND_XSS_STORE.append(
@@ -2213,7 +2537,7 @@ class H(BaseHTTPRequestHandler):
                     if _safe and k in ("__proto__", "constructor", "prototype"):
                         continue
                     if k == "__proto__" and isinstance(v, dict):
-                        _merge(dst, v)  # polusi: isi __proto__ bocor ke atas
+                        _merge(dst, v)  # pollution: __proto__ contents leak upward
                     elif isinstance(v, dict) and isinstance(dst.get(k), dict):
                         _merge(dst[k], v)
                     else:
@@ -2228,7 +2552,7 @@ class H(BaseHTTPRequestHandler):
                 posted = {}
             prof = {"id": 7, "name": "Fixture User", "email": "user@fixture.test"}
             if isinstance(posted, dict):
-                prof.update(posted)   # RENTAN mass assignment: semua field diterima & dipantulkan
+                prof.update(posted)   # VULNERABLE mass assignment: all fields accepted & reflected
             self._send(200, json.dumps(prof), "application/json")
         elif path == "/safe/json/echo":
             try:
@@ -2244,7 +2568,7 @@ class H(BaseHTTPRequestHandler):
         elif path in ("/deser", "/safe/deser"):
             # Kontrol positif deserialization: Python pickle.
             # /deser — vulnerable: pickle.loads() -> __reduce__ -> eval("7*6") -> 42.
-            # /safe/deser — patched: hanya terima JSON, reject pickle bytes.
+            # /safe/deser — patched: accepts JSON only, rejects pickle bytes.
             if path.startswith("/safe") or raw_bytes[:2] not in (b"\x80\x03", b"\x80\x04"):
                 try:
                     posted = json.loads(raw or "{}")
@@ -2263,8 +2587,8 @@ class H(BaseHTTPRequestHandler):
                                "application/json")
         elif path in ("/contact", "/safe/contact"):
             # Kontrol positif SMTP header injection:
-            # /contact — vulnerable: email reflect ke raw RFC header (CRLF tidak distrip).
-            # /safe/contact — patched: strip CRLF sebelum dipakai.
+            # /contact — vulnerable: email reflected into the raw RFC header (CRLF not stripped).
+            # /safe/contact — patched: strips CRLF before use.
             _safe = path.startswith("/safe")
             try:
                 _form = {k: v[0] for k, v in parse_qs(raw).items()}
@@ -2296,15 +2620,15 @@ class H(BaseHTTPRequestHandler):
                     return any(_walk(x, depth + 1) for x in v)
                 return isinstance(v, str) and "' OR " in v and depth >= 2
             if _walk(posted, 0):
-                # nilai BERSARANG dikonkatenasi ke query (rentan); nilai datar di-parameterize (aman)
+                # NESTED values are concatenated into the query (vulnerable); flat values are parameterized (safe)
                 self._send(500, "You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version")
             else:
                 self._send(200, json.dumps({"results": []}), "application/json")
         elif path in ("/race/redeem", "/safe/race/redeem"):
             # Kontrol positif race condition (TOCTOU) — single-use voucher.
-            # /race/redeem — RENTAN: check-then-act TANPA lock, ada sleep window
-            #   -> N request konkurren semua lolos check sebelum flag di-set.
-            # /safe/race/redeem — atomic pakai lock -> tepat 1 sukses.
+            # /race/redeem — VULNERABLE: check-then-act WITHOUT a lock, with a sleep window
+            #   -> N concurrent requests all pass the check before the flag is set.
+            # /safe/race/redeem — atomic with a lock -> exactly 1 success.
             _safe = path.startswith("/safe")
             if _safe:
                 with RACE_LOCK:
@@ -2317,34 +2641,34 @@ class H(BaseHTTPRequestHandler):
                 if RACE_VULN_USED["used"]:
                     self._send(429, "already redeemed")
                 else:
-                    time.sleep(0.3)  # perlebar window kompetitif (non-atomic)
+                    time.sleep(0.3)  # widen the competitive window (non-atomic)
                     RACE_VULN_USED["used"] = True
                     self._send(200, "redeemed ok")
         elif path in ("/smuggle", "/safe/smuggle"):
             # Kontrol positif HTTP request smuggling (CL.TE) — simulator naif.
-            # /smuggle — RENTAN: bila request membawa BOTH Content-Length dan
-            #   Transfer-Encoding: chunked, backend naif mem-prioritas TE dan
-            #   mengeksekusi "smuggled" sub-request; header X-Smuggle: <marker>
-            #   di-reflect ke respons.
-            # /safe/smuggle — ketat: tolak request dengan dua framing (400).
+            # /smuggle — VULNERABLE: when a request carries BOTH Content-Length and
+            #   Transfer-Encoding: chunked, the naive backend prioritizes TE and
+            #   executes the "smuggled" sub-request; the X-Smuggle: <marker> header
+            #   is reflected into the response.
+            # /safe/smuggle — strict: rejects doubly framed requests (400).
             _safe = path.startswith("/safe")
             ichunked = (self.headers.get("Transfer-Encoding", "") or "").lower()
             icl = self.headers.get("Content-Length", "")
             _m = re.search(r"X-Smuggle:\s*([A-Za-z0-9_-]+)", raw)
             if _safe or (("chunked" in ichunked) and icl):
-                # safe: tolak dobel-framing; smgl: terima tapi jangan reflect
+                # safe: reject double framing; smgl: accept but do not reflect
                 if _m and not _safe:
                     self._send(200, json.dumps({"smuggled_marker": _m.group(1)}),
                                "application/json")
                 else:
                     self._send(400, "bad request")
-                    # terima CL.TE (rentan); jangan echol'd jika safe
+                    # accept CL.TE (vulnerable); do not echo if safe
             else:
                 self._send(400, "bad request")
         elif path == "/api/user/profile/update":
-            # v1.2.2 — mass assignment REFLECT-ONLY: menerima field role/
-            # is_admin/permissions dan meng-echo-nya di respons, tetapi TIDAK
-            # menyimpan (fetch profil berikutnya tetap role=user -> probable).
+            # v1.2.2 — REFLECT-ONLY mass assignment: accepts role/is_admin/permissions
+            # fields and echoes them in the response, but does NOT
+            # store them (the next profile fetch is still role=user -> probable).
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -2357,11 +2681,11 @@ class H(BaseHTTPRequestHandler):
             self._send(200, "<html>welcome</html>", extra=[("Set-Cookie", "session=xyz; Path=/")])
         # ---- authattack (auth engine) kontrol routes --------------------
         elif path in ("/auth/login", "/safe/auth/login"):
-            # /auth/login RENTAN: 3 pasangan lemah (admin:admin123,
-            # test:test1234, dev:devpass1); lockout 5 gagal per XFF bucket
-            # (client-controlled -> bisa di-evasi dgn XFF baru).
-            # /safe/auth/login: tidak ada kredensial lemah, lockout GLOBAL
-            # (XFF diabaikan) -> negatif utk brute & evasi.
+            # /auth/login VULNERABLE: 3 weak pairs (admin:admin123,
+            # test:test1234, dev:devpass1); lockout after 5 failures per XFF bucket
+            # (client-controlled -> evadable with a fresh XFF).
+            # /safe/auth/login: no weak credentials, GLOBAL lockout
+            # (XFF ignored) -> negative for brute force & evasion.
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -2394,13 +2718,13 @@ class H(BaseHTTPRequestHandler):
                                             "error": "invalid credentials"}),
                            "application/json")
         elif path == "/auth/open-login":
-            # login tanpa lockout/rate-limit sama sekali (selalu 401).
+            # login with no lockout/rate-limit at all (always 401).
             self._send(401, json.dumps({"ok": False,
                                         "error": "invalid credentials"}),
                        "application/json")
         elif path == "/auth/register":
-            # RENTAN mass-assignment: merefleksikan role/isAdmin/email_verified
-            # dari body registrasi.
+            # VULNERABLE mass-assignment: reflects role/isAdmin/email_verified
+            # from the registration body.
             try:
                 j = json.loads(raw or "{}")
             except Exception:
@@ -2414,8 +2738,8 @@ class H(BaseHTTPRequestHandler):
                 resp["email_verified"] = bool(j.get("email_verified"))
             self._send(200, json.dumps(resp), "application/json")
         elif path == "/auth/otp":
-            # RENTAN window brute: menerima 123456..123463 (window 8 kode),
-            # TANPA lockout / rate-limit.
+            # VULNERABLE to window brute force: accepts 123456..123463 (an 8-code window),
+            # WITHOUT lockout / rate-limit.
             try:
                 j = json.loads(raw or "{}")
             except Exception:

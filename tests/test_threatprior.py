@@ -255,6 +255,6 @@ def test_report_docx_renders_priority_line(tmp_path):
 
 def test_vulnscan_run_integration_env_gate():
     src = open(os.path.join(os.path.dirname(__file__), "..",
-                            "vulnscan2.py"), encoding="utf-8").read()
+                            "engine", "vulnscan2.py"), encoding="utf-8").read()
     assert "PTK_THREATPRIOR" in src
     assert "threatprior" in src

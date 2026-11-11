@@ -29,7 +29,7 @@ import diffconfirm
 import secretpatterns as sp
 import store
 import techdb
-import timingoracle as tor
+from offensive import timingoracle as tor
 import vulnscan2
 
 

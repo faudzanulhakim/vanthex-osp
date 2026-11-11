@@ -1,4 +1,4 @@
-"""Unit test PayloadForge — murni, tanpa jaringan, cepat."""
+"""PayloadForge unit tests — pure, no network, fast."""
 import base64
 import os
 import sys
@@ -40,7 +40,7 @@ def test_encode_hex():
 def test_encode_unknown_raises():
     try:
         pf.encode("x", "nope")
-        assert False, "harusnya ValueError"
+        assert False, "expected ValueError"
     except ValueError:
         pass
 
@@ -48,8 +48,8 @@ def test_encode_unknown_raises():
 # ------------------------------------------------------------ mutate
 def test_mutate_deduplicates_and_keeps_original():
     vs = pf.mutate("SELECT 1")
-    assert vs[0] == "SELECT 1"          # bentuk baku pertama
-    assert len(vs) == len(set(vs))       # tanpa duplikat
+    assert vs[0] == "SELECT 1"          # first canonical form
+    assert len(vs) == len(set(vs))       # no duplicates
 
 
 def test_mutate_comment_inject():
@@ -102,7 +102,7 @@ def test_sqli_union_marker_positions():
 
 def test_sqli_union_columns_match():
     u = pf.sqli_union_payloads(5, "M")[0]
-    # antara UNION SELECT dan -- - harus ada 5 kolom
+    # between UNION SELECT and -- - there must be 5 columns
     inner = u["payload"].split("SELECT", 1)[1].split("--")[0]
     assert inner.count(",") == 4
 
@@ -166,7 +166,7 @@ def test_jwt_none_variants():
 def test_jwt_forge_hs256_shape():
     t = pf.jwt_forge_hs256("eyJoIjoiMSJ9", "eyJwIjoiMiJ9", "secret")
     assert t.count(".") == 2
-    # verifikasi HMAC dengan stdlib
+    # verify the HMAC with the stdlib
     import hashlib
     import hmac
     h, p, s = t.split(".")

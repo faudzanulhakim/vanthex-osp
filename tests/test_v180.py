@@ -848,12 +848,12 @@ def _wait_port(port, tries=40):
     return False
 
 
-# Serial + timeout longgar (v1.9.1): test integrasi ini menembak
-# fixture lokal dengan urutan probe diffconfirm yang sensitif waktu.
-# Di bawah beban suite paralel, timeout 4 dtk pernah membuat fixture
-# LDAP turun ke probable — perilaku engine BENAR (degradasi
-# konservatif saat bukti tak terkumpul), test-nya yang rapuh. Marker
-# serial menandainya untuk dijalankan tanpa tumpang tindih suite lain.
+# Serial + generous timeout (v1.9.1): this integration test drives
+# a local fixture with a time-sensitive diffconfirm probe sequence.
+# Under parallel suite load, the 4-second timeout once dropped the LDAP
+# fixture to probable — engine behavior is CORRECT (conservative
+# degradation when evidence is incomplete); the test was flaky. The
+# serial marker runs it without overlapping other suites.
 @pytest.mark.serial
 def test_integration_new_checks_on_battery_fixture():
     """One pass of the five new/extended checks over the shared

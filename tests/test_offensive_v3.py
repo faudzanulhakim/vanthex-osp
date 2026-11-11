@@ -1,5 +1,5 @@
 """Tes paket v1.5.0 (offense brain) — 6 check baru + 5 engine baru.
-Tiap test boot fixture di port unik (18160+N), jalankan satu check via Ctx.
+Each test boots the fixture on a unique port (18160+N) and runs one check via Ctx.
 Engine pure (harkit/monitor/chainplanner/wordmint/vulntpl) unit-test.
 """
 import json
@@ -27,7 +27,7 @@ def _boot(port):
         except Exception:
             time.sleep(0.25)
     p.terminate()
-    raise AssertionError("fixture tidak start")
+    raise AssertionError("fixture did not start")
 
 
 def _run(check, port, opts=None):
@@ -67,7 +67,7 @@ def test_bundle_miner_finds_legacy():
                "/api/legacy/admin-export" in str(f["location"])
                for f in found), [f["title"] for f in found]
     conf = [f for f in found if f["confidence"] == "confirmed"]
-    assert conf, "tidak ada temuan confirmed"
+    assert conf, "no confirmed findings"
 
 
 # ---------------- c_session_entropy ----------------
@@ -81,7 +81,7 @@ def test_session_entropy_predictable():
 
 
 def test_session_entropy_safe_endpoint_not_flagged():
-    """Negative: /safe/api/session/new (acak kripto) TIDAK boleh dilaporkan."""
+    """Negative: /safe/api/session/new (crypto-random) must NOT be reported."""
     import exploitkit, vulnscan2, subprocess, urllib.request
     port = PORT + 2
     p = _boot(port)
@@ -90,14 +90,14 @@ def test_session_entropy_safe_endpoint_not_flagged():
         toks = exploitkit._collect_sessions(ctx, "/safe/api/session/new", 5)
         assert len(toks) >= 4
         assert len(set(toks)) == len(toks), "safe endpoint token duplikat"
-        # delta tidak boleh konstan
+        # the delta must not be constant
         import re
         nums = [re.findall(r"\d+", t) for t in toks]
         if all(len(n) == len(nums[0]) and n for n in nums):
             for i in range(len(nums[0])):
                 deltas = [int(nums[k + 1][i]) - int(nums[k][i])
                           for k in range(len(nums) - 1)]
-                assert len(set(deltas)) > 1, "safe endpoint masih prediktabel"
+                assert len(set(deltas)) > 1, "safe endpoint is still predictable"
     finally:
         p.terminate()
 
@@ -111,7 +111,7 @@ def test_authz_matrix_bypass():
                "/admin/" in str(f["location"]) for f in found), \
         [f["title"] for f in found]
     conf = [f for f in found if f["confidence"] == "confirmed"]
-    assert conf, "tidak ada temuan confirmed"
+    assert conf, "no confirmed findings"
 
 
 # ---------------- c_openapi_stateful ----------------
@@ -122,7 +122,7 @@ def test_openapi_stateful_idor():
     assert any("IDOR by spec" in f["title"] for f in found), \
         [f["title"] for f in found]
     conf = [f for f in found if f["confidence"] == "confirmed"]
-    assert conf, "tidak ada temuan confirmed"
+    assert conf, "no confirmed findings"
 
 
 # ---------------- c_oob_sweep ----------------
@@ -171,7 +171,7 @@ class _StubRegistry:
 
 
 def test_oob_sweep_callback_attribution():
-    """Token ber-callback nyata -> temuan confirmed dengan atribusi per-kelas."""
+    """A token with a real callback -> confirmed findings with per-class attribution."""
     import exploitkit
     reg = _StubRegistry()
     client = _StubClient({("GET", "/"): _Res(200, "home")})
@@ -182,11 +182,11 @@ def test_oob_sweep_callback_attribution():
                f["confidence"] == "confirmed" for f in found), \
         ([f["title"] for f in found], ctx.logs)
     planted = ctx._oob_planted
-    assert len(planted) >= 9, len(planted)  # 3 header x3 kelas + json + pre
+    assert len(planted) >= 9, len(planted)  # 3 headers x3 classes + json + pre
 
 
 def test_oob_sweep_skip_tanpa_canary():
-    """Tanpa canary: check dilewati (declared), TIDAK ada temuan."""
+    """Without a canary: the check is skipped (declared), NO findings."""
     import exploitkit
     client = _StubClient({("GET", "/"): _Res(200, "home")})
     ctx = _CtxMin(client, {})
@@ -211,7 +211,7 @@ def test_custom_template_engine():
     try:
         import exploitkit
         found, ctx = _run(exploitkit.c_custom_templates, PORT + 5)
-        assert any("Template Custom" in f["title"] and
+        assert any("Custom Template" in f["title"] and
                    "Kunci vault" in f["title"] for f in found), \
             ([f["title"] for f in found], ctx.logs)
     finally:
@@ -227,11 +227,11 @@ def test_vulntpl_match_logic():
     assert not vulntpl.match(r, 'body!~api_key')
     assert not vulntpl.match(r, 'status=500')
     assert vulntpl.match(_Res(200, "abc", []), 'bodyre~^a.c$')
-    # template invalid ditolak
+    # invalid template rejected
     try:
         vulntpl._validate({"requests": [{"path": "/x", "method": "DELETE"}],
                            "match": "status=200"})
-        assert False, "DELETE harus ditolak"
+        assert False, "DELETE must be rejected"
     except ValueError:
         pass
 
@@ -259,8 +259,8 @@ def test_harkit_diff():
 
     rows2 = harkit.replay_and_diff(har, _NOACL({}), "session=A", "session=B")
     assert rows2[0]["verdict"] == "same-private", rows2
-    assert "authz lemah" in harkit.report(rows2)
-    assert "HAR kosong" in harkit.report([])
+    assert "Weak authz" in harkit.report(rows2)
+    assert "Empty HAR" in harkit.report([])
 
 
 # ---------------- monitor ----------------
@@ -299,7 +299,7 @@ def test_chainplanner_plans():
     assert all(p["steps"] for p in plans)
     assert all(p.get("operator") is True for p in plans)
     assert chainplanner.plan([]) == []
-    # SSTI tanpa akses config -> rantai belum bisa disusun (jujur)
+    # SSTI without config access -> chain cannot be built yet (honest)
     assert chainplanner.plan([{"title": "SSTI RCE"}]) == []
 
 
@@ -322,7 +322,7 @@ def test_proxykit_passive_scan():
     ps = PassiveScanner()
     f = ps.scan(_Res(200, "<html>ok</html>", [("Content-Type", "text/html")]),
                 "http://t/")
-    assert any("Header keamanan hilang" in x["title"] for x in f), f
+    assert any("Missing security headers" in x["title"] for x in f), f
     f2 = ps.scan(_Res(200, "AKIAIOSFODNN7EXAMPLE",
                       [("Content-Type", "text/plain")]), "http://t/k")
     assert any("AWS Access Key" in x["title"] for x in f2)

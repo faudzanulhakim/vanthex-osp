@@ -23,7 +23,7 @@ def read(rel):
 
 
 def app2_src():
-    return read("app2.py")
+    return read(os.path.join("webapp", "app2.py"))
 
 
 # ------------------------------------------------------- webui is gone
@@ -60,7 +60,7 @@ def test_version_pins_are_1_2_2():
     assert '"version": "1.2.2"' in src
     assert 'server_version = "VANTHEX/1.2.2"' in src
     assert "VANTHEX Offensive Security Platform v1.2.2" in src
-    for name in ("README.md", "DOCKER.md", "INSTALL.md"):
+    for name in ("README.md", "docs/DOCKER.md", "docs/INSTALL.md"):
         txt = read(name)
         assert "1.2.2" in txt
         assert "1.2.1" not in txt, name
@@ -78,8 +78,8 @@ def test_docker_config_synced():
     assert 'ARTIFACT' not in compose
     # OSINT watcher state env vars removed with the OSINT feature
     assert "PTK_OSINT_WATCH_PATH" not in compose
-    assert "Version 1.2.2" in read("DOCKER.md")
-    assert "VANTHEX_TAG=1.2.2" in read("DOCKER.md")
+    assert "Version 1.2.2" in read("docs/DOCKER.md")
+    assert "VANTHEX_TAG=1.2.2" in read("docs/DOCKER.md")
 
 
 def test_archive_docs_under_docs():

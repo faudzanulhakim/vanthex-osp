@@ -3,7 +3,7 @@
 #   cp .env.example .env      # set a strong PTK_ADMIN_PW
 #   docker compose up -d --build
 #   open http://localhost:5000  (login: admin / your PTK_ADMIN_PW)
-# Full guide: DOCKER.md. Native (non-Docker) install: INSTALL.md.
+# Full guide: docs/DOCKER.md. Native (non-Docker) install: docs/INSTALL.md.
 services:
   vanthex:
     build: .

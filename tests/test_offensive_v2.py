@@ -1,6 +1,6 @@
 """Tes offensive pack v1.4.0 — 13 check baru (credkit/dirbrute/exploitkit),
 engine payloadforge.waf_variants, dan pipeline sesskit (stub client).
-Tiap test boot fixture di port 18150+N agar tidak bentrok test_exploitkit.
+Each test boots the fixture on port 18150+N so it does not clash with test_exploitkit.
 """
 import os
 import subprocess
@@ -25,11 +25,11 @@ def _boot(port=PORT):
             return p
         except Exception:
             time.sleep(0.25)
-    raise AssertionError("fixture tidak start")
+    raise AssertionError("fixture did not start")
 
 
 def _run(check, port):
-    """Boot fixture, jalankan satu check, kembalikan temuan."""
+    """Boot the fixture, run one check, return the findings."""
     import vulnscan2
     p = _boot(port)
     try:
@@ -134,8 +134,8 @@ def test_cache_deception_on_fixture():
 def test_waf_bypass_on_fixture():
     import exploitkit
     found = _run(exploitkit.c_waf_bypass, PORT + 11)
-    # judul sengaja TIDAK berprefix "WAF" — tripwire anti-FP battery menuduh
-    # fixture bersih bila ada temuan berjudul WAF-*.
+    # the title deliberately does NOT start with "WAF" — the battery anti-FP
+    # tripwire flags the clean fixture if any WAF-* finding appears.
     assert any("Signature-Based Filter Evasion" in f["title"] for f in found), found
     conf = [f for f in found if f["confidence"] == "confirmed"]
     assert conf, conf
@@ -157,10 +157,10 @@ def test_waf_variants_filters_blocked():
     import payloadforge as pf
     payload = "<script>alert('x')</script>"
     vs = pf.waf_variants(payload, blocked=("<script>alert(",))
-    assert vs, "harus ada varian lolos filter"
+    assert vs, "there must be a variant that passes the filter"
     for v in vs:
         assert "<script>alert(" not in v.lower(), v
-    # tanpa pola terblokir: payload baku tetap di depan
+    # no blocked pattern: the canonical payload stays first
     vs2 = pf.waf_variants(payload, blocked=())
     assert vs2[0] == payload
 
@@ -168,9 +168,9 @@ def test_waf_variants_filters_blocked():
 # ---------------- sesskit (pipeline, stub client) ----------------
 
 class _StubClient:
-    """Client stub: upload menerima multipart; GET serve_url persis (tanpa
-    query) mengembalikan isi file yang di-upload; GET dgn ?c= mengembalikan
-    output eksekusi simulasi (atau payload mentah bila echo=True)."""
+    """Client stub: upload accepts multipart; GET on the exact serve_url (no
+    query) returns the uploaded file contents; GET with ?c= returns
+    simulated execution output (or the raw payload when echo=True)."""
 
     def __init__(self, echo=False):
         self.uploaded = {}
@@ -206,7 +206,7 @@ def test_sesskit_pipeline_with_stub():
 
 
 def test_sesskit_pipeline_reports_not_executed():
-    """Client yang meng-echo payload mentah -> jujur 'not-executed'."""
+    """A client that echoes the raw payload -> honest 'not-executed'."""
     import sesskit
     rep = sesskit.run_pipeline(_StubClient(echo=True), "/upload", "sh.php", "php")
     assert rep["status"] == "ok", rep
@@ -224,7 +224,7 @@ def test_new_checks_resolve_in_profiles():
     for name in ("c_password_spray", "c_otp_bypass", "c_user_enum"):
         assert name in vulnscan2.PROFILES["enterprise-full"], name
         assert name not in vulnscan2.PROFILES["active-exploit"], name
-    # semua nama di semua profil resolve ke callable
+    # every name in every profile resolves to a callable
     for prof, checks in vulnscan2.PROFILES.items():
         for name in checks:
             assert callable(getattr(vulnscan2, name, None)), (prof, name)

@@ -1,9 +1,9 @@
-"""Test deteksi WAF (v3.4.1) — regresi insiden FP F5 pada aplikasi GeneXus.
+"""WAF detection test (v3.4.1) — regression for the F5 FP incident on a GeneXus app.
 
-Kasus nyata 2026-10-16: target nginx + aplikasi GeneXus dituduh "F5 BIG-IP"
-karena pola lama r"f5" cocok dengan substring di token hex acak
-(gx_ajax_key "38ff6460ffff59ff..."). Signature kini indikator kuat per vendor,
-terpisah header/body, dan evidence mencatat indikator yang cocok.
+Real case 2026-10-16: an nginx target + GeneXus app was accused of "F5 BIG-IP"
+because the old pattern r"f5" matched a substring inside random hex tokens
+(gx_ajax_key "38ff6460ffff59ff..."). Signatures are now strong per-vendor
+indicators, split header/body, and evidence records the matching indicator.
 """
 import os
 import sys
@@ -19,13 +19,13 @@ GENEXUS_BODY = ('<script>var GX = {"gx_ajax_key":"38ff6460ffff59ffff06ff6bffff36
 
 def test_genexus_hex_tokens_bukan_f5():
     hit = _waf_match([("Server", "nginx"), ("Content-Type", "text/html")], GENEXUS_BODY)
-    assert hit is None, f"FP WAF pada token hex GeneXus: {hit}"
+    assert hit is None, f"WAF FP on GeneXus hex tokens: {hit}"
 
 
 def test_amzn_trace_bukan_aws_waf():
     hit = _waf_match([("X-Amzn-Trace-Id", "Root=1-6789f5ab-cdef0123456789")],
-                     "<html>app biasa</html>")
-    assert hit is None, f"x-amzn-trace-id (ALB) bukan bukti WAF: {hit}"
+                     "<html>plain app</html>")
+    assert hit is None, f"x-amzn-trace-id (ALB) is not WAF evidence: {hit}"
 
 
 def test_f5_dari_cookie_bigipserver():
@@ -60,7 +60,7 @@ def test_modsecurity_dari_body():
     assert hit and hit[0] == "ModSecurity"
 
 
-# ---------- v3.5: verdict perilaku (bukan tebakan signature) ----------
+# ---------- v3.5: behavioral verdict (not a signature guess) ----------
 
 def _p(kind, status, body=""):
     return {"kind": kind, "status": status, "body": body}
@@ -74,8 +74,8 @@ def test_perilaku_terkonfirmasi_saat_serangan_diblokir_kontrol_lolos():
 
 
 def test_perilaku_tidak_terkonfirmasi_saat_kontrol_ikut_diblokir():
-    # Server yang memblokir SEMUA request ke path asing (rate/IP policy)
-    # bukan bukti WAF — kontrol ikut terblokir.
+    # A server that blocks ALL requests to foreign paths (rate/IP policy)
+    # is not proof of a WAF — the controls are blocked too.
     probes = [_p("attack", 403), _p("attack", 403), _p("attack", 403),
               _p("control", 403), _p("control", 404), _p("control", 404)]
     assert not _waf_behavior_verdict(probes)["confirmed"]

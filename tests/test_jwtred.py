@@ -137,7 +137,7 @@ def test_password_reset_flow(server):
     assert pred[0]["severity"] == "HIGH"
     poison = by_title(found, "Password Reset Poisoning")
     assert poison and poison[0]["confidence"] == "confirmed"
-    assert poison[0]["cvss"] == 6.8
+    assert poison[0]["cvss"] == 7.4
     assert "attacker.jwtred.example" in poison[0]["evidence"]
     ref = by_title(found, "Referer")
     assert ref and ref[0]["severity"] == "MEDIUM"

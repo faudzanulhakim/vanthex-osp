@@ -199,7 +199,7 @@ def test_envelope_shape_success_unknown_error(monkeypatch):
 # ------------------------------------------------------------ CSP / routes
 
 def test_csp_byte_identical_on_new_routes():
-    src = _read("app2.py")
+    src = _read("webapp/app2.py")
     out = []
     for m in re.finditer(
             r'self\.send_header\("Content-Security-Policy",\s*(.*?)\)',
@@ -215,7 +215,7 @@ def test_csp_byte_identical_on_new_routes():
 
 
 def test_routing_root_artifact_classic_removed_webui_stays():
-    src = _read("app2.py")
+    src = _read("webapp/app2.py")
     # / serves the bundle index, no-store (K11).
     root = src[src.index('if path == "/":'):]
     root = root[:root.index('elif path == "/webui":')]
@@ -244,7 +244,7 @@ def test_routing_root_artifact_classic_removed_webui_stays():
 
 
 def test_auth_gates_source():
-    src = _read("app2.py")
+    src = _read("webapp/app2.py")
     get = src[src.index("def _do_GET"):]
     # Unauthenticated requests hit the 302-to-/login gate BEFORE any
     # route branch, so / and /assets/ are gated like /assets/.
@@ -265,7 +265,7 @@ def test_cache_headers_index_no_store_hashed_immutable():
         "public, max-age=31536000, immutable"
     assert app2._artifact_cache_header("assets/style.css") == \
         "public, max-age=86400"
-    src = _read("app2.py")
+    src = _read("webapp/app2.py")
     root = src[src.index('if path == "/":'):]
     root = root[:root.index('elif path == "/webui":')]
     assert '("Cache-Control", "no-store")' in root
@@ -322,7 +322,7 @@ def test_no_secret_or_key_in_bundle():
 # ------------------------------------------------------------ untouched pins
 
 def test_untouched_pins_version():
-    src = _read("app2.py")
+    src = _read("webapp/app2.py")
     assert '"version": "1.2.2"' in src
     assert 'server_version = "VANTHEX/1.2.2"' in src
     assert "VANTHEX Offensive Security Platform v1.2.2" in src
@@ -336,7 +336,7 @@ def test_dockerignore_does_not_exclude_artifact_ui():
 
 
 def test_docs_describe_new_routing():
-    for name in ("README.md", "DOCKER.md", "INSTALL.md"):
+    for name in ("README.md", "docs/DOCKER.md", "docs/INSTALL.md"):
         txt = _read(name)
         # 2026-11-05: /classic wording dropped from docs with the OSINT
         # removal pass; the surviving guarantee is webui-alias wording.
@@ -368,5 +368,5 @@ def test_touched_scripts_parse_under_node():
 
 def test_python_parses():
     import py_compile
-    for rel in ("app2.py", "actions.py"):
+    for rel in ("webapp/app2.py", "webapp/actions.py"):
         py_compile.compile(os.path.join(TREE, rel), doraise=True)

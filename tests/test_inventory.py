@@ -1,6 +1,6 @@
-"""Test Inventory Integrasi v1.1: profil multi-evidence + confidence,
-signature Deployment/DevOps & Admin Tool, parser probe komponen, mesin
-CVE rentang versi, dan kontrol negatif jebakan teks biasa."""
+"""Integration Inventory test v1.1: multi-evidence + confidence profile,
+Deployment/DevOps & Admin Tool signatures, component probe parsers, the
+CVE version-range engine, and plain-text trap negative controls."""
 import os
 import sys
 
@@ -14,7 +14,7 @@ def test_jenkins_multi_evidence_confirmed():
                        "<html><title>Sign in [Jenkins]</title></html>", [])
     j = [t for t in r if t["name"] == "Jenkins"]
     assert j and j[0]["version"] == "2.319.1"
-    assert j[0]["confidence"] == "confirmed"  # 2 sumber independen
+    assert j[0]["confidence"] == "confirmed"  # 2 independent sources
     assert j[0]["category"] == "Deployment/DevOps"
     assert len(j[0]["evidence_list"]) >= 2 and j[0]["detail"]
 
@@ -27,8 +27,8 @@ def test_gitlab_dan_phpmyadmin_signatures():
 
 
 def test_jebakan_teks_biasa_tidak_terdeteksi():
-    # Nama produk sebagai teks artikel biasa (pola jebakan battery) TIDAK
-    # boleh menjadi deteksi — hanya signature khas produk yang sah.
+    # Product names as ordinary article prose (the battery trap pattern) must
+    # NOT become detections — only genuine product signatures count.
     prose = ("<html><title>Artikel</title>Tim kami memakai Jenkins, GitLab, "
              "Docker, Kubernetes, Portainer, dan phpMyAdmin untuk proyek "
              "mereka. MySQL dan PostgreSQL juga disebut.</html>")
@@ -59,7 +59,7 @@ def test_probe_parsers():
     assert techdb._p_gitlab_health([], "GitLab OK") == (True, "")
     assert techdb._p_jenkins([("X-Jenkins", "2.319.1")], "") == \
         (True, "2.319.1")
-    assert techdb._p_jenkins([], "<html>login biasa</html>") == (False, "")
+    assert techdb._p_jenkins([], "<html>plain login</html>") == (False, "")
 
 
 def test_spec_match_rentang():
@@ -72,8 +72,8 @@ def test_spec_match_rentang():
     assert m("1.20.0", ">=0.6.18,<=1.20.0")
     assert not m("1.20.1", ">=0.6.18,<=1.20.0")
     assert m("13.8.5", ">=11.9,<13.10.3")
-    assert not m("bukan-versi", "<3.0.0")  # tidak terparse -> tidak menebak
-    assert not m("1.0", "spec-rusak")
+    assert not m("not-a-version", "<3.0.0")  # fails to parse -> no guessing
+    assert not m("1.0", "broken-spec")
 
 
 def test_attach_cves_builtin():
@@ -89,7 +89,7 @@ def test_attach_cves_builtin():
     assert "CVE-2022-21661" in by_name["WordPress"]
     assert "CVE-2021-41773" in by_name["Apache"]
     assert by_name["nginx"] == []  # 1.25.4 di luar rentang CVE-2021-23017
-    assert hits  # ada temuan bawaan tabel untuk dijadikan finding
+    assert hits  # there are built-in table entries to attach as findings
 
 
 def test_keycloak_oidc_dan_qdrant_parsers():

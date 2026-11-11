@@ -1,12 +1,12 @@
 """Battery ground-truth v3.4: matriks deteksi engine vs fixture terkontrol.
 
-Dua arah diuji sekaligus:
-- POSITIF: setiap kerentanan yang DITANAM di fixture WAJIB tertangkap (anti-miss).
-- NEGATIF: endpoint /safe/* yang sudah dipatch TIDAK BOLEH menghasilkan temuan
-  kelas injeksi (anti false-positive), dan fixture bersih tidak boleh dituduh WAF.
-- Mode waf: WAF HARUS detected (kontrol positif c_waf_detection).
+Both directions are tested at once:
+- POSITIVE: every vulnerability PLANTED in the fixture MUST be caught (anti-miss).
+- NEGATIVE: patched /safe/* endpoints MUST NOT produce injection-class
+  findings (anti false-positive), and the clean fixture must not be accused of WAF.
+- WAF mode: WAF MUST be detected (positive control c_waf_detection).
 
-Jalankan: .venv/bin/python -m pytest tests/test_battery.py -q (atau file ini langsung).
+Run: .venv/bin/python -m pytest tests/test_battery.py -q (or this file directly).
 """
 import os
 import subprocess
@@ -20,7 +20,7 @@ os.chdir(ROOT)
 
 PORT_VULN, PORT_WAF = 18083, 18084
 
-# Kategori wajib tertangkap (fragmen judul -> label), warisan smoke + tambahan v3.4.
+# Categories that must be caught (title fragment -> label), carried over from smoke + v3.4 additions.
 EXPECT = {
     "SQLi detected": "SQL Injection",
     "XSS detected": "Reflected XSS",
@@ -32,7 +32,7 @@ EXPECT = {
     ".env signature-verified": "Sensitive file exposed: /.env",
     "directory listing detected": "Directory listing",
     "CSRF form detected": "without anti-CSRF token",
-    "analisis JWT (secret lemah / tanpa exp)": "JWT",
+    "JWT analysis (weak secret / no exp)": "JWT",
     "OpenAPI exposure detected": "API documentation exposed",
     "GraphQL introspection detected": "GraphQL introspection",
     "cookie flags detected": "Cookie 'session'",
@@ -73,8 +73,8 @@ EXPECT = {
     "WebSocket aktif": "Active WebSocket endpoint",
     "CSWSH detected": "cross-origin connections (CSWSH indication)",
     "SSRF metadata cloud": "SSRF to cloud metadata",
-    # --- tambahan battery v3.16 (perluasan jebakan) ---
-    "SQLi boolean-blind murni": "SQL Injection (boolean-based): /vuln/search_bool",
+    # --- battery v3.16 additions (trap extensions) ---
+    "pure boolean-blind SQLi": "SQL Injection (boolean-based): /vuln/search_bool",
     # --- tambahan battery v1.10 (check kompleks) ---
     "Stored XSS v1.10": "Stored XSS verified (persistent)",
     "Prototype pollution v1.10": "Prototype pollution confirmed",
@@ -91,8 +91,8 @@ EXPECT = {
     # --- tambahan battery v1.3 (OSINT + Secrets Engine v2) ---
     "secret source-map v1.3": "SendGrid API key exposed in web content",
     # --- tambahan battery v1.8.0 (Coverage Expansion; fixture memang
-    # ditanam rentan: LDAP simulator, GraphQL alias resolver, OIDC
-    # config longgar, upload yang menyajikan ulang file HTML) ---
+    # planted vulnerable: LDAP simulator, GraphQL alias resolver, OIDC
+    # loose config, upload that re-serves HTML files) ---
     "LDAP boolean v1.8": "LDAP Injection (boolean-based)",
     "GraphQL alias v1.8": "GraphQL alias amplification accepted",
     "OAuth ROPC v1.8": "OAuth password grant (ROPC) enabled",
@@ -128,7 +128,7 @@ def _boot():
     p2 = subprocess.Popen([sys.executable, "tests/fixture_vuln_server.py", str(PORT_WAF)],
                           env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     procs = [p1, p2]
-    assert _wait(PORT_VULN) and _wait(PORT_WAF), "fixture battery tidak start"
+    assert _wait(PORT_VULN) and _wait(PORT_WAF), "battery fixture did not start"
     return procs
 
 
@@ -140,24 +140,24 @@ def test_battery_matrix():
                                      log=[], opts={"timeout": 5, "max_pages": 25})
         titles = [f["title"] for f in res["findings"]]
         blob = " | ".join(titles)
-        print(f"\n[battery] {len(titles)} temuan enterprise-full di fixture vuln")
+        print(f"\n[battery] {len(titles)} enterprise-full findings on the vuln fixture")
         missing = [k for k, frag in EXPECT.items() if frag not in blob]
-        assert not missing, f"KATEGORI LOLOS (MISS): {missing}"
-        # Transparansi cakupan (v3.6): status per check harus tercatat lengkap.
-        # Angka eksplisit disengaja: check yang hilang diam-diam dari
-        # registry harus menggagalkan battery ini. Dihitung dari
-        # PROFILES['enterprise-full'] yang semuanya resolve ke fungsi nyata
+        assert not missing, f"CATEGORY MISSED (MISS): {missing}"
+        # Coverage transparency (v3.6): per-check status must be fully recorded.
+        # The explicit count is intentional: checks silently missing from
+        # the registry must fail this battery. Counted from
+        # PROFILES['enterprise-full'], all of which resolve to real functions
         #  (95 = 66 baseline + c_nosql_confirm + c_xpath_confirm + c_jwt_forge
         #  + c_deser_confirm + c_smtp_confirm + 5 v1.3.4 + 13 v1.4.0
         #  + 6 v1.5.0 (oob-sweep, bundle-miner, entropy, authz-matrix,
-        #  openapi-stateful, custom-templates)). Selalu sinkron dgn
+        #  openapi-stateful, custom-templates)). Always keep in sync with
         #  len(PROFILES['enterprise-full']).
         det = res.get("checks_detail") or []
-        assert len(det) == res["checks_total"] == 118, \
+        assert len(det) == res["checks_total"] == 141, \
             f"checks_detail {len(det)} != total {res['checks_total']}"
         # Kontrol v1.3 (Secrets Engine v2): pasangan kredensial AWS dari
-        # riwayat .git terkonfirmasi paparannya; secret source-map dan
-        # lapisan base64 tertangkap dengan evidence berlabel.
+        # the .git history has its exposure confirmed; the source-map secret
+        # and the base64 layer are caught with labeled evidence.
         gitsec = [f for f in res["findings"]
                   if str(f.get("location", "")).startswith("/.git@")]
         assert any(f["confidence"] == "confirmed"
@@ -169,22 +169,22 @@ def test_battery_matrix():
         assert any("base64-decoded" in f.get("evidence", "")
                    for f in res["findings"]), \
             [f.get("evidence") for f in res["findings"]]
-        # Kontrol Priority 1 (v1.2): jebakan secrets di clean.js tidak
-        # boleh menghasilkan temuan; tabnabbing tepat 1 teragregasi;
-        # hidden params tepat menyebut debug & preview.
+        # Priority 1 control (v1.2): the secret traps in clean.js must not
+        # produce findings; tabnabbing aggregates to exactly 1;
+        # hidden params mention exactly debug & preview.
         assert not [f for f in res["findings"]
                     if f.get("location") == "/static/clean.js"], \
             [f["title"] for f in res["findings"]
              if f.get("location") == "/static/clean.js"]
-        # Kontrol v1.4.0: meta canary selalu hadir dan jujur (battery
-        # berjalan TANPA canary -> configured False, base_kind none,
-        # tidak ada klaim callback), dan setiap teknologi membawa skor
-        # fingerprint WS3/K4 beserta sinyalnya di evidence temuan.
+        # v1.4.0 control: the canary meta is always present and honest (battery
+        # runs WITHOUT a canary -> configured False, base_kind none,
+        # no callback claim), and every technology carries a WS3/K4
+        # fingerprint score with its signals in the finding evidence.
         assert res["canary"]["configured"] is False, res["canary"]
         assert res["canary"]["base_kind"] == "none", res["canary"]
         assert res["canary"]["callbacks_received"] == 0, res["canary"]
         assert all("score" in t for t in res["tech_profile"]), \
-            "teknologi tanpa skor fingerprint (WS3/K4)"
+            "technology without a fingerprint score (WS3/K4)"
         _tech_finds = [f for f in res["findings"]
                        if f["title"].startswith("Technology detected:")]
         assert _tech_finds and all("fingerprint score" in f["evidence"]
@@ -197,17 +197,17 @@ def test_battery_matrix():
         assert len(hid) == 1, hid
         assert set(x.strip() for x in hid[0]["param"].split(",")) == \
             {"debug", "preview"}, hid[0]["param"]
-        # Kontrol negatif JWT forgery: endpoint ketat /api/profile tidak boleh
-        # muncul sebagai dapat dipalsukan.
+        # Negative JWT forgery control: the strict /api/profile endpoint must not
+        # appear as forgeable.
         forgery = [t for t in titles if "can be forged" in t]
         assert forgery and all("/api/profile" not in t for t in forgery), forgery
-        # Verifikasi aktif teknologi (v3.7): WordPress terbukti berjalan.
+        # Active technology verification (v3.7): WordPress is proven to be running.
         wp = [t for t in (res.get("tech_profile") or []) if t["name"] == "WordPress"]
         assert wp and wp[0].get("verified") is True, res.get("tech_profile")
-        # Deteksi database dari artefak error (v3.8): halaman 404 fixture
-        # membocorkan jejak mysqli/MySQL + jalur Linux.
-        # Inventory integrasi v1.1: komponen deployment/API hasil probe
-        # aktif harus terverifikasi dengan versi yang benar.
+        # Database detection from error artifacts (v3.8): the fixture 404 page
+        # leaks traces of mysqli/MySQL + Linux paths.
+        # v1.1 integration inventory: deployment/API components probed
+        # active must verify with the correct version.
         techmap = {t["name"]: t for t in (res.get("tech_profile") or [])}
         for nama, ver in (("Jenkins", "2.319.1"), ("Docker Registry", "2.8.3"),
                           ("Kubernetes API", "1.28.2"),
@@ -218,7 +218,7 @@ def test_battery_matrix():
                 (nama, t)
         assert "GitLab" in techmap and "GraphQL API" in techmap, \
             [t["name"] for t in techmap.values()]
-        # CVE per komponen (kandidat) dari tabel internal berbasis rentang.
+        # CVEs per component (candidates) from the internal range-based table.
         cve_of = {t["name"]: [c["id"] for c in (t.get("cves") or [])]
                   for t in techmap.values()}
         assert "CVE-2021-41773" in cve_of.get("Apache", []), cve_of
@@ -231,19 +231,19 @@ def test_battery_matrix():
             [d for d in det if d["status"] != "ok"]
         # regresi FP lama
         assert "appendChild" not in blob and "t.head" not in blob
-        assert "WAF detected" not in blob, "fixture bersih dituduh WAF (FP)"
-        # NEGATIF: endpoint patched tidak boleh kena temuan kelas injeksi
+        assert "WAF detected" not in blob, "clean fixture accused of WAF (FP)"
+        # NEGATIVE: patched endpoints must not be hit by injection-class findings
         bad = [f for f in res["findings"]
                if (f.get("location") or "").startswith("/safe/")
                and any(c.lower() in f["title"].lower() for c in INJECTION_CLASSES)]
         assert not bad, f"FP di endpoint patched: {[f['title'] for f in bad]}"
-        # NEGATIF WAF: fixture bersih (dengan jebakan token hex GeneXus &
-        # nama vendor di teks) TIDAK BOLEH dituduh WAF sama sekali (v3.5:
+        # NEGATIVE WAF: the clean fixture (with the GeneXus hex token trap &
+        # vendor names in text) MUST NOT be accused of WAF at all (v3.5:
         # deteksi perilaku — serangan & kontrol sama-sama 404 di path hantu).
         assert not any(t.startswith("WAF") or t.startswith("WAF indication")
-                       for t in titles), "fixture bersih dituduh WAF (FP)"
+                       for t in titles), "clean fixture accused of WAF (FP)"
         # PROFILER teknologi & integrasi (v3.5): stack fixture wajib terbaca,
-        # GeneXus TIDAK boleh diklaim dari token hex saja.
+        # GeneXus MUST NOT be claimed from the hex token alone.
         tech = {t["name"]: t for t in res.get("tech_profile") or []}
         for nama, ver in [("Apache", "2.4.49"), ("WordPress", "5.8"),
                           ("jQuery", "1.11.1"), ("Google Analytics", ""),
@@ -251,14 +251,14 @@ def test_battery_matrix():
             assert nama in tech, f"profiler melewatkan {nama}: {sorted(tech)}"
             if ver:
                 assert tech[nama]["version"] == ver, f"{nama} versi {tech[nama]['version']} != {ver}"
-        assert "GeneXus" not in tech, "GeneXus diklaim dari token hex (FP profiler)"
-        # Jebakan v3.16: halaman /trap/* tidak boleh menghasilkan temuan apa
-        # pun — vendor cuma teks artikel + token hex, nama DB cuma topik
-        # artikel, refleksi JSON ter-escape bukan XSS/SQLi.
+        assert "GeneXus" not in tech, "GeneXus claimed from the hex token (profiler FP)"
+        # v3.16 trap: /trap/* pages must not produce any findings — vendors
+        # are only article text + hex tokens, DB names are only article
+        # topics, escaped JSON reflection is not XSS/SQLi.
         traps = [f for f in res["findings"]
                  if (f.get("location") or "").startswith("/trap/")]
-        assert not traps, f"FP di halaman jebakan: {[f['title'] for f in traps]}"
-        assert not any("F5" in n for n in tech), "F5 diklaim dari teks/hex (FP)"
+        assert not traps, f"FP on trap pages: {[f['title'] for f in traps]}"
+        assert not any("F5" in n for n in tech), "F5 claimed from text/hex (FP)"
         import urllib.request as _u
         import techdb as _td
         body = _u.urlopen(f"http://127.0.0.1:{PORT_VULN}/trap/databases",
@@ -266,13 +266,13 @@ def test_battery_matrix():
         prof = _td.profile({}, body)
         assert not any(t["category"] == "Database" for t in prof), \
             f"nama DB di artikel jadi deteksi Database: {prof}"
-        # WAF positif: mode waf harus TERKONFIRMASI perilaku + vendor Cloudflare
+        # WAF positive: waf mode must be behavior-CONFIRMED + vendor Cloudflare
         res2 = vulnscan2.run_vulnscan(f"http://127.0.0.1:{PORT_WAF}", "active-standard",
                                       log=[], opts={"timeout": 5, "max_pages": 10})
         blob2 = " | ".join(f["title"] for f in res2["findings"])
-        print(f"[battery] fixture waf: {len(res2['findings'])} temuan (suppressed context)")
+        print(f"[battery] waf fixture: {len(res2['findings'])} findings (suppressed context)")
         assert "WAF confirmed" in blob2 and "Cloudflare" in blob2, \
-            "WAF mode tidak terkonfirmasi perilaku"
+            "WAF mode not behavior-confirmed"
     finally:
         for p in procs:
             p.terminate()
@@ -287,25 +287,26 @@ PORT_SPA = 18085
 
 
 def test_battery_spa():
-    """Mode SPA (catch-all soft-404): kelas injeksi WAJIB nol — regresi
-    permanen insiden FP massal v3.2.0. Temuan properti shell (header,
-    cookie, JWT di halaman) tetap sah dan dihitung longgar."""
+    """SPA mode (catch-all soft-404): injection classes MUST be zero — a
+    permanent regression guard for the v3.2.0 mass-FP incident. Shell
+    property findings (header, cookie, page JWT) remain valid and are
+    counted loosely."""
     import vulnscan2
     env = dict(os.environ, FIXTURE_MODE="spa")
     proc = subprocess.Popen([sys.executable, "tests/fixture_vuln_server.py",
                              str(PORT_SPA)], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        assert _wait(PORT_SPA), "fixture spa tidak start"
+        assert _wait(PORT_SPA), "spa fixture did not start"
         res = vulnscan2.run_vulnscan(f"http://127.0.0.1:{PORT_SPA}",
                                      "enterprise-full", log=[],
                                      opts={"timeout": 5, "max_pages": 20})
         finds = res["findings"]
-        print(f"\n[battery-spa] {len(finds)} temuan di fixture SPA")
+        print(f"\n[battery-spa] {len(finds)} findings on the SPA fixture")
         inj = [f for f in finds
                if any(c.lower() in f["title"].lower()
                       for c in INJECTION_CLASSES + ("injection",))]
         assert not inj, f"FP injeksi di SPA: {[f['title'] for f in inj]}"
-        assert len(finds) <= 40, f"temuan SPA membengkak: {len(finds)}"
+        assert len(finds) <= 40, f"SPA findings ballooned: {len(finds)}"
     finally:
         proc.terminate()

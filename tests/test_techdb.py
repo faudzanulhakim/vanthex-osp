@@ -1,5 +1,5 @@
-"""Test profiler teknologi & integrasi (techdb, v3.5): deteksi berbasis
-artefak dengan evidence; petunjuk lemah TIDAK boleh menjadi klaim."""
+"""Technology profiler & integration test (techdb, v3.5): artifact-based
+detection with evidence; weak hints must NEVER become claims."""
 import os
 import sys
 
@@ -24,10 +24,10 @@ def test_runtime_dari_nama_cookie():
 
 
 def test_genexus_butuh_sinyal_asli_bukan_token_hex():
-    # Token hex acak bergaya GeneXus SAJA tidak cukup (kasus FP F5 2026-10-16).
+    # A GeneXus-style random hex token ALONE is not enough (F5 FP case 2026-10-16).
     trap = '<div data-key="38ff6460ffff59ffff06ff6bffff3644"></div>'
     assert "GeneXus" not in names(techdb.profile([("Server", "nginx")], trap))
-    # JSON gx asli di body aplikasi GeneXus = sinyal sah.
+    # Real gx JSON in a GeneXus app body = a valid signal.
     real = '<script>var g = {"gx ajax_key":"38ff64","gx_ajax_iv":"8722"}</script>'
     assert "GeneXus" in names(techdb.profile([], real))
 
@@ -48,7 +48,7 @@ def test_integrasi_pihak_ketiga():
     body = "".join(f'<script src="{s}"></script>' for s in srcs)
     r = names(techdb.profile([], body, srcs))
     for n in ("Google Analytics", "Stripe", "Midtrans", "Google reCAPTCHA"):
-        assert n in r, f"{n} tidak terdeteksi"
+        assert n in r, f"{n} not detected"
     assert r["Google Analytics"]["version"] == "G-ABC123"
     assert r["Midtrans"]["category"] == "Payment"
 
@@ -67,10 +67,10 @@ ERR_MYSQL = ("Warning: mysqli_query(): You have an error in your SQL syntax; "
 
 
 def test_database_dari_error_bukan_dari_teks_biasa():
-    # Nama DB di teks biasa TIDAK boleh terdeteksi (aturan anti-tebakan).
+    # DB names in plain prose must NOT be detected (anti-guessing rule).
     res = techdb.profile([], "<html>blog tentang mysql, oracle, mongodb, postgresql</html>", [])
     assert not [t for t in res if t["category"] == "Database"]
-    # Frasa error khas di halaman error WAJIB terdeteksi + OS dari jalurnya.
+    # The distinctive error phrase on an error page MUST be detected + the OS from its path.
     res = techdb.profile([], "<html>home</html>", [], error_body=ERR_MYSQL)
     names = {(t["name"], t["category"]) for t in res}
     assert ("MySQL", "Database") in names

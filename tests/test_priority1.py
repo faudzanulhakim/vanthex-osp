@@ -25,7 +25,7 @@ def test_xpath_signatures_reject_bare_word():
     assert v._xpath_error_in("our docs explain xpath queries in detail", "") == []
     assert v._xpath_error_in("javax.xml.xpath.XPathExpressionException: boom", "")
     assert v._xpath_error_in("XPST0003 static error", "")
-    # Signature yang sudah ada di baseline bukan temuan.
+    # A signature already in the baseline is not a finding.
     both = "javax.xml.xpath.XPathExpressionException"
     assert v._xpath_error_in(both, both) == []
     assert "xpath" not in v.XPATH_ERRORS
@@ -121,7 +121,7 @@ class _FakeCtx:
 
 
 class _HiddenFakeClient:
-    """Endpoint /x hanya berubah untuk debug & preview; /y tak stabil."""
+    """Only the /x debug & preview endpoint changes; /y is unstable."""
     host = "fake.test"
 
     def get(self, url, **kw):
@@ -188,7 +188,7 @@ class _Fixture:
         self.proc = subprocess.Popen(
             [sys.executable, "tests/fixture_vuln_server.py", str(PORT)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        assert _wait(PORT), "fixture priority1 tidak start"
+        assert _wait(PORT), "fixture priority1 did not start"
         return self
 
     def __exit__(self, *a):
@@ -244,7 +244,7 @@ def test_exposed_secrets_integration_and_masking():
         assert not clean, clean
         blob = repr(finds)
         for k in raw_keys:
-            assert k not in blob, f"secret utuh bocor ke finding: {k}"
+            assert k not in blob, f"intact secret leaked into finding: {k}"
         assert "AKIA***4N" in blob
 
 

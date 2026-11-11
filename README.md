@@ -13,7 +13,7 @@
   <img alt="Version" src="https://img.shields.io/badge/version-1.2.2-crimson">
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-blue">
   <img alt="Engine" src="https://img.shields.io/badge/engine-self--built-success">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-143%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-900%2B%20passing-brightgreen">
 </p>
 
 ---
@@ -43,7 +43,7 @@ and its evidence is inspectable.
   enumeration, directory discovery, TLS/SSL audit, security-header audit,
   passive recon, UDP scan, virtual-host enumeration, SYN scan, hybrid
   (passive + active), and mobile app analysis (APK/IPA)
-- **118 vulnerability checks** in the `enterprise-full` profile, mapped to
+- **141 vulnerability checks** in the `enterprise-full` profile, mapped to
   OWASP Top 10 2021 + API Security Top 10 — injection (SQLi, NoSQL, XXE,
   LDAP, **XPath**, SSTI, command), XSS (incl. stored, verified by re-render),
   prototype pollution, JWT attacks (incl. `kid` injection), GraphQL deep
@@ -116,7 +116,7 @@ VANTHEX is designed to *not cry wolf*:
   says **INCONCLUSIVE** instead of inventing results — an empty result
   is never presented as "target is clean"
 - The engine is regression-tested against a ground-truth fixture battery
-  (143 automated tests: detection recall + false-positive traps from
+  (900+ automated tests: detection recall + false-positive traps from
   real-world incidents)
 
 ## Scan types
@@ -144,7 +144,7 @@ VANTHEX is designed to *not cry wolf*:
 | `passive-full` | Full passive surface mapping |
 | `active-standard` | Active checks, standard depth |
 | `active-deep` | Active checks, deep crawling & fuzzing |
-| `enterprise-full` | All 118 checks, maximum coverage |
+| `enterprise-full` | All 141 checks, maximum coverage |
 | `auth-assault` | 64 checks focused on authentication attacks (login brute/stuffing, rate-limit evasion, OTP/MFA brute, JWT forgery, IDOR/BOLA, privilege escalation) — operator-gated modules that stay idle unless enabled |
 
 ## Deployment
@@ -213,7 +213,7 @@ docker compose -f docker-compose.deploy.yml up -d
 ```
 
 Full Docker guide — persistence model, upgrades, networking,
-troubleshooting: [DOCKER.md](DOCKER.md).
+troubleshooting: [DOCKER.md](docs/DOCKER.md).
 
 ### Installation — native
 
@@ -224,7 +224,7 @@ python3 -m venv .venv
 source .venv/bin/activate           # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 export PTK_ADMIN_PW='a-long-random-password'   # Windows: set PTK_ADMIN_PW=...
-python app2.py 5000
+PYTHONPATH=. python webapp/app2.py 5000
 ```
 
 Open <http://localhost:5000> (login `admin` / your `PTK_ADMIN_PW`.
@@ -241,7 +241,7 @@ systemctl status vanthex
 ```
 
 Full native guide — state files, configuration, upgrades,
-troubleshooting, uninstall: [INSTALL.md](INSTALL.md).
+troubleshooting, uninstall: [INSTALL.md](docs/INSTALL.md).
 
 ## Configuration
 
@@ -300,11 +300,113 @@ Authentication uses the workflow's built-in `GITHUB_TOKEN`
 | `secretsmgr.py` | Fernet-encrypted credential vault |
 | `canary.py` | Out-of-band (SSRF/blind) callback listener |
 
+## Repository layout
+
+```
+webapp/     HTTP server, REST API, job orchestration (app2.py — the run entrypoint)
+engine/     Self-built scanner engine: checks, clients, persistence, reporting
+offensive/  Operator-gated expansion modules (see below)
+tools/      Utility helpers (offline verification, cache tooling)
+scripts/    Development & maintenance scripts
+docs/       Documentation (INSTALL, DOCKER, audit & release notes)
+tests/      Test suite (900+ tests across 88 files, incl. the fixture battery)
+deploy/     systemd unit, entrypoint, CI assets
+web/        Prebuilt dashboard UI bundle served at `/`
+```
+
+The CLI entrypoint is `python cli.py` from the project root; the web
+service starts with `python webapp/app2.py 5000` (set `PYTHONPATH=.`,
+or use the systemd unit / Docker image, which carry it already).
+
+## Offensive expansion modules
+
+The `offensive/` package ships 30 additional attack modules. They stay
+idle unless their operator gate is enabled, and are included in the
+`enterprise-full` profile once unlocked.
+
+| Module | What it does |
+|---|---|
+| `llmv2` | LLM/prompt-injection attack surface testing (v2) |
+| `chainexec` | Multi-step attack-chain execution and validation |
+| `reconiblis` | Aggressive active reconnaissance sweeps |
+| `wafchain` | WAF fingerprinting, bypass chaining, rule probing |
+| `zerodayheur` | Heuristic zero-day pattern detection |
+| `logicattack` | Business-logic and workflow abuse testing |
+| `scanfleet` | Orchestrated multi-target scan fleet coordination |
+| `playbooks` | Predefined offensive playbook execution |
+| `rtagent` | Runtime agent for live interactive probing |
+| `c2lab` | Lab-style command-and-control simulation (authorized targets) |
+| `timediff` | Differential timing analysis for blind detections |
+| `supplyiblis` | Supply-chain / dependency exposure checks |
+| `csminer` | Client-side script/secret mining |
+| `chaosfault` | Fault-injection resilience probing |
+| `triageai` | AI-assisted finding triage & prioritization |
+| `darkradar` | Broad dark/exposed-surface radar sweep |
+| `lolbins` | Living-off-the-land binary abuse detection |
+| `ghostcrawl` | Stealthy low-footprint crawling |
+| `promptfuzz` | Prompt-injection fuzzing for LLM endpoints |
+| `websuite` | Consolidated web attack suite |
+| `polyglotlab` | Polyglot payload laboratory |
+| `cacheatlas` | Web-cache deception/poisoning mapping |
+| `deeplink` | Mobile deep-link abuse testing |
+| `sideoracle` | Side-channel oracle measurements |
+| `graphqlsuite` | Deep GraphQL attack suite |
+| `protocolattacks` | Protocol-level attack vectors |
+| `blindxssapi` | Blind XSS via API/callback channels |
+| `manualcheck` | Curated manual-verification worklists (curl blocks) |
+| `timingoracle` | Time-based blind detection oracle |
+
+### Operator gate variables
+
+| Gate | Enables | Default |
+|---|---|---|
+| `PTK_LLMV2` | `llmv2` LLM/prompt-injection module | off |
+| `PTK_ZERODAY` | `zerodayheur` heuristic zero-day checks | off |
+| `PTK_LOGIC` | `logicattack` business-logic attacks | off |
+| `PTK_WAFCHAIN` | `wafchain` WAF bypass chain | off |
+| `PTK_RECON` | `reconiblis` active recon sweeps | off |
+| `PTK_CSMINE` | `csminer` client-side secret mining | off |
+| `PTK_CHAOS` | `chaosfault` fault-injection probes | off |
+| `PTK_DARKRADAR` | `darkradar` exposed-surface radar | off |
+| `PTK_PROMPTFUZZ` | `promptfuzz` prompt fuzzing | off |
+| `PTK_GHOST` | `ghostcrawl` stealth crawling | off |
+| `PTK_WS` | `websuite` consolidated web suite | off |
+| `PTK_CACHEATLAS` | `cacheatlas` cache attacks | off |
+| `PTK_SIDEORACLE` | `sideoracle` side-channel oracles | off |
+| `PTK_POLYGLOT` | `polyglotlab` polyglot payloads | off |
+| `PTK_GRAPHQL` | `graphqlsuite` deep GraphQL checks | off |
+| `PTK_PROTO` | `protocolattacks` protocol vectors | off |
+| `PTK_AUTHATTACK` | Auth Annihilation Pack login attack engine | off |
+| `PTK_JWTRED` | JWT forgery & auth-flow attacks | off |
+| `PTK_AUTHZ` | IDOR/BOLA matrix & privilege escalation | off |
+| `PTK_POCBOX` | Proof-of-concept box (raw PoC execution) | off |
+
+## Accuracy & false-positive contract
+
+- **CONFIRMED is always proven.** The label requires hard behavioral
+  evidence — a differential response, decoded-and-executed payload, or a
+  scaling proof — never a signature or substring match.
+- **Weaker findings are always labeled.** Candidates carry a
+  `verification_note` and are marked reflection-only / manual-required
+  rather than being promoted to confirmed.
+- **Every candidate ships a `manual_check` curl block** — an operator
+  can reproduce the evidence with a copy-paste command instead of
+  trusting the scanner.
+- **Candidate CVSS is capped at 3.9.** The full impact score is kept
+  separately as `impact_cvss` so risk is visible without overstating
+  unproven severity.
+- **Time-based detections are strictly gated**: at least a 1-second
+  sleep, ≥2.5× the measured baseline, 3 consistent attempts, and a
+  scaling pair at ≥1.4× before anything is reported.
+- **No scanner is 100% false-positive-free.** VANTHEX's contract is
+  honesty: CONFIRMED is always proven, and every weaker finding is
+  always labeled as such — never passed off as a proven vulnerability.
+
 ## Development & testing
 
 ```bash
 pip install -r requirements.txt   # includes pytest, coverage, hypothesis
-python -m pytest tests/ -q        # 143 tests: battery, honesty, transport, reports…
+python -m pytest tests/ -q        # 900+ tests: battery, honesty, transport, reports…
 ```
 
 The test suite includes a ground-truth vulnerable-fixture server:
@@ -313,8 +415,8 @@ safe control endpoints and false-positive traps.
 
 ## Documentation
 
-- [DOCKER.md](DOCKER.md) — Docker Compose deployment, persistence, upgrades
-- [INSTALL.md](INSTALL.md) — native installation
+- [DOCKER.md](docs/DOCKER.md) — Docker Compose deployment, persistence, upgrades
+- [INSTALL.md](docs/INSTALL.md) — native installation
 - [ENTERPRISE_NOTES.md](docs/ENTERPRISE_NOTES.md) — coverage matrix & release history
 - [UPGRADE_NOTES.md](docs/UPGRADE_NOTES.md) · [AUDIT.md](docs/AUDIT.md)
 

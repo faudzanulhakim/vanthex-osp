@@ -116,13 +116,13 @@ def test_docx_report_follows_ui_language_id(tmp_path):
     path = str(tmp_path / "laporan_id.docx")
     generate_docx(dict(SCAN), [dict(f) for f in FINDINGS], path, lang="id")
     doc = _docx_all_text(path)
-    # Kerangka Bahasa Indonesia
+    # Indonesian scaffold
     for marker in ("LAPORAN UJI PENETRASI", "Kendali Dokumen",
                    "1. Ringkasan Eksekutif", "KRITIS", "Matriks Risiko",
                    RI.T["id"]["h_steps"], RI.T["id"]["h_poc"],
                    "14 Oktober 2026" if False else "Oktober 2026"):
         assert marker in doc, f"DOCX id kehilangan: {marker}"
-    # Kerangka Inggris tidak boleh bocor
+    # English scaffold must not leak
     assert "1. Executive Summary" not in doc
     assert "Document Control" not in doc
     # Data temuan tetap verbatim (tidak diterjemahkan)
